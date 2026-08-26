@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { normalizeForSearch, tokenize } from '../../src/features/search/tokenize.js';
+import { normalizeForSearch, tokenize, UNICODE61_KEEPS_CASE } from '../../src/features/search/tokenize.js';
 import { createSearchIndex, nodeSqliteAvailable } from '../../src/features/search/factory.js';
 import { MemorySearchIndex, makeSnippet } from '../../src/features/search/index-manager.js';
 import { loadIndex, saveIndex } from '../../src/features/search/persistence.js';
@@ -255,12 +255,26 @@ describe('codepoints unicode61 does not fold the way JavaScript would', () => {
     expect(normalizeForSearch('ǠǢǮǼǾ')).toBe('ǡǣǯǽǿ');
   });
 
-  it('leaves alone the two Greek codepoints unicode61 does not transform', () => {
-    // U+037F is newer than unicode61's case table: the index stores it uppercase.
-    expect(normalizeForSearch('Ϳ')).toBe('Ϳ');
+  it('keeps every codepoint unicode61 stores uppercase — whole scripts, not two Greek letters', () => {
+    // unicode61's case table predates Unicode 8. The generated set covers the scripts
+    // that gained casing later; a hand-listed pair covered 2 of its 445 members.
+    expect(UNICODE61_KEEPS_CASE.size).toBeGreaterThanOrEqual(400);
+    for (const c of ['\u037f', '\u1c90', '\u13a0', '\u{104b0}']) {
+      // Greek yot, Georgian Mtavruli, Cherokee, Osage: JS lowercases each; the index
+      // stores them uppercase, so the fold must leave them standing.
+      expect(UNICODE61_KEEPS_CASE.has(c), c).toBe(true);
+      expect(normalizeForSearch(c), c).toBe(c);
+    }
     // U+0374 is left as-is by SQLite while `normalize` maps it to U+02B9 — two codepoints
     // that print alike and never match.
-    expect(normalizeForSearch('ʹ')).toBe('ʹ');
+    expect(normalizeForSearch('\u0374')).toBe('\u0374');
+  });
+
+  it('unifies the micro sign with Greek mu, because unicode61 does', () => {
+    // U+00B5 µm and U+03BC μm are the same unit to unicode61; a fold that kept them
+    // apart would make the two backends disagree on which spelling finds which.
+    expect(normalizeForSearch('\u00b5m')).toBe('\u03bcm');
+    expect(tokenize('\u00b5m')).toEqual(['\u03bcm']);
   });
 
   it('shields nothing when the text contains none of them, and does not leak a placeholder', () => {
