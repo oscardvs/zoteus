@@ -55,7 +55,34 @@ async function openCorrupted(): Promise<{ jsonPath: string; index: SearchIndex }
   return { jsonPath, index: await openIndex(jsonPath) };
 }
 
+/** An error shaped exactly as node:sqlite raises it (code is constant, truth in errcode/errstr). */
+function sqliteError(message: string, errcode: number, errstr: string): Error {
+  const e = new Error(message) as Error & { code: string; errcode: number; errstr: string };
+  e.code = 'ERR_SQLITE_ERROR';
+  e.errcode = errcode;
+  e.errstr = errstr;
+  return e;
+}
+
 describe('isCorruptionError', () => {
+  it('recognizes corruption behind a wrapper message, where the message alone says nothing', () => {
+    // The case a message scan cannot see: a corrupt FTS5 shadow table surfaces from
+    // prepare() as a vtable failure, with the real classification in errcode/errstr.
+    // Measured on real single-page corruptions, roughly one in ten takes this shape —
+    // and before this check, each of those still killed the whole server at startup.
+    expect(isCorruptionError(sqliteError('vtable constructor failed: passages_fts', 11, 'database disk image is malformed'))).toBe(true);
+    // Extended result codes carry the primary code in the low byte.
+    expect(isCorruptionError(sqliteError('some wrapper', 267, 'database disk image is malformed'))).toBe(true);
+    expect(isCorruptionError(sqliteError('unhelpful wrapper text', 26, 'file is not a database'))).toBe(true);
+  });
+
+  it('still leaves non-corruption result codes alone', () => {
+    expect(isCorruptionError(sqliteError('database is locked', 5, 'database is locked'))).toBe(false);
+    expect(isCorruptionError(sqliteError('no such table: passages', 1, 'SQL logic error'))).toBe(false);
+    expect(isCorruptionError(sqliteError('disk I/O error', 10, 'disk I/O error'))).toBe(false);
+    expect(isCorruptionError(sqliteError('database or disk is full', 13, 'database or disk is full'))).toBe(false);
+  });
+
   it('recognizes SQLite saying the file is not a usable database', () => {
     for (const m of [
       'database disk image is malformed',
@@ -156,6 +183,54 @@ describe('opening an index that cannot be read', () => {
     expect(healed).not.toBeInstanceOf(CorruptSearchIndex);
     expect((await healed.query('neural', { mode: 'keyword' }))[0]?.itemKey).toBe('A');
     await healed.close();
+  });
+
+  sqliteIt('converts corruption discovered at query time, in the hydration read', async () => {
+    // Every fused hit hydrates through passage(); corruption in the passages b-tree is
+    // found there, mid-flight, on an index that opened cleanly. The caller must get the
+    // typed refusal with the file and the recovery command, not SQLite's bare sentence.
+    const jsonPath = tmpJsonPath('midflight');
+    const index = await openIndex(jsonPath);
+    await index.build([ITEM]);
+    const anyIndex = index as unknown as { stmts: { selectPassage: { get(id: string): unknown } } };
+    anyIndex.stmts.selectPassage = {
+      get() {
+        throw sqliteError('vtable constructor failed: passages_fts', 11, 'database disk image is malformed');
+      },
+    };
+    const rejection = await index.query('neural', { mode: 'keyword' }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(rejection).toBeInstanceOf(SearchIndexCorruptError);
+    expect((rejection as Error).message).toContain(sqliteIndexPath(jsonPath));
+    expect((rejection as Error).message).toMatch(/rm /);
+    await index.close();
+  });
+
+  sqliteIt('does not blame the embedder for the store\'s fault', async () => {
+    // whoami and status read embedderReason to explain the embedder. On a corrupt index
+    // the embedder is healthy; attributing the store fault to it sends the user to the
+    // wrong remedy. The fault travels in storeFault/storageNotice/lastError instead.
+    const { index } = await openCorrupted();
+    expect(index.embedderReason).toBeUndefined();
+    expect(index.buildStatus().storageNotice).toContain('cannot be read');
+    await index.close();
+  });
+
+  sqliteIt('refuses mode:"semantic" with the store fault, not with vector advice', async () => {
+    // The storeFault field exists for exactly one caller: the 0-vector refusal in
+    // zotero_semantic_search fires BEFORE query(), and without the deferral it answers
+    // "this index has 0 vectors... re-run with mode:keyword" — advice that fails, since
+    // keyword refuses too, and the file is never named.
+    const { index } = await openCorrupted();
+    expect(index.storeFault).toBeInstanceOf(SearchIndexCorruptError);
+    expect(index.hasVectors).toBe(false);
+    // The guard condition semantic-search.ts uses, asserted against this index: with the
+    // fault present the branch must fall through to query(), whose refusal names the file.
+    const guardFires = !index.hasVectors && !index.storeFault;
+    expect(guardFires).toBe(false);
+    await index.close();
   });
 
   sqliteIt('refuses to report a successful save of an index it never opened', async () => {

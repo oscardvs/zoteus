@@ -466,11 +466,19 @@ export class SqliteSearchIndex extends SearchIndexBase {
   }
 
   protected passage(id: string): ChunkRecord | undefined {
-    const row = this.stmts.selectPassage.get(id) as PassageRow | undefined;
-    if (!row) return undefined;
-    const rec: ChunkRecord = { id: row.id, itemKey: row.item_key, title: row.title, text: row.text };
-    if (row.source === 'fulltext') rec.source = 'fulltext';
-    return rec;
+    try {
+      const row = this.stmts.selectPassage.get(id) as PassageRow | undefined;
+      if (!row) return undefined;
+      const rec: ChunkRecord = { id: row.id, itemKey: row.item_key, title: row.title, text: row.text };
+      if (row.source === 'fulltext') rec.source = 'fulltext';
+      return rec;
+    } catch (e) {
+      // Corruption in the passages b-tree is discovered here — every fused hit hydrates
+      // through this read — and must reach the caller as the typed refusal, not as
+      // SQLite's bare sentence naming neither the file nor the way out.
+      if (isCorruptionError(e)) throw new SearchIndexCorruptError(this.file, e);
+      throw e;
+    }
   }
 
   /** Write the index-level state and commit whatever the build has inserted so far. */

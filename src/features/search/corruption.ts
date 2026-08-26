@@ -33,10 +33,7 @@ export class SearchIndexCorruptError extends Error {
 const UNREADABLE = 'the search index cannot be read';
 
 /**
- * SQLite's vocabulary for "this file is not a usable database".
- *
- * Matched on the message rather than on a code because `node:sqlite` does not surface
- * `SQLITE_CORRUPT` as a stable numeric field, and because these strings are part of
+ * SQLite's vocabulary for "this file is not a usable database". These strings are part of
  * SQLite's public interface: they are in its documentation and have not changed across
  * the 3.x series.
  *
@@ -50,14 +47,24 @@ const CORRUPTION_SIGNS = [
   'file is encrypted or is not a database',
   'malformed database schema',
   'database corruption',
-  'sqlite_corrupt',
-  'sqlite_notadb',
 ];
+
+/**
+ * SQLite primary result codes for corruption: SQLITE_CORRUPT (11) and SQLITE_NOTADB (26).
+ * `node:sqlite` sets `code` to the constant 'ERR_SQLITE_ERROR' on every error and carries
+ * the real classification in numeric `errcode` and textual `errstr` — and the message can
+ * be an unrelated wrapper: a corrupt FTS5 shadow table surfaces as "vtable constructor
+ * failed: passages_fts" with errcode 11, which no message scan can recognize. Extended
+ * codes put the primary code in the low byte, hence the mask.
+ */
+const CORRUPT_ERRCODES = new Set([11, 26]);
 
 /** True when `e` says the file itself is unusable, not that one operation failed. */
 export function isCorruptionError(e: unknown): boolean {
   if (e instanceof SearchIndexCorruptError) return true;
-  const text = (e instanceof Error ? `${e.message} ${(e as { code?: string }).code ?? ''}` : String(e)).toLowerCase();
+  const { errcode, errstr } = (e ?? {}) as { errcode?: number; errstr?: string };
+  if (typeof errcode === 'number' && CORRUPT_ERRCODES.has(errcode & 0xff)) return true;
+  const text = `${e instanceof Error ? e.message : String(e)} ${errstr ?? ''}`.toLowerCase();
   return CORRUPTION_SIGNS.some((sign) => text.includes(sign));
 }
 
@@ -119,14 +126,6 @@ export class CorruptSearchIndex extends SearchIndexBase {
    */
   override get isEmpty(): boolean {
     return false;
-  }
-
-  /**
-   * Short, because `storageNotice` already carries the file, the sidecars and the command,
-   * and the two are printed in the same sentence.
-   */
-  override get embedderReason(): string {
-    return UNREADABLE;
   }
 
   override buildStatus(): IndexBuildStatus {
