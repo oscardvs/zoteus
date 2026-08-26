@@ -53,12 +53,13 @@ const UNIFY_RE = new RegExp(`[${Object.keys(UNIFY).join('')}]`, 'gu');
  * whole, so they stay whole here).
  *
  * Swept codepoint by codepoint over Latin, Greek, Cyrillic, Latin Extended Additional,
- * letterlike and number forms, fullwidth and the ligatures — 1 301 codepoints, recorded in
- * kept as a test (see "the fold agrees with unicode61 where it matters"). An earlier
- * reading of that sweep called all its residual divergences harmless. **That was wrong**,
- * and re-running it is what showed otherwise: twelve of them sent the query to a token the
- * index does not hold, which is this defect's own class on rarer input. Ten were `Ǡ Ǣ Ǯ Ǽ Ǿ` and their lowercase forms and two were
- * gaps in unicode61's Greek case table; all twelve are handled by NO_MARK_STRIP and
+ * letterlike and number forms, fullwidth and the ligatures — 1 301 codepoints. What it found
+ * is pinned in `accent-folding.test.ts`, under "codepoints unicode61 does not fold the way
+ * JavaScript would". An earlier reading of that sweep called all its residual divergences
+ * harmless. **That was wrong**, and re-running it is what showed otherwise: twelve of them
+ * sent the query to a token the index does not hold, which is this defect's own class on
+ * rarer input. Ten were `Ǡ Ǣ Ǯ Ǽ Ǿ` with their lowercase forms and two were gaps in
+ * unicode61's Greek case table; all twelve are handled by NO_MARK_STRIP and
  * NO_CASE_FOLD below. What remains is fifteen unassigned or symbol codepoints that
  * unicode61 indexes and `\p{L}\p{N}` does not — those genuinely do only retrieve less.
  */
