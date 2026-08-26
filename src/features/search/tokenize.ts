@@ -63,10 +63,8 @@ const UNIFY_RE = new RegExp(`[${Object.keys(UNIFY).join('')}]`, 'gu');
  * unicode61 indexes and `\p{L}\p{N}` does not — those genuinely do only retrieve less.
  */
 export function normalizeForSearch(text: string): string {
-  const [caseSafe, restoreCase] = shield(text, NO_CASE_FOLD, CASE_SLOT);
-  const lowered = caseSafe.toLowerCase();
-  const [markSafe, restoreMarks] = shield(lowered, NO_MARK_STRIP, MARK_SLOT);
-  const folded = markSafe
+  const lowered = CASE_SHIELD.hide(text).toLowerCase();
+  const folded = MARK_SHIELD.hide(lowered)
     // Lowercasing can itself introduce a mark (`İ` → `i` + U+0307), so decompose after it.
     .normalize('NFD')
     .replace(LATIN_MARKS, '$1')
@@ -74,7 +72,7 @@ export function normalizeForSearch(text: string): string {
     // treats them as separators, so a decomposed `ά` left standing would split in two.
     .normalize('NFC')
     .replace(UNIFY_RE, (c) => UNIFY[c]!);
-  return restoreCase(restoreMarks(folded));
+  return CASE_SHIELD.show(MARK_SHIELD.show(folded));
 }
 
 /**
@@ -88,7 +86,7 @@ export function normalizeForSearch(text: string): string {
  * it retrieves confidently and wrongly rather than retrieving nothing. Found by the
  * codepoint sweep, which is also the regression guard.
  */
-const NO_MARK_STRIP = /[\u01e1\u01e3\u01ef\u01fd\u01ff]/gu;
+const NO_MARK_STRIP = '\u01e1\u01e3\u01ef\u01fd\u01ff';
 
 /**
  * Characters unicode61 does not transform at all, where JavaScript would.
@@ -98,41 +96,38 @@ const NO_MARK_STRIP = /[\u01e1\u01e3\u01ef\u01fd\u01ff]/gu;
  * `U+0374` GREEK NUMERAL SIGN is left alone by SQLite while `normalize` maps it to `U+02B9`
  * MODIFIER LETTER PRIME — two codepoints that print alike and do not match.
  */
-const NO_CASE_FOLD = /[\u0374\u037f]/gu;
+const NO_CASE_FOLD = '\u0374\u037f';
 
 /**
- * Disjoint placeholder blocks, one per shield.
- *
- * The two shields are nested — the case shield is still in force while the mark shield is
- * applied — so sharing one block makes them collide: both would allocate `U+FDD0` first,
- * and the inner restore would hand the outer one back the wrong character. That is not
- * hypothetical; it is what the first version did, and `Ǽ Ϳ` came back as `ǽ ǽ`.
+ * A set of characters hidden behind noncharacters for the duration of the fold, and put
+ * back afterwards.
  *
  * `U+FDD0..U+FDEF` are permanently reserved as noncharacters, so they cannot occur in the
  * text being folded — which is exactly what a placeholder needs and what a Private Use
- * Area codepoint could not promise. Sixteen slots each, against two and five members.
+ * Area codepoint could not promise. Each shield gets its own sixteen-slot block, because
+ * the two are nested: the case shield is still in force while the mark shield is applied,
+ * so sharing a block would hand the outer restore the inner's character. That is not
+ * hypothetical; it is what the first version did, and `Ǽ Ϳ` came back as `ǽ ǽ`.
+ *
+ * The membership is fixed at module load, so a character always gets the same placeholder
+ * and there is no allocation to run out of — the sets are two and five members against
+ * sixteen slots, and the assertion below is what keeps that true if one grows.
  */
-const CASE_SLOT = { base: 0xfdd0, re: /[\ufdd0-\ufddf]/gu } as const;
-const MARK_SLOT = { base: 0xfde0, re: /[\ufde0-\ufdef]/gu } as const;
-
-/** Hide the matched characters behind noncharacters from `slot`, and give back the undo. */
-function shield(
-  text: string,
-  pattern: RegExp,
-  slot: { base: number; re: RegExp },
-): [string, (s: string) => string] {
-  const seen: string[] = [];
-  const hidden = text.replace(pattern, (c) => {
-    let i = seen.indexOf(c);
-    if (i === -1) i = seen.push(c) - 1;
-    // More distinct members than slots would silently alias two characters onto one. The
-    // sets are fixed and small, so this cannot happen — and it fails loudly if that changes.
-    if (i >= 16) throw new Error(`normalizeForSearch: shield block exhausted at ${c}`);
-    return String.fromCharCode(slot.base + i);
-  });
-  if (seen.length === 0) return [text, (s) => s];
-  return [hidden, (s) => s.replace(slot.re, (m) => seen[m.charCodeAt(0) - slot.base] ?? m)];
+function shield(chars: string, base: number): { hide: (s: string) => string; show: (s: string) => string } {
+  if (chars.length > 16) throw new Error(`shield: ${chars.length} characters do not fit one noncharacter block`);
+  const slots = new Map([...chars].map((c, i) => [c, String.fromCharCode(base + i)]));
+  const back = new Map([...slots].map(([c, slot]) => [slot, c]));
+  // Both sets hold letters and marks only, so they need no escaping inside a class.
+  const hideRe = new RegExp(`[${chars}]`, 'gu');
+  const showRe = new RegExp(`[${[...back.keys()].join('')}]`, 'gu');
+  return {
+    hide: (s) => s.replace(hideRe, (c) => slots.get(c)!),
+    show: (s) => s.replace(showRe, (c) => back.get(c)!),
+  };
 }
+
+const CASE_SHIELD = shield(NO_CASE_FOLD, 0xfdd0);
+const MARK_SHIELD = shield(NO_MARK_STRIP, 0xfde0);
 
 /**
  * Fold, split on non-alphanumerics, drop stopwords and 1-char tokens.
