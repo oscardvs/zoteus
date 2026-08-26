@@ -245,10 +245,17 @@ about 5.4 GB of heap to parse and OOMs stock Node. Measured on the same 7540-ite
 
 The SQLite backend stores passages in an **FTS5** table (`unicode61 remove_diacritics 2`,
 ranked with `bm25()`) and vectors as per-passage `BLOB`s, so a keyword search reads only
-the rows it ranks and never materializes the library. Two consequences worth knowing:
-searches are **diacritics-insensitive** (`Bronte` finds `Brontë`, which the JSON
-tokenizer cannot do), and a semantic search still scans the vectors, one row at a time,
-so it is the semantic path that grows with the library.
+the rows it ranks and never materializes the library. One consequence worth knowing: a
+semantic search still scans the vectors, one row at a time, so it is the semantic path
+that grows with the library.
+
+**Diacritics.** Searches are diacritics-insensitive in both directions and on both
+backends: `Bronte` finds `Brontë` and `Brontë` finds `Bronte`. The document side of the
+FTS5 index is folded by SQLite (`remove_diacritics 2`); the query side is folded in JS by
+`tokenize.ts`, which is also what the JSON backend tokenizes with, so the two agree by
+construction. The JS fold deliberately reproduces `unicode61` and no more — `ø œ æ ł đ ð
+þ ß` are letters to unicode61 rather than accented forms, so they are letters here too,
+and `søren` does not answer to `soren`.
 
 **Where the files are.** `<ZOTEUS_DATA_DIR>/search-index.sqlite` beside the older
 `search-index.json` (and `search-index-<userId>.*` per tenant in multi-tenant mode). SQLite

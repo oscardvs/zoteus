@@ -1,7 +1,7 @@
 import { BM25Index } from './bm25.js';
 import { VectorStore } from './vector-store.js';
 import { chunkText } from './chunker.js';
-import { tokenize } from './tokenize.js';
+import { normalizeForSearch, tokenize } from './tokenize.js';
 import { batchPause, embedderIdentity } from './embeddings.js';
 import { DEFAULT_EMBED_BATCH_SIZE } from './limits.js';
 import { Semaphore } from '../../lib/semaphore.js';
@@ -97,7 +97,13 @@ function rrf(lists: Array<Array<{ id: string }>>, k = 60): Array<{ id: string; s
 export function makeSnippet(text: string, query: string, max = 240): string {
   const clean = text.replace(/\s+/g, ' ').trim();
   if (clean.length <= max) return clean;
-  const lower = clean.toLowerCase();
+  // Folded, not merely lowercased, because the terms being looked for are folded: an
+  // accented query would otherwise never find its own passage and every snippet would
+  // start at character 0. The fold is length-preserving on precomposed text, so the
+  // offset carries over; on text stored decomposed it can drift by the number of marks
+  // before the hit, which is immaterial to a window this function then snaps to word
+  // boundaries and pads by a third of its width.
+  const lower = normalizeForSearch(clean);
   let pos = -1;
   for (const t of tokenize(query)) {
     const i = lower.indexOf(t);

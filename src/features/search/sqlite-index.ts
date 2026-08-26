@@ -140,7 +140,8 @@ export class SqliteSearchIndex extends SearchIndexBase {
       CREATE INDEX IF NOT EXISTS passages_source ON passages(source);
       -- External content: the passage text is stored once, in the passages table, and the
       -- index points back at it by rowid. remove_diacritics 2 folds accents, so "Bronte"
-      -- finds "Brontë" (the JSON backend's [a-z0-9]+ split drops accented letters instead).
+      -- finds "Brontë". The query side folds to match, in tokenize.ts, which is where the
+      -- JSON backend folds too: one normalizer in front of the tokenizer both share.
       CREATE VIRTUAL TABLE IF NOT EXISTS passages_fts USING fts5(
         text,
         content='passages',
@@ -486,8 +487,9 @@ export class SqliteSearchIndex extends SearchIndexBase {
 
 /**
  * One query term, quoted as an FTS5 string so nothing in it is read as syntax. Tokens come
- * from tokenize.ts and are already [a-z0-9]+, so this only has to survive a future
- * tokenizer: an embedded double quote is escaped by doubling it.
+ * from tokenize.ts, whose class is \p{L}\p{N} — no quote can reach here today, and the
+ * quoting is what keeps that true of a future tokenizer: an embedded double quote is
+ * escaped by doubling it.
  */
 function ftsTerm(term: string): string {
   return `"${term.replace(/"/g, '""')}"`;

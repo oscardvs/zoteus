@@ -285,7 +285,7 @@ describe('the SQLite backend answers the same queries as the JSON one', () => {
     await sqlite.close();
   });
 
-  sqliteIt('matches across diacritics, which the JSON backend cannot', async () => {
+  sqliteIt('matches across diacritics, in both directions and on both backends', async () => {
     const accented = [
       { key: 'X', data: { itemType: 'book', title: 'Étude sur les Brontë', abstractNote: 'Yorkshire naïveté' } },
     ];
@@ -294,10 +294,16 @@ describe('the SQLite backend answers the same queries as the JSON one', () => {
     const memory = new MemorySearchIndex({ embedder: null, logger: silentLogger });
     await memory.build(accented);
 
-    expect((await sqlite.query('Bronte', { mode: 'keyword' }))[0]?.itemKey).toBe('X');
-    expect((await sqlite.query('etude naivete', { mode: 'keyword' }))[0]?.itemKey).toBe('X');
-    // The JSON tokenizer splits on non-ASCII instead of folding it, so it finds nothing.
-    expect(await memory.query('Bronte', { mode: 'keyword' })).toEqual([]);
+    for (const index of [sqlite, memory]) {
+      // Unaccented query, accented document: what remove_diacritics 2 buys on the FTS5
+      // side, and what tokenize.ts's fold now buys on the JSON side.
+      expect((await index.query('Bronte', { mode: 'keyword' }))[0]?.itemKey).toBe('X');
+      expect((await index.query('etude naivete', { mode: 'keyword' }))[0]?.itemKey).toBe('X');
+      // And the other direction, which is the one that used to fail: an accented query
+      // reached MATCH as fragments of itself. See accent-folding.test.ts.
+      expect((await index.query('Brontë', { mode: 'keyword' }))[0]?.itemKey).toBe('X');
+      expect((await index.query('Étude naïveté', { mode: 'keyword' }))[0]?.itemKey).toBe('X');
+    }
     await sqlite.close();
   });
 });
