@@ -151,6 +151,11 @@ export abstract class SearchIndexBase implements SearchIndex {
   /** What opening the store had to do or refused to do (JSON migration; see #10). */
   protected storeNotice: string | undefined = undefined;
 
+  /** No fault: an index that could not be opened at all is a different class (see backend.ts). */
+  get storeFault(): Error | undefined {
+    return undefined;
+  }
+
   // Asynchronous build lifecycle (see buildIncremental / requestStop / buildStatus).
   private buildState: BuildState = 'idle';
   private operation: 'build' | 'update' = 'build';

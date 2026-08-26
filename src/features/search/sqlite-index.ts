@@ -104,19 +104,29 @@ export class SqliteSearchIndex extends SearchIndexBase {
     // Checked before the handle is created, because creating it creates the file.
     const existed = this.file !== ':memory:' && existsSync(this.file);
     this.db = new DatabaseSync(this.file);
-    // WAL rather than the rollback journal: a build commits every few hundred items, and
-    // WAL makes those commits cheap while still leaving a complete database behind a
-    // crash (an interrupted build rolls back to its last commit, never a torn file).
-    this.db.exec('PRAGMA journal_mode = WAL');
-    // NORMAL fsyncs at checkpoints instead of on every commit. A power cut can then cost
-    // the last commits of a running build, which the next build replaces anyway, but it
-    // can never cost the database itself.
-    this.db.exec('PRAGMA synchronous = NORMAL');
-    this.createSchema();
-    this.prepareStatements();
-    if (!existed && this.migrateFrom) await this.importJson(this.migrateFrom);
-    this.refreshCounts();
-    this.loadMeta();
+    try {
+      // WAL rather than the rollback journal: a build commits every few hundred items, and
+      // WAL makes those commits cheap while still leaving a complete database behind a
+      // crash (an interrupted build rolls back to its last commit, never a torn file).
+      this.db.exec('PRAGMA journal_mode = WAL');
+      // NORMAL fsyncs at checkpoints instead of on every commit. A power cut can then cost
+      // the last commits of a running build, which the next build replaces anyway, but it
+      // can never cost the database itself.
+      this.db.exec('PRAGMA synchronous = NORMAL');
+      this.createSchema();
+      this.prepareStatements();
+      if (!existed && this.migrateFrom) await this.importJson(this.migrateFrom);
+      this.refreshCounts();
+      this.loadMeta();
+    } catch (e) {
+      if (!isCorruptionError(e)) throw e;
+      // The handle exists from the line above, so this object owns it and must release it
+      // before handing the failure on. Not housekeeping: the message names three files for
+      // the user to delete, and on Windows an open handle refuses the delete — a server
+      // holding them would block the recovery it is prescribing.
+      await this.close().catch(() => {});
+      throw new SearchIndexCorruptError(this.file, e);
+    }
   }
 
   private get handle(): Database {
@@ -427,7 +437,7 @@ export class SqliteSearchIndex extends SearchIndexBase {
       // A file that has gone bad under us is not a rejected query, and must not be
       // swallowed into an empty result set: an index that answers "no matches" forever
       // reads as an empty library rather than as a fault.
-      if (isCorruptionError(e)) throw new SearchIndexCorruptError(this.file, e instanceof Error ? e.message : String(e));
+      if (isCorruptionError(e)) throw new SearchIndexCorruptError(this.file, e);
       // A term the FTS5 parser rejects must not take the whole search down with it.
       this.opts.logger?.debug(`FTS5 query rejected (${match}): ${e instanceof Error ? e.message : String(e)}`);
       return [];

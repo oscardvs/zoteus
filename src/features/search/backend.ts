@@ -260,6 +260,14 @@ export interface QueryOptions {
 export interface SearchIndex {
   /** Which store backs this index. */
   readonly storage: StorageBackend;
+  /**
+   * Set when the store itself could not be opened, and every operation on this index will
+   * therefore refuse. Callers that would otherwise explain an empty index — the 0-vector
+   * refusal in zotero_semantic_search, say — must defer to it, or they explain the wrong
+   * thing: "this index holds no vectors, rebuild it" is not what is wrong when the file
+   * cannot be read at all.
+   */
+  readonly storeFault: Error | undefined;
   /** What ZOTEUS_EMBEDDINGS asked for. */
   readonly embedderConfigured: string;
   /** True only while vectors are genuinely being produced. */

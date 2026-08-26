@@ -79,7 +79,10 @@ const semanticSearch: ToolDefinition = {
     // Semantic mode ranks by vectors alone. With none in the index every query returns an
     // empty list, which reads exactly like "your library has nothing on this": the failure
     // mode reported in #7. Refuse instead, and name the cause.
-    if (args.mode === 'semantic' && !ctx.search.hasVectors) {
+    // A store that could not be opened explains itself; this branch would otherwise tell
+    // the caller their index holds no vectors and to rebuild it, which is true and beside
+    // the point. Falling through lets query() refuse with the file and the command.
+    if (args.mode === 'semantic' && !ctx.search.hasVectors && !ctx.search.storeFault) {
       const why =
         // A model switch is the one cause that names its own remedy, so it wins over the
         // generic "no vectors yet" line.

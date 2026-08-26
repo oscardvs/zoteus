@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { CorruptSearchIndex, SearchIndexCorruptError, isCorruptionError } from './corruption.js';
+import { CorruptSearchIndex, SearchIndexCorruptError } from './corruption.js';
 import { MemorySearchIndex } from './index-manager.js';
 import { loadIndex } from './persistence.js';
 import type { SearchIndex, SearchIndexOptions } from './backend.js';
@@ -51,10 +51,9 @@ export async function createSearchIndex(opts: CreateSearchIndexOptions): Promise
   if (backend !== 'memory') {
     if (nodeSqliteAvailable()) {
       const { SqliteSearchIndex } = await import('./sqlite-index.js');
-      const path = jsonPath ? sqliteIndexPath(jsonPath) : ':memory:';
       const index = new SqliteSearchIndex({
         ...indexOpts,
-        path,
+        path: jsonPath ? sqliteIndexPath(jsonPath) : ':memory:',
         ...(jsonPath ? { migrateFrom: jsonPath } : {}),
       });
       try {
@@ -63,12 +62,12 @@ export async function createSearchIndex(opts: CreateSearchIndexOptions): Promise
         // An unreadable index must not take the server with it. Everything that does not
         // read the index — item lookups, bibliographies, attachments, citations — is
         // unaffected by a bad cache file and keeps working; search alone refuses, and says
-        // why. Anything that is not corruption still throws: a permission error or a full
-        // disk is not a reason to tell someone their index is beyond saving.
-        if (!isCorruptionError(e)) throw e;
-        const failure = new SearchIndexCorruptError(path, e instanceof Error ? e.message : String(e));
-        opts.logger?.error(failure.message);
-        return new CorruptSearchIndex(failure, indexOpts);
+        // why. Anything else still throws: a permission error or a full disk is not a
+        // reason to tell someone their index is beyond saving, and the store is the only
+        // thing that knows which is which.
+        if (!(e instanceof SearchIndexCorruptError)) throw e;
+        opts.logger?.error(e.message);
+        return new CorruptSearchIndex(e, indexOpts);
       }
       return index;
     }

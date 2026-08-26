@@ -1,12 +1,12 @@
+import { SearchIndexBase } from './index-manager.js';
 import type {
-  BuildOptions,
+  IndexCounts,
   IndexBuildStatus,
+  RankedId,
   SearchHit,
-  SearchIndex,
   SearchIndexOptions,
   SearchIndexStatus,
   StorageBackend,
-  VersionBackend,
 } from './backend.js';
 
 /**
@@ -16,14 +16,21 @@ import type {
  * disk image is malformed" naming neither the file nor anything to do about it.
  */
 export class SearchIndexCorruptError extends Error {
+  readonly detail: string;
+
   constructor(
     readonly dbPath: string,
-    readonly detail: string,
+    cause: unknown,
   ) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
     super(corruptionMessage(dbPath, detail));
+    this.detail = detail;
     this.name = 'SearchIndexCorruptError';
   }
 }
+
+/** One sentence for the status fields that have room only to say the index is unusable. */
+const UNREADABLE = 'the search index cannot be read';
 
 /**
  * SQLite's vocabulary for "this file is not a usable database".
@@ -55,33 +62,21 @@ export function isCorruptionError(e: unknown): boolean {
 }
 
 /**
- * Name the file, the sidecars and the command, because the caller can act on none of it
- * otherwise — least of all an agent, which is what is usually holding this connection.
+ * The message the refusal carries, which is the whole of what a caller has to go on.
  *
- * The index is derived data: deleting it costs only the time to rebuild. That is also the
- * reason not to rebuild it here without being asked. A rebuild re-crawls the whole library
- * and takes minutes to tens of minutes with full text on, and this error surfaces in the
- * middle of somebody's query — not a moment at which to start a job of that length on
- * their behalf. See the pull request for the alternatives.
- *
- * Deleting the file also clears the version stamp, which lives in the `meta` table inside
- * the same database. A recovery that dropped the passage tables and left `meta` standing
- * would leave an empty index claiming to be current, and `action:"update"` would then diff
- * against a stamp for passages that no longer exist — an empty library that reports itself
- * as up to date, which is worse than the error it replaced.
+ * It says why there is no automatic rebuild; what it does not say, and the reason deleting
+ * the file is the recovery rather than emptying it, is the version stamp. That lives in the
+ * `meta` table inside this same database. A repair that dropped the passage tables and left
+ * `meta` standing would leave an empty index carrying a current stamp, and `action:"update"`
+ * would then diff against passages that no longer exist — an empty library reporting itself
+ * as up to date, which is worse than the error it replaced. Removing the file removes the
+ * stamp with it, by construction.
  */
-export function corruptionMessage(dbPath: string, detail: string): string {
-  return (
-    `The search index at ${dbPath} cannot be read — SQLite reports: ${detail}. ` +
-    'Every other tool still works: only search is affected, because the index is a derived ' +
-    'cache and nothing else reads it. It is not rebuilt automatically, because rebuilding ' +
-    're-reads the whole Zotero library and takes minutes to tens of minutes. To recover, ' +
-    'delete the file and its write-ahead sidecars, then restart:\n' +
-    `  rm ${JSON.stringify(dbPath)} ${JSON.stringify(`${dbPath}-wal`)} ${JSON.stringify(`${dbPath}-shm`)}\n` +
-    'If a legacy search-index.json is still beside it, the next start imports that and the ' +
-    'library is searchable again immediately. Otherwise call zotero_index with ' +
-    'action:"build" (add fulltext:true if you index attachment text).'
-  );
+function corruptionMessage(dbPath: string, detail: string): string {
+  const files = [dbPath, `${dbPath}-wal`, `${dbPath}-shm`].map((p) => JSON.stringify(p)).join(' ');
+  return `The search index at ${dbPath} cannot be read — SQLite reports: ${detail}. Every other tool still works: only search is affected, because the index is a derived cache and nothing else reads it. It is not rebuilt automatically, because rebuilding re-reads the whole Zotero library and takes minutes to tens of minutes, which is not a job to start inside somebody's query. To recover, delete the file and its write-ahead sidecars, then restart:
+  rm ${files}
+If a legacy search-index.json is still beside it, the next start imports that and the library is searchable again immediately. Otherwise call zotero_index with action:"build" (add fulltext:true if you index attachment text).`;
 }
 
 /**
@@ -93,107 +88,69 @@ export function corruptionMessage(dbPath: string, detail: string): string {
  * index refuses with the message above, and the rest of the server is untouched: item
  * reads, bibliographies and attachment full text go to Zotero and never through here, so
  * one bad cache file no longer takes the whole MCP server down with it.
+ *
+ * It extends `SearchIndexBase` rather than implementing `SearchIndex` directly, so that
+ * everything a caller reads but this class has no opinion about — the embedder identity and
+ * its degradation reasons, the counts, the build-status shape — keeps coming from the same
+ * place it comes from on a healthy index. A hand-written copy drifts the first time a field
+ * is added to the interface, and drifts silently, because the missing field is optional.
  */
-export class CorruptSearchIndex implements SearchIndex {
+export class CorruptSearchIndex extends SearchIndexBase {
   readonly storage: StorageBackend = 'sqlite';
-  readonly embedderActive = false;
-  readonly embedderId = undefined;
-  readonly vectorEmbedderId = undefined;
+  /** No store to delete from, and never a delta: see `updateBlocker`. */
   readonly supportsDelete = false;
-  readonly embedderName = 'none (search index unreadable)';
-  readonly hasEmbedder = false;
-  readonly hasVectors = false;
-  readonly isBuilding = false;
 
-  constructor(
-    readonly failure: SearchIndexCorruptError,
-    private readonly opts: SearchIndexOptions,
-  ) {}
-
-  /** Read the same way every other index reads it, so a status still says what was asked for. */
-  get embedderConfigured(): string {
-    return this.opts.configured ?? this.opts.embedder?.name ?? 'off';
+  constructor(readonly failure: SearchIndexCorruptError, opts: SearchIndexOptions) {
+    super(opts);
+    // The channel the store already uses to explain what opening it did or refused to do,
+    // so this reaches `status().storageNotice` and `statusSummary` the same way a refused
+    // JSON migration does.
+    this.storeNotice = failure.message;
   }
 
-  /**
-   * Short on purpose. `statusSummary` prints this beside `storageNotice`, which already
-   * carries the file, the sidecars and the command; repeating all of that here printed the
-   * same paragraph three times in one response.
-   */
-  get embedderReason(): string {
-    return 'the search index could not be opened';
+  /** The refusal every caller can defer to instead of explaining an empty index. */
+  override get storeFault(): Error {
+    return this.failure;
   }
 
   /**
    * Reported non-empty so that nothing mistakes this for a library awaiting its first
    * build and helpfully starts one — `zotero_semantic_search`'s `auto_build` would.
    */
-  get isEmpty(): boolean {
+  override get isEmpty(): boolean {
     return false;
   }
 
-  noteFulltextUnavailable(): void {
-    /* Nothing to report about full text: the index cannot be read at all. */
+  /**
+   * Short, because `storageNotice` already carries the file, the sidecars and the command,
+   * and the two are printed in the same sentence.
+   */
+  override get embedderReason(): string {
+    return UNREADABLE;
   }
 
-  status(): SearchIndexStatus {
-    return {
-      documents: 0,
-      vectors: 0,
-      items: 0,
-      storage: 'sqlite',
-      storageNotice: this.failure.message,
-      embedder: this.embedderName,
-      embedderConfigured: this.embedderConfigured,
-      embedderActive: false,
-      fulltextEnabled: false,
-      fulltextItems: 0,
-      fulltextPassages: 0,
-      builtFromVersion: 0,
-      libraryVersion: 0,
-    };
-  }
-
-  buildStatus(): IndexBuildStatus {
-    return {
-      ...this.status(),
-      state: 'error',
-      operation: 'build',
-      itemsFetched: 0,
-      itemsRemoved: 0,
-      itemsTotal: 0,
-      itemsAvailable: 0,
-      passages: 0,
-      lastError: this.embedderReason,
-    };
-  }
-
-  requestStop(): boolean {
-    return false;
-  }
-
-  async embed(): Promise<number[][]> {
-    return [];
-  }
-
-  async build(_libraryItems: any[], _opts?: BuildOptions): Promise<SearchIndexStatus> {
-    throw this.failure;
-  }
-
-  async buildIncremental(): Promise<IndexBuildStatus> {
-    throw this.failure;
+  override buildStatus(): IndexBuildStatus {
+    return { ...super.buildStatus(), state: 'error', lastError: UNREADABLE };
   }
 
   /** Never attempt a delta against an index that could not be read. */
-  updateBlocker(_backend: VersionBackend): string {
-    return 'the search index cannot be read';
+  override updateBlocker(): string {
+    return UNREADABLE;
   }
 
-  async updateIncremental(): Promise<IndexBuildStatus> {
+  override async build(): Promise<SearchIndexStatus> {
     throw this.failure;
   }
 
-  async query(_q: string, _opts?: unknown): Promise<SearchHit[]> {
+  override async buildIncremental(): Promise<IndexBuildStatus> {
+    throw this.failure;
+  }
+
+  override async updateIncremental(): Promise<IndexBuildStatus> {
+    throw this.failure;
+  }
+
+  override async query(): Promise<SearchHit[]> {
     throw this.failure;
   }
 
@@ -203,6 +160,41 @@ export class CorruptSearchIndex implements SearchIndex {
   }
 
   async close(): Promise<void> {
-    /* No handle was ever opened. */
+    /* No handle was ever opened by this object: the store closed its own before throwing. */
+  }
+
+  // The storage primitives the base would call. Nothing reaches them — every public entry
+  // point above refuses first — so they exist to satisfy the contract, not to be run.
+  protected counts(): IndexCounts {
+    return { documents: 0, vectors: 0, items: 0, fulltextItems: 0, fulltextPassages: 0 };
+  }
+  protected clearStore(): void {}
+  protected clearVectors(): void {}
+  protected putItem(): void {
+    throw this.failure;
+  }
+  protected putPassage(): void {
+    throw this.failure;
+  }
+  protected deleteItem(): void {
+    throw this.failure;
+  }
+  protected putVector(): void {
+    throw this.failure;
+  }
+  protected listItemKeys(): string[] {
+    return [];
+  }
+  protected vectorDimension(): number | undefined {
+    return undefined;
+  }
+  protected keywordSearch(): RankedId[] {
+    throw this.failure;
+  }
+  protected vectorSearch(): RankedId[] {
+    throw this.failure;
+  }
+  protected passage(): undefined {
+    return undefined;
   }
 }
