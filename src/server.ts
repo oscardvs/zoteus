@@ -16,7 +16,7 @@ import { TranslationServerClient } from './features/citation/translation-server.
 import { createSearchIndex } from './features/search/factory.js';
 import { createEmbeddingProvider } from './features/search/embeddings.js';
 import { ScholarGraph } from './features/scholar/graph.js';
-import { registerAllTools, type ToolContext, type ToolDefinition } from './registry/registry.js';
+import { registerAllTools, type ToolContext, type ToolContextSource, type ToolDefinition } from './registry/registry.js';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
 import { tools } from './tools/index.js';
@@ -145,9 +145,9 @@ export async function buildContext(config: ZoteusConfig, overrides: ContextOverr
   return ctx;
 }
 
-/** Create a fresh McpServer bound to a (possibly per-user) ToolContext. */
-export function createServer(ctx: ToolContext): McpServer {
-  const server = new McpServer(
+/** The McpServer shell: identity, capabilities and instructions, with nothing registered yet. */
+function newMcpServer(): McpServer {
+  return new McpServer(
     { name: 'zoteus', version: VERSION },
     {
       capabilities: {
@@ -159,10 +159,53 @@ export function createServer(ctx: ToolContext): McpServer {
         'Zoteus exposes your Zotero library. Call zotero_whoami first to resolve identity. Prefer zotero_search_items for discovery and zotero_get_item for full records. Use zotero_schema before constructing items. Library search tools: zotero_search_items (keyword/field/tag), zotero_semantic_search (by meaning; run zotero_index action:"build" first), zotero_get_item (full record). IMPORTANT: zotero_scholar searches the EXTERNAL scholarly web (OpenAlex/Crossref) — it does NOT search or read your library; never use it to find items in the library. Call tools sequentially rather than in large parallel batches — Zotero rate-limits, and parallel or very long calls can time out.',
     },
   );
-  registerAllTools(server, selectActiveTools(ctx.config), ctx);
-  registerResources(server, ctx);
+}
+
+/** Wire a server's tools, resources and prompts to a context (built, or still building). */
+function registerAll(server: McpServer, config: ZoteusConfig, source: ToolContextSource): McpServer {
+  registerAllTools(server, selectActiveTools(config), source);
+  registerResources(server, source);
   registerPrompts(server);
   return server;
+}
+
+/** Create a fresh McpServer bound to a (possibly per-user) ToolContext. */
+export function createServer(ctx: ToolContext): McpServer {
+  return registerAll(newMcpServer(), ctx.config, ctx);
+}
+
+export interface DeferredServer {
+  server: McpServer;
+  /** The context, built on first call. A failed build is retried by the next call. */
+  context: () => Promise<ToolContext>;
+}
+
+/**
+ * A server that can be connected before its context exists.
+ *
+ * buildContext probes the desktop app (retrying for ~2s while Zotero starts), the cloud
+ * key and the search index, so building it first leaves `initialize` unanswered for
+ * seconds. Hosts do not wait that long — Claude Desktop's shared Cowork/Code pool gives
+ * the handshake well under a second and then tears the server down (#18) — so the
+ * handshake, which needs only the config-derived tool list, goes first and the build runs
+ * behind it. Tool calls await the build, so none of them ever sees a half-built context.
+ */
+export function createDeferredServer(
+  config: ZoteusConfig,
+  build: () => Promise<ToolContext> = () => buildContext(config),
+): DeferredServer {
+  let pending: Promise<ToolContext> | undefined;
+  const context = (): Promise<ToolContext> => {
+    // A rejection is not cached: the usual causes are transient (a second Zoteus process
+    // still holding the search index, a network blip on the key probe), and a permanent
+    // one simply fails the same way again on the next call.
+    pending ??= build().catch((err) => {
+      pending = undefined;
+      throw err;
+    });
+    return pending;
+  };
+  return { server: registerAll(newMcpServer(), config, context), context };
 }
 
 export interface BuiltServer {
@@ -177,12 +220,18 @@ export interface BuiltServer {
   createServer: () => McpServer;
 }
 
+/** The startup line describing a trimmed tool set, or undefined when every tool is exposed. */
+export function toolSelectionNotice(config: ZoteusConfig): string | undefined {
+  return config.readOnly
+    ? `Read-only mode: exposing ${selectActiveTools(config).length}/${tools.length} tools.`
+    : undefined;
+}
+
 /** Operator/shared server (stdio + the no-auth HTTP path). Preserves the M10 signature. */
 export async function buildServer(config: ZoteusConfig): Promise<BuiltServer> {
   const ctx = await buildContext(config);
-  if (config.readOnly) {
-    ctx.logger.info(`Read-only mode: exposing ${selectActiveTools(config).length}/${tools.length} tools.`);
-  }
+  const notice = toolSelectionNotice(config);
+  if (notice) ctx.logger.info(notice);
   return { server: createServer(ctx), ctx, createServer: () => createServer(ctx) };
 }
 

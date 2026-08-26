@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { loadConfig } from './config.js';
-import { buildServer, createServer, ContextCache } from './server.js';
+import { buildServer, createServer, createDeferredServer, toolSelectionNotice, ContextCache } from './server.js';
 import { startStdio } from './transports/stdio.js';
 import { startHttp } from './transports/http.js';
 import { buildOAuth } from './auth/router.js';
@@ -23,10 +23,10 @@ const VERSION: string = createRequire(import.meta.url)('../package.json').versio
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
   const logger = createLogger(config.logLevel, config.logFormat);
-  const { server, ctx } = await buildServer(config);
 
   const httpFlag = flag('http');
   if (httpFlag !== undefined) {
+    const { ctx } = await buildServer(config);
     const port = Number(flag('port') ?? process.env.PORT ?? 3939);
     const metrics = config.metricsEnabled ? createMetrics() : undefined;
     const oauth = await buildOAuth(config, {
@@ -71,8 +71,22 @@ async function main(): Promise<void> {
       },
     });
   } else {
+    // Connect first, build second. The context probe takes a couple of seconds (it retries
+    // the desktop app while Zotero starts, checks the cloud key, opens the search index),
+    // and a host that expects a prompt `initialize` will have given up by then — Claude
+    // Desktop's shared Cowork/Code pool allows well under a second before it tears the
+    // server down (#18). Tool calls await the build, so none of them sees a half-built
+    // context; only the handshake stops waiting on it.
+    const { server, context } = createDeferredServer(config);
     await startStdio(server);
     logger.info('Zoteus MCP server started on stdio.');
+    const notice = toolSelectionNotice(config);
+    if (notice) logger.info(notice);
+    // Warmed now rather than on the first tool call. A failure is reported and left for
+    // that call to retry, instead of taking the process down with it.
+    void context().catch((err) => {
+      logger.error(`Startup failed (the next tool call retries): ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 }
 

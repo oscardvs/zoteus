@@ -1,6 +1,6 @@
 {
   "name": "@oscardvs/zoteus",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "The everything Zotero MCP server — complete Zotero Web API v3 + desktop local API for Claude and any MCP client.",
   "keywords": [
     "zotero",

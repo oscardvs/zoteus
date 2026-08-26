@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +20,75 @@ const silentLogger = { debug() {}, info() {}, warn() {}, error() {} };
  */
 const hasSqlite = nodeSqliteAvailable();
 const sqliteIt = hasSqlite ? it : it.skip;
+
+/**
+ * Two Zoteus processes legitimately share a data dir: a host that probes a server by
+ * spawning a second, disposable one alongside the real one (Claude Desktop does) has two
+ * connections on the same index. SQLite fails a contended lock instantly by default, which
+ * used to abort BOTH startups with "database is locked" (#18).
+ */
+describe('SQLite index under a second connection', () => {
+  sqliteIt('opens against a database another connection already holds', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zoteus-lock-'));
+    const jsonPath = join(dir, 'search-index.json');
+    const open = () =>
+      createSearchIndex({ backend: 'sqlite', jsonPath, embedder: new FakeEmbeddingProvider(), logger: silentLogger });
+
+    const first = await open();
+    const second = await open();
+    expect(first.storage).toBe('sqlite');
+    expect(second.storage).toBe('sqlite');
+
+    // And the second connection is usable, not merely open.
+    const status = await first.build(items, { version: 3 });
+    expect(status.items).toBe(items.length);
+    // save() is what commits the build's transaction, and WAL is what lets the other
+    // connection read it without either of them blocking.
+    await first.save();
+    expect(await second.query('neural networks', { limit: 1 })).not.toHaveLength(0);
+    await first.close();
+    await second.close();
+  });
+
+  sqliteIt('waits for a write lock another process holds instead of failing on it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zoteus-busy-'));
+    const jsonPath = join(dir, 'search-index.json');
+    // A second process that takes the database's write lock and holds it briefly, the way
+    // a sibling server mid-startup does. node:sqlite is synchronous, so the lock has to be
+    // held from another process: nothing in this one could release it while open() blocks.
+    const holder = spawn(
+      process.execPath,
+      [
+        '-e',
+        `const { DatabaseSync } = require('node:sqlite');
+         const db = new DatabaseSync(process.argv[1]);
+         db.exec('PRAGMA journal_mode = WAL');
+         db.exec('CREATE TABLE IF NOT EXISTS holder(x)');
+         db.exec('BEGIN IMMEDIATE');
+         db.exec('INSERT INTO holder VALUES (1)');
+         process.stdout.write('locked\\n');
+         setTimeout(() => { db.exec('COMMIT'); db.close(); }, 300);`,
+        sqliteIndexPath(jsonPath),
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    await new Promise<void>((resolve, reject) => {
+      holder.stdout.once('data', () => resolve());
+      holder.once('error', reject);
+      holder.once('exit', () => reject(new Error('lock holder exited before taking the lock')));
+    });
+
+    const index = await createSearchIndex({
+      backend: 'sqlite',
+      jsonPath,
+      embedder: new FakeEmbeddingProvider(),
+      logger: silentLogger,
+    });
+    expect(index.storage).toBe('sqlite');
+    await index.close();
+    await new Promise((r) => holder.once('exit', r));
+  });
+});
 
 const items = [
   {

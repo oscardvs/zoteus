@@ -47,6 +47,17 @@ export interface ToolContext {
   toolCatalog?: Array<{ name: string; title: string; description: string; deferLoading?: boolean }>;
 }
 
+/**
+ * How a registered handler reaches its context: the built context itself, or a thunk that
+ * resolves it. The thunk form is what lets a transport connect — and answer `initialize` —
+ * before the (slow) context build has finished; see createDeferredServer.
+ */
+export type ToolContextSource = ToolContext | (() => Promise<ToolContext>);
+
+export function resolveContext(source: ToolContextSource): Promise<ToolContext> {
+  return typeof source === 'function' ? source() : Promise.resolve(source);
+}
+
 export interface ToolHandlerResult {
   content: Array<{ type: 'text'; text: string }>;
   structuredContent?: Record<string, unknown>;
@@ -116,7 +127,7 @@ export function requireCloudLibrary(
 export function registerAllTools(
   server: McpServer,
   defs: ToolDefinition[],
-  ctx: ToolContext,
+  source: ToolContextSource,
 ): void {
   for (const def of defs) {
     server.registerTool(
@@ -129,7 +140,11 @@ export function registerAllTools(
         annotations: { title: def.title, openWorldHint: true, ...def.annotations },
       },
       async (args: unknown) => {
+        // Resolved inside the handler, not at registration: with a deferred context this
+        // is where the call waits for the build (and where a failed build is retried).
+        let ctx: ToolContext | undefined;
         try {
+          ctx = await resolveContext(source);
           return await def.handler(args, ctx);
         } catch (err) {
           const message =
@@ -138,7 +153,7 @@ export function registerAllTools(
               : err instanceof Error
                 ? err.message
                 : String(err);
-          ctx.logger.error(`Tool ${def.name} failed:`, message);
+          ctx?.logger.error(`Tool ${def.name} failed:`, message);
           return { content: [{ type: 'text' as const, text: message }], isError: true };
         }
       },

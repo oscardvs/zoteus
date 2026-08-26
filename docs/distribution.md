@@ -116,6 +116,26 @@ The result is a ~35 MB self-contained `.mcpb` (full feature parity, incl. PDF pa
 extraction). Install it in Claude Desktop, confirm the tools load, and attach it to the
 GitHub Release for the tag (the `release` job in `deploy.yml` does this automatically).
 
+> **Uploading it by hand: checksum what actually landed.** Only needed when CI cannot do it
+> (an Actions outage, say). `gh release create` uploads the asset by creating the release as
+> a **draft** first, so a slow or interrupted upload leaves a draft release carrying a
+> **truncated** asset — and the API still reports it at the full size with
+> `state=uploaded`, so nothing about the release page looks wrong. Verify the bytes you can
+> actually download, never the size the API claims:
+>
+> ```bash
+> gh release upload vX.Y.Z zoteus.mcpb   # re-run with --clobber, or delete-asset first
+> gh release edit vX.Y.Z --draft=false
+> curl -sL --retry 3 -o /tmp/check.mcpb \
+>   "https://github.com/oscardvs/zoteus/releases/download/vX.Y.Z/zoteus.mcpb"
+> sha256sum /tmp/check.mcpb zoteus.mcpb   # the two lines must match
+> ```
+>
+> If they differ, `gh release delete-asset vX.Y.Z zoteus.mcpb --yes` and upload again. A
+> short download is not automatically the server's fault — pull a known-good asset from a
+> previous release as a control before concluding the new one is bad. This bit v1.7.1: the
+> first upload timed out at 30 MiB of 34 and published a bundle that could not be installed.
+
 > **Toolchain note:** we migrated from the deprecated `@anthropic-ai/dxt` (`.dxt`,
 > `dxt_version` 0.1 manifests) to `@anthropic-ai/mcpb` (`.mcpb`, `manifest_version` 0.3)
 > in 1.4.1. MCPB is required for official directory submission, and its 0.2+ manifest

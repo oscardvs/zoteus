@@ -6,6 +6,27 @@ All notable changes to Zoteus are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-08-26
+
+### Fixed
+- **The desktop extension no longer crashes on startup in recent Claude Desktop versions**
+  (#18, thanks @StianOby). The shared Cowork/Code server pool expects `initialize` to be
+  answered promptly and tears the server down when it is not, and zoteus was taking two
+  seconds or more to reply: it built its whole context first, which retries the desktop
+  local API while Zotero starts, checks the cloud key, and opens the search index. The
+  stdio transport now connects before that build rather than after it, so the handshake
+  and the tool list (both of which need only the configuration) are answered in
+  milliseconds while the context builds behind them. Tool calls still wait for it, so
+  none of them ever sees a half-built context.
+- **A second zoteus process no longer kills the first** (#18). SQLite fails a contended
+  lock instantly by default, so two servers sharing a data dir — which is what a host
+  does when it probes by spawning a disposable server alongside the real one — could both
+  abort at startup with `database is locked`. The index now waits for the lock, and
+  tolerates a journal-mode switch another connection is already holding.
+- A failed startup no longer takes the stdio server down with it. The failure is logged,
+  reported as the error on any tool call that needs the context, and retried by the next
+  one, instead of exiting the process and leaving the host to report a bare disconnect.
+
 ## [1.7.0] - 2026-08-25
 
 ### Added

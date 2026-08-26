@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "zoteus",
   "display_name": "Zoteus — Zotero MCP",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "The everything Zotero MCP server: search, safe writes, citations, semantic search, and a scholarly-context graph for your Zotero library.",
   "long_description": "Zoteus gives Claude complete, safe access to your Zotero library via the Web API v3 and the desktop local API — items, collections, tags, attachments, full-text, sync, groups, add-by-DOI/ISBN/PMID/arXiv, CSL bibliography formatting, hybrid semantic search, and an OpenAlex/Crossref scholarly graph.",
   "author": {

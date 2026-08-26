@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.oscardvs/zoteus",
   "description": "The everything Zotero MCP server — Web API v3 + local API, safe writes, citations, search.",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "repository": {
     "url": "https://github.com/oscardvs/zoteus",
     "source": "github"
@@ -11,7 +11,7 @@
     {
       "registryType": "npm",
       "identifier": "@oscardvs/zoteus",
-      "version": "1.7.0",
+      "version": "1.7.1",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {

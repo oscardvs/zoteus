@@ -26,6 +26,16 @@ export const MAX_MIGRATION_BYTES = 200 * 1024 * 1024;
 /** Bumped only when the schema below changes shape; an older file is rebuilt, not patched. */
 const SCHEMA_VERSION = 1;
 
+/**
+ * How long a statement waits on another connection's lock before giving up. SQLite's
+ * default is to fail instantly with "database is locked", which is wrong here: two Zoteus
+ * processes legitimately share a data dir whenever a host runs a second, disposable server
+ * alongside the real one (Claude Desktop probes that way), and instant failure took BOTH
+ * of them down at startup (#18). Ten seconds outlasts any open() and any single build
+ * commit, so the loser waits rather than dies.
+ */
+const BUSY_TIMEOUT_MS = 10_000;
+
 export interface SqliteSearchIndexOptions extends SearchIndexOptions {
   /** Database file (':memory:' is accepted, for tests). */
   path: string;
@@ -105,10 +115,21 @@ export class SqliteSearchIndex extends SearchIndexBase {
     const existed = this.file !== ':memory:' && existsSync(this.file);
     this.db = new DatabaseSync(this.file);
     try {
+      // Before anything that takes a lock, so every statement below inherits the wait.
+      this.db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
       // WAL rather than the rollback journal: a build commits every few hundred items, and
       // WAL makes those commits cheap while still leaving a complete database behind a
       // crash (an interrupted build rolls back to its last commit, never a torn file).
-      this.db.exec('PRAGMA journal_mode = WAL');
+      // Switching modes needs an exclusive lock that a second process can hold for as long
+      // as it is connected, past any busy timeout — but the mode is a property of the file,
+      // so that process has already set it and this one just inherits it. Failing to set a
+      // mode the database is in is not worth refusing to open over.
+      try {
+        this.db.exec('PRAGMA journal_mode = WAL');
+      } catch (err) {
+        if (isCorruptionError(err)) throw err;
+        this.opts.logger?.debug(`Could not set journal_mode=WAL on ${this.file}: ${String(err)}`);
+      }
       // NORMAL fsyncs at checkpoints instead of on every commit. A power cut can then cost
       // the last commits of a running build, which the next build replaces anyway, but it
       // can never cost the database itself.
