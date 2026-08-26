@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, openSync, writeSync, closeSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, openSync, writeSync, closeSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSearchIndex, nodeSqliteAvailable, sqliteIndexPath } from '../../src/features/search/factory.js';
@@ -9,6 +9,8 @@ import {
   isCorruptionError,
 } from '../../src/features/search/corruption.js';
 import { statusSummary } from '../../src/features/search/build.js';
+import { MemorySearchIndex } from '../../src/features/search/index-manager.js';
+import { saveIndex } from '../../src/features/search/persistence.js';
 
 /**
  * A damaged search index used to take the whole MCP server with it: `open()` threw
@@ -112,8 +114,40 @@ describe('opening an index that cannot be read', () => {
     const jsonPath = await corruptedIndex();
     const index = await createSearchIndex({ embedder: null, logger: silentLogger, backend: 'sqlite', jsonPath });
     const summary = statusSummary(index.buildStatus());
-    expect(summary.match(/cannot be read/g)).toHaveLength(1);
+    // The recovery paragraph belongs in exactly one field; it used to land in three.
+    expect(summary.match(/To recover, delete the file/g)).toHaveLength(1);
     await index.close();
+  });
+
+  sqliteIt('recovers by deleting the file, with no rebuild when the JSON artifact remains', async () => {
+    // The recovery the message describes, carried out. `createSearchIndex` migrates a
+    // legacy search-index.json on the first open of a data dir that has no database, so a
+    // user who still has one is searchable again on the next start rather than after a
+    // full library crawl. That is why the message says restart before it says build.
+    // A user who migrated from the JSON backend: the import leaves search-index.json in
+    // place, so the database can be dropped and re-imported. Someone who only ever ran
+    // SQLite has no such artifact and does need the rebuild.
+    const jsonPath = tmpJsonPath('recover');
+    const legacy = new MemorySearchIndex({ embedder: null, logger: silentLogger, path: jsonPath });
+    await legacy.build([{ key: 'A', data: { itemType: 'book', title: 'Deep learning', abstractNote: 'neural networks' } }]);
+    await saveIndex(legacy, jsonPath);
+    const dbPath = sqliteIndexPath(jsonPath);
+    const migrated = await createSearchIndex({ embedder: null, logger: silentLogger, backend: 'sqlite', jsonPath });
+    await migrated.save();
+    await migrated.close();
+    const fd = openSync(dbPath, 'r+');
+    writeSync(fd, Buffer.alloc(4096, 0x5a), 0, 4096, 8192);
+    closeSync(fd);
+
+    const index = await createSearchIndex({ embedder: null, logger: silentLogger, backend: 'sqlite', jsonPath });
+    expect(index).toBeInstanceOf(CorruptSearchIndex);
+    await index.close();
+
+    for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) rmSync(p, { force: true });
+    const healed = await createSearchIndex({ embedder: null, logger: silentLogger, backend: 'sqlite', jsonPath });
+    expect(healed).not.toBeInstanceOf(CorruptSearchIndex);
+    expect((await healed.query('neural', { mode: 'keyword' }))[0]?.itemKey).toBe('A');
+    await healed.close();
   });
 
   sqliteIt('refuses to report a successful save of an index it never opened', async () => {

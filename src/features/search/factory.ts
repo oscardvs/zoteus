@@ -68,7 +68,7 @@ export async function createSearchIndex(opts: CreateSearchIndexOptions): Promise
         if (!isCorruptionError(e)) throw e;
         const failure = new SearchIndexCorruptError(path, e instanceof Error ? e.message : String(e));
         opts.logger?.error(failure.message);
-        return new CorruptSearchIndex(failure, indexOpts.configured ?? indexOpts.embedder?.name ?? 'off');
+        return new CorruptSearchIndex(failure, indexOpts);
       }
       return index;
     }

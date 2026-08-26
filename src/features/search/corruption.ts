@@ -3,6 +3,7 @@ import type {
   IndexBuildStatus,
   SearchHit,
   SearchIndex,
+  SearchIndexOptions,
   SearchIndexStatus,
   StorageBackend,
   VersionBackend,
@@ -75,9 +76,11 @@ export function corruptionMessage(dbPath: string, detail: string): string {
     'Every other tool still works: only search is affected, because the index is a derived ' +
     'cache and nothing else reads it. It is not rebuilt automatically, because rebuilding ' +
     're-reads the whole Zotero library and takes minutes to tens of minutes. To recover, ' +
-    'delete the file and its write-ahead sidecars, then rebuild:\n' +
+    'delete the file and its write-ahead sidecars, then restart:\n' +
     `  rm ${JSON.stringify(dbPath)} ${JSON.stringify(`${dbPath}-wal`)} ${JSON.stringify(`${dbPath}-shm`)}\n` +
-    '  then call zotero_index with action:"build" (add fulltext:true if you index attachment text).'
+    'If a legacy search-index.json is still beside it, the next start imports that and the ' +
+    'library is searchable again immediately. Otherwise call zotero_index with ' +
+    'action:"build" (add fulltext:true if you index attachment text).'
   );
 }
 
@@ -93,7 +96,6 @@ export function corruptionMessage(dbPath: string, detail: string): string {
  */
 export class CorruptSearchIndex implements SearchIndex {
   readonly storage: StorageBackend = 'sqlite';
-  readonly embedderConfigured: string;
   readonly embedderActive = false;
   readonly embedderId = undefined;
   readonly vectorEmbedderId = undefined;
@@ -105,18 +107,21 @@ export class CorruptSearchIndex implements SearchIndex {
 
   constructor(
     readonly failure: SearchIndexCorruptError,
-    embedderConfigured = 'off',
-  ) {
-    this.embedderConfigured = embedderConfigured;
+    private readonly opts: SearchIndexOptions,
+  ) {}
+
+  /** Read the same way every other index reads it, so a status still says what was asked for. */
+  get embedderConfigured(): string {
+    return this.opts.configured ?? this.opts.embedder?.name ?? 'off';
   }
 
   /**
-   * Nothing is wrong with the embedder, so this stays empty: filling it would make
-   * `statusSummary` print the whole recovery message a second time under a heading about
-   * semantic ranking, which is not what failed.
+   * Short on purpose. `statusSummary` prints this beside `storageNotice`, which already
+   * carries the file, the sidecars and the command; repeating all of that here printed the
+   * same paragraph three times in one response.
    */
-  get embedderReason(): undefined {
-    return undefined;
+  get embedderReason(): string {
+    return 'the search index could not be opened';
   }
 
   /**
@@ -159,9 +164,7 @@ export class CorruptSearchIndex implements SearchIndex {
       itemsTotal: 0,
       itemsAvailable: 0,
       passages: 0,
-      // Short, because `statusSummary` prints this and `storageNotice` in the same
-      // sentence: the recovery instructions belong in one of them, not in both.
-      lastError: 'the search index could not be opened',
+      lastError: this.embedderReason,
     };
   }
 
