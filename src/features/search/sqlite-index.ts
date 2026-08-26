@@ -5,6 +5,7 @@ import { mkdir, readFile, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { SearchIndexBase } from './index-manager.js';
 import { tokenize } from './tokenize.js';
+import { SearchIndexCorruptError, isCorruptionError } from './corruption.js';
 import type { ChunkRecord, IndexCounts, IndexSnapshot, RankedId, SearchIndexOptions } from './backend.js';
 
 /**
@@ -423,6 +424,10 @@ export class SqliteSearchIndex extends SearchIndexBase {
       const rows = this.stmts.keyword.all(match, topK) as Array<{ id: string; rank: number }>;
       return rows.map((r) => ({ id: r.id, score: -r.rank }));
     } catch (e) {
+      // A file that has gone bad under us is not a rejected query, and must not be
+      // swallowed into an empty result set: an index that answers "no matches" forever
+      // reads as an empty library rather than as a fault.
+      if (isCorruptionError(e)) throw new SearchIndexCorruptError(this.file, e instanceof Error ? e.message : String(e));
       // A term the FTS5 parser rejects must not take the whole search down with it.
       this.opts.logger?.debug(`FTS5 query rejected (${match}): ${e instanceof Error ? e.message : String(e)}`);
       return [];

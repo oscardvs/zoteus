@@ -255,6 +255,16 @@ so it is the semantic path that grows with the library.
 also writes `-wal` and `-shm` sidecar files while the database is open; a clean shutdown
 folds them back in.
 
+**If the index is damaged.** A search index that SQLite cannot read no longer stops the
+server from starting: it is a derived cache, and no other tool reads it, so item lookups,
+bibliographies, attachments and citations carry on working. Search alone refuses, with a
+message naming the file, its sidecars and the command to remove them. It is not rebuilt for
+you — a rebuild re-reads the whole library and takes minutes to tens of minutes, which is
+not a job to start inside somebody's query. Delete the three files and run `zotero_index`
+with `action:"build"`. Deleting them is also what clears the version stamp, which lives in
+the same database: a recovery that dropped the passages and kept the stamp would leave an
+empty index reporting itself as up to date.
+
 **Migration is automatic and lossless.** The first time the SQLite backend opens a data dir
 that holds a `search-index.json` and no database, it imports the JSON index and leaves the
 file exactly where it was (a downgrade to an older Node still finds it). If the JSON file is
