@@ -10,7 +10,8 @@
     "url": "https://github.com/oscardvs"
   },
   "license": "MIT",
-  "homepage": "https://github.com/oscardvs/zoteus",
+  "homepage": "https://zoteus.com",
+  "documentation": "https://zoteus.com/docs",
   "repository": {
     "type": "git",
     "url": "https://github.com/oscardvs/zoteus"
