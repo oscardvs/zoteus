@@ -39,4 +39,6 @@ If you (or your organization) run Zoteus as a hosted server with OAuth enabled, 
 
 ## Contact
 
-Questions or concerns: open an issue at [github.com/oscardvs/zoteus/issues](https://github.com/oscardvs/zoteus/issues).
+Privacy and data-protection questions: <privacy@zoteus.com>. Anything else, including support for
+the hosted connector: <support@zoteus.com>. Bugs and feature requests are best filed as an issue at
+[github.com/oscardvs/zoteus/issues](https://github.com/oscardvs/zoteus/issues).

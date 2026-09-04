@@ -79,9 +79,15 @@ sleep 2 && curl -fsS http://127.0.0.1:3939/healthz && kill %1
 
 ## 4. MCP registry (`io.github.oscardvs/zoteus`)
 
-`server.json` advertises both the npm **package** and the hosted **remote**
-(`https://zoteus.duckdns.org/mcp`). Only publish the remote once that instance is live
-(see §8) — otherwise drop the `remotes` block until it is.
+`server.json` advertises the npm **package** only. It carries no `remotes` block: that was
+removed in `2a6b616` when the paid hosted tier was extracted to the private operator repo, so
+the registry entry describes the open-source package and nothing else.
+
+That means `https://mcp.zoteus.com/mcp` is **not** discoverable through the registry. Leaving it
+that way is a defensible open-core choice, but it is a choice, so make it on purpose rather than
+by accident. To list the hosted remote, add a `remotes` block pointing at
+`https://mcp.zoteus.com/mcp` and republish. Never publish `zoteus.duckdns.org`: it is a stale
+legacy record that still resolves to the box but has no certificate.
 
 ```bash
 mcp-publisher login github
