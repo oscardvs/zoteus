@@ -268,6 +268,9 @@ export abstract class SearchIndexBase implements SearchIndex {
    * resume redoes to a single persistence interval (#24).
    */
   protected checkpoint: BuildCheckpoint | undefined = undefined;
+  /** Durable operator hold. Unlike requestStop(), this survives restarts and idle periods. */
+  protected paused = false;
+  protected pauseTransition: Promise<void> | undefined;
   /**
    * Canonical identity of the library whose rows this store holds (canonicalLibraryToken;
    * undefined until a stamped build writes rows, or for indexes persisted before the
@@ -696,6 +699,51 @@ export abstract class SearchIndexBase implements SearchIndex {
     return this.buildState === 'building';
   }
 
+  get isPaused(): boolean {
+    return this.paused;
+  }
+
+  /**
+   * Change the durable hold independently of the running-job cancellation token. Setting
+   * it while idle is the important case: requestStop() deliberately has nothing to save
+   * then, whereas a user must still be able to prevent the next explicit build.
+   */
+  async setPaused(paused: boolean): Promise<void> {
+    this.refuseIfFaulted();
+    if (this.pauseTransition) throw new Error('An index pause/resume transition is already in progress.');
+    if (this.paused === paused) return;
+    const previous = this.paused;
+    // A hold takes effect before its write so no work can enter during persistence. A
+    // resume does the inverse: keep the live hold until the clear is safely on disk.
+    if (paused) this.paused = true;
+    const transition = (async () => {
+      try {
+        await this.persistPaused(paused);
+        this.paused = paused;
+      } catch (e) {
+        this.paused = previous;
+        throw e;
+      }
+    })();
+    this.pauseTransition = transition;
+    try {
+      await transition;
+    } finally {
+      if (this.pauseTransition === transition) this.pauseTransition = undefined;
+    }
+  }
+
+  /** Persist a requested pause value without requiring it to be live first. */
+  protected async persistPaused(paused: boolean): Promise<void> {
+    if (paused !== this.paused) throw new Error('This index backend cannot persist a pending resume.');
+    await this.save();
+  }
+
+  private refuseIfPaused(): void {
+    if (!this.paused) return;
+    throw new Error('Index work is paused. Call zotero_index action:"resume" before build, refresh, or update.');
+  }
+
   /** Full live status: index size + build progress. Backward compatible with status(). */
   buildStatus(): IndexBuildStatus {
     const base = this.status();
@@ -759,6 +807,7 @@ export abstract class SearchIndexBase implements SearchIndex {
     const c = this.counts();
     const s: SearchIndexStatus = {
       documents: c.documents,
+      paused: this.paused,
       vectors: c.vectors,
       items: c.items,
       storage: this.storage,
@@ -817,6 +866,7 @@ export abstract class SearchIndexBase implements SearchIndex {
 
   async build(libraryItems: any[], opts: BuildOptions = {}): Promise<SearchIndexStatus> {
     this.refuseIfFaulted();
+    this.refuseIfPaused();
     this.reset();
     // A rebuild is the retry: clear a previous runtime failure so a provider that has since
     // been fixed (model downloaded, package installed) reports healthy again.
@@ -916,6 +966,7 @@ export abstract class SearchIndexBase implements SearchIndex {
    */
   async buildIncremental(fetchPage: PageFetcher, opts: IncrementalBuildOptions = {}): Promise<IndexBuildStatus> {
     this.refuseIfFaulted();
+    this.refuseIfPaused();
     // Before anything is cleared: a build for a different library than the rows held must
     // refuse here rather than reach reset() below (startIndexBuild also asserts this
     // synchronously, so tool callers see the refusal rather than a logged rejection).
@@ -1449,6 +1500,7 @@ export abstract class SearchIndexBase implements SearchIndex {
    */
   async updateIncremental(opts: IncrementalUpdateOptions): Promise<IndexBuildStatus> {
     this.refuseIfFaulted();
+    this.refuseIfPaused();
     // Same guard as the full build: a delta for a different library would splice its
     // changes into — and delete "missing" items from — rows that were never its own.
     if (opts.library) this.assertLibrary(opts.library);
@@ -2178,6 +2230,12 @@ export class MemorySearchIndex extends SearchIndexBase {
   private ownWordsItems = new Set<string>();
   private ownWordsPassages = 0;
   private readonly path: string | undefined;
+  /**
+   * JSON writes are atomic individually, but two overlapping writes can still rename out
+   * of order. Keep their invocation order so an older snapshot can never overwrite a
+   * newer durable state (notably a pause asserted while a build save is in flight).
+   */
+  private saveTail: Promise<void> = Promise.resolve();
 
   constructor(opts: MemorySearchIndexOptions) {
     super(opts);
@@ -2347,6 +2405,22 @@ export class MemorySearchIndex extends SearchIndexBase {
   }
 
   /** Atomically rewrite the JSON artifact. A no-op when this index has no file. */
+  protected async writeSnapshot(snapshot: IndexSnapshot): Promise<void> {
+    if (!this.path) return;
+    await saveIndex({ toJSON: () => snapshot, loadFromJSON() {} }, this.path);
+  }
+
+  private async enqueueSnapshot(snapshot: IndexSnapshot): Promise<void> {
+    const write = this.saveTail.then(() => this.writeSnapshot(snapshot));
+    // A failed write rejects its own caller but must not poison every later save.
+    this.saveTail = write.catch(() => {});
+    await write;
+  }
+
+  protected override async persistPaused(paused: boolean): Promise<void> {
+    await this.enqueueSnapshot({ ...this.toJSON(), paused });
+  }
+
   async save(): Promise<void> {
     // Refusing here is not tidiness, it is the difference between a bad read and lost
     // data. `loadFromJSON` resets before it parses, so an artifact that failed to load
@@ -2355,11 +2429,24 @@ export class MemorySearchIndex extends SearchIndexBase {
     // reporting on. Faulted means: touch the artifact only to replace it deliberately.
     this.refuseIfFaulted();
     if (!this.path) return;
-    await saveIndex(this, this.path);
+    // A build already winding down may save while resume is being persisted. Let that
+    // transition settle before capturing its snapshot, or it could queue the old held
+    // value after a successful clear (or the transient clear after a failed one).
+    const pauseTransition = this.pauseTransition;
+    if (pauseTransition) await pauseTransition.catch(() => {});
+    // Capture now, not when the queued write gets its turn. A later setter may roll its
+    // in-memory value back after a failed write; no earlier save may publish that transient
+    // value merely because it observed mutable `this` late.
+    const snapshot = this.toJSON();
+    await this.enqueueSnapshot(snapshot);
   }
 
-  /** Nothing to release: the store is this object. */
-  async close(): Promise<void> {}
+  /** No handle to release, but do not report closed while a durable write is outstanding. */
+  async close(): Promise<void> {
+    const pauseTransition = this.pauseTransition;
+    if (pauseTransition) await pauseTransition.catch(() => {});
+    await this.saveTail.catch(() => {});
+  }
 
   toJSON(): IndexSnapshot {
     const snapshot: IndexSnapshot = {
@@ -2379,6 +2466,7 @@ export class MemorySearchIndex extends SearchIndexBase {
       // The other sequence's cursor: what an update hands to `/fulltext?since=` to find
       // the text Zotero extracted after this index was built (#26).
       fulltextVersion: this.fulltextVersion,
+      paused: this.paused,
     };
     if (this.libraryBackend) snapshot.libraryBackend = this.libraryBackend;
     // Present only while a build is unfinished, which is exactly when the next one has
@@ -2417,6 +2505,7 @@ export class MemorySearchIndex extends SearchIndexBase {
     // Absent in files written before resume existed, and in any file a finished build
     // wrote: both mean there is nothing to resume, which is what undefined says (#24).
     this.checkpoint = data.checkpoint;
+    this.paused = data.paused ?? false;
     // Absent in files written before the library stamp existed: an unstamped index
     // refuses nothing (assertLibrary), which is the only workable answer for it.
     this.library = data.library;

@@ -157,6 +157,42 @@ describe('zotero_index async build', () => {
     expect(res.content[0].text).toMatch(/no build/i);
   });
 
+  it('pauses while idle, refuses every writer, and resumes without starting work', async () => {
+    const search = new MemorySearchIndex({ embedder: null, logger: silentLogger });
+    const ctx = makeCtx(search, makeLibrary(3));
+
+    const paused = await indexTool.handler({ action: 'pause' }, ctx);
+    expect(paused.structuredContent?.paused).toBe(true);
+    expect(search.isBuilding).toBe(false);
+    for (const action of ['build', 'refresh', 'update'] as const) {
+      const refused = await indexTool.handler({ action }, ctx);
+      expect(refused.isError).toBe(true);
+      expect(refused.content[0].text).toMatch(/paused.*resume/i);
+    }
+    expect(ctx.web.listItems).not.toHaveBeenCalled();
+
+    const resumed = await indexTool.handler({ action: 'resume' }, ctx);
+    expect(resumed.structuredContent?.paused).toBe(false);
+    expect(search.isBuilding).toBe(false);
+    expect(resumed.content[0].text).toMatch(/no job was started/i);
+  });
+
+  it('pause also stops a running build and leaves the durable hold set', async () => {
+    const gate = gatedEmbedder();
+    const search = new MemorySearchIndex({ embedder: gate.provider, logger: silentLogger });
+    const ctx = makeCtx(search, makeLibrary(250));
+    await indexTool.handler({ action: 'build' }, ctx);
+    for (let i = 0; i < 200 && gate.pending() === 0; i++) await new Promise((r) => setTimeout(r, 2));
+
+    const paused = await indexTool.handler({ action: 'pause' }, ctx);
+    expect(paused.structuredContent?.paused).toBe(true);
+    gate.open();
+    await pollStatus(ctx);
+    expect(search.isBuilding).toBe(false);
+    expect(search.isPaused).toBe(true);
+    expect(search.buildStatus().items).toBeLessThan(250);
+  });
+
   it('honours the limit input', async () => {
     const library = makeLibrary(50);
     const search = new MemorySearchIndex({ embedder: new FakeEmbeddingProvider(), logger: silentLogger });
@@ -169,6 +205,8 @@ describe('zotero_index async build', () => {
 
   it('exposes the stop action and limit in the schema and mentions polling in the description', () => {
     expect(indexTool.inputSchema.action._def.values).toContain('stop');
+    expect(indexTool.inputSchema.action._def.values).toContain('pause');
+    expect(indexTool.inputSchema.action._def.values).toContain('resume');
     expect(indexTool.inputSchema.limit).toBeDefined();
     expect(indexTool.description).toMatch(/background/i);
     expect(indexTool.description).toMatch(/poll/i);

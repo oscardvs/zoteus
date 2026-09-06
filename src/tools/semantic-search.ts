@@ -47,6 +47,21 @@ const semanticSearch: ToolDefinition = {
           isError: true,
         };
       }
+      if (ctx.search.isPaused) {
+        const s = ctx.search.buildStatus();
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'The semantic-search index is empty and index work is paused. Call zotero_index with ' +
+                'action:"resume", then explicitly start a build; this search will not resume it automatically.',
+            },
+          ],
+          structuredContent: { ...s, autoBuild: false },
+          isError: true,
+        };
+      }
       if (args.auto_build !== false) {
         // First use: populate the index on the fly instead of leaving the user stranded.
         const s = startIndexBuild(ctx);

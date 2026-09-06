@@ -133,6 +133,8 @@ export interface IndexCounts {
 
 export interface SearchIndexStatus {
   documents: number;
+  /** Whether background index work is durably held until action:"resume" clears it. */
+  paused: boolean;
   vectors: number;
   items: number;
   /** Where the index is kept: the legacy JSON file, or SQLite. */
@@ -562,6 +564,8 @@ export interface IndexSnapshot {
   checkpoint?: BuildCheckpoint;
   /** Canonical identity of the library these rows belong to (absent in older files). */
   library?: string;
+  /** Durable hold on all build/update entry points (absent in older files means false). */
+  paused?: boolean;
 }
 
 export interface QueryOptions {
@@ -620,6 +624,10 @@ export interface SearchIndex {
   status(): SearchIndexStatus;
   /** Full live status: index size + build progress. */
   buildStatus(): IndexBuildStatus;
+  /** Whether build/update work is durably held. */
+  readonly isPaused: boolean;
+  /** Persist or clear the hold, including while no job is running. */
+  setPaused(paused: boolean): Promise<void>;
   /** Cooperatively cancel the running build. Returns false if nothing is building. */
   requestStop(): boolean;
   /** Embed arbitrary texts with the configured provider (empty array if none). */

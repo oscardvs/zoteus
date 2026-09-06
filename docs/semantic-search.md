@@ -58,6 +58,12 @@ can never time out the MCP client, even on very large libraries.
   checkpoint, so the next `action:"build"` carries on from it rather than starting over. A
   stopped **update** keeps what it applied but leaves the version stamp where it was, so the
   next update simply repeats the delta.
+- `action: "pause"` sets a durable hold and cooperatively stops any running job. The hold
+  survives a server restart and makes `build`, `refresh`, `update`, and semantic search's
+  automatic first build refuse without creating background work. Existing indexed content
+  remains searchable.
+- `action: "resume"` clears that hold. It deliberately starts no job by itself: follow it
+  with `build` to continue a checkpoint or `update` to request a delta.
 - `limit` — optional max number of items to index. It lowers the configured cap for one
   build and can never raise it: the build stops at the lower of `limit` and
   `ZOTEUS_INDEX_MAX_ITEMS` (default 5000).

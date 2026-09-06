@@ -61,6 +61,18 @@ describe('zotero_index', () => {
 });
 
 describe('zotero_semantic_search', () => {
+  it('does not auto-build an empty index while it is paused', async () => {
+    const search = new MemorySearchIndex({ embedder: null });
+    await search.setPaused(true);
+    const ctx = makeCtx(search);
+    const res = await semanticSearch.handler({ q: 'anything' }, ctx);
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.paused).toBe(true);
+    expect(res.structuredContent?.autoBuild).toBe(false);
+    expect(res.content[0].text).toMatch(/paused.*resume/i);
+    expect(ctx.web.listItems).not.toHaveBeenCalled();
+  });
+
   it('auto-builds on first use: empty index starts a background build and says so', async () => {
     const ctx = makeCtx(new MemorySearchIndex({ embedder: null }));
     const res = await semanticSearch.handler({ q: 'anything' }, ctx);

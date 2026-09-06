@@ -279,6 +279,9 @@ export function localApiNotice(s: IndexBuildStatus): string {
 /** Human summary of a build/status snapshot. */
 export function statusSummary(s: IndexBuildStatus): string {
   const job = s.operation === 'update' ? 'update' : 'build';
+  const pause = s.paused
+    ? ' Index work is paused; queries remain available. Call zotero_index action:"resume" before starting more work.'
+    : '';
   const notice =
     embedderNotice(s) +
     staleVectorsNotice(s) +
@@ -300,13 +303,13 @@ export function statusSummary(s: IndexBuildStatus): string {
         s.phase === 'fulltext'
           ? ' Every item\'s metadata is already indexed and searchable — this pass only adds the body text of attachments.'
           : '';
-      return `Index ${job} in progress: ${progressLine(s)}.${searchable} Poll zotero_index action:"status" again shortly.${notice}`;
+      return `Index ${job} in progress: ${progressLine(s)}.${searchable} Poll zotero_index action:"status" again shortly.${pause}${notice}`;
     }
     case 'error': {
       // A failed build keeps what it got; a failed update keeps nothing of its own, because
       // a half-applied delta is a wrong index rather than a partial one.
       const kept = job === 'update' ? 'Index unchanged' : 'Partial data kept';
-      return `Index ${job} failed: ${s.lastError ?? 'unknown error'}. ${kept}: ${progressLine(s)}.${notice}`;
+      return `Index ${job} failed: ${s.lastError ?? 'unknown error'}. ${kept}: ${progressLine(s)}.${pause}${notice}`;
     }
     case 'done': {
       const ft = s.fulltextEnabled
@@ -317,10 +320,10 @@ export function statusSummary(s: IndexBuildStatus): string {
       const own = s.ownWordsItems
         ? `, and the notes and annotations of ${s.ownWordsItems} of them (${s.ownWordsPassages} passages)`
         : '';
-      return `Index ready — ${s.documents} passages over ${s.items} items${ft}${own} (embedder=${s.embedder}). Run zotero_semantic_search to search by meaning.${notice}`;
+      return `Index ready — ${s.documents} passages over ${s.items} items${ft}${own} (embedder=${s.embedder}). Run zotero_semantic_search to search by meaning.${pause}${notice}`;
     }
     default:
-      return `Index: ${s.documents} passages over ${s.items} items; embedder=${s.embedder}.${notice}`;
+      return `Index: ${s.documents} passages over ${s.items} items; embedder=${s.embedder}.${pause}${notice}`;
   }
 }
 
@@ -387,6 +390,9 @@ export function startIndexBuild(
   maxItems?: number,
   opts: BuildFulltextOptions = {},
 ): IndexBuildStatus {
+  if (ctx.search.isPaused) {
+    throw new Error('Index work is paused. Call zotero_index action:"resume" before build, refresh, or update.');
+  }
   // Synchronously, before the fire-and-forget job below: a refusal thrown inside the job
   // would only reach the logger, and the tool caller would see a build that "started".
   const library = canonicalLibraryToken(lib);
@@ -463,6 +469,9 @@ export function startIndexUpdate(
   maxItems?: number,
   opts: BuildFulltextOptions = {},
 ): IndexBuildStatus {
+  if (ctx.search.isPaused) {
+    throw new Error('Index work is paused. Call zotero_index action:"resume" before build, refresh, or update.');
+  }
   const backend: VersionBackend = ctx.router.servesLocally(lib) ? 'local' : 'cloud';
   // Same synchronous guard as startIndexBuild, and for the same reason: the version stamp
   // this update would diff against belongs to the library the index holds, not to `lib`.

@@ -7,6 +7,10 @@ All notable changes to Zoteus are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **A durable pause for index work (#56).** `zotero_index action:"pause"` stops a running job and
+  persists a hold even when the index is idle; `build`, `refresh`, `update`, and the
+  semantic-search automatic build then refuse until `action:"resume"` explicitly clears
+  it. Queries remain available, and resume clears the hold without starting work by itself.
 - **An uninstall procedure, [`docs/uninstall.md`](./docs/uninstall.md) (#55).** Zoteus has
   no host uninstall hook, so the removal surface is documentation: the one directory that
   holds everything it derives, per platform, what that directory contains, the pre-v1.10.0

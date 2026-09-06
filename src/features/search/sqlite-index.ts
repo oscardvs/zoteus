@@ -1090,6 +1090,7 @@ export class SqliteSearchIndex extends SearchIndexBase {
     // coverage gap is unknown, which the first update closes once (#26).
     this.fulltextVersion = Number(this.meta('fulltextVersion') ?? 0) || 0;
     this.checkpoint = parseCheckpoint(this.meta('checkpoint'));
+    this.paused = this.meta('paused') === 'true';
     // Absent in databases written before the library stamp: an unstamped index refuses
     // nothing (assertLibrary), so old files keep building rather than stranding.
     this.library = this.meta('library') || undefined;
@@ -1106,7 +1107,7 @@ export class SqliteSearchIndex extends SearchIndexBase {
     this.reconcileVectorProvenance();
   }
 
-  private writeMeta(): void {
+  private writeMeta(paused = this.paused): void {
     const set = this.stmts.setMeta;
     set.run('builtFromVersion', String(this.builtFromVersion));
     set.run('itemsTotal', String(this.itemsTotal));
@@ -1120,6 +1121,7 @@ export class SqliteSearchIndex extends SearchIndexBase {
     // place a value can be added without a schema version bump: an older build ignores a
     // key it does not know, so a database written here still opens there.
     set.run('checkpoint', this.checkpoint ? JSON.stringify(this.checkpoint) : '');
+    set.run('paused', String(paused));
     set.run('library', this.library ?? '');
   }
 
@@ -1199,6 +1201,7 @@ export class SqliteSearchIndex extends SearchIndexBase {
     // keeps knowing how far into Zotero's full-text sequence it read.
     this.fulltextVersion = snapshot.fulltextVersion ?? 0;
     this.checkpoint = snapshot.checkpoint;
+    this.paused = snapshot.paused ?? false;
     this.writeMeta();
     this.commit();
     this.storeNotice =
@@ -2018,13 +2021,24 @@ export class SqliteSearchIndex extends SearchIndexBase {
     this.commit();
   }
 
+  protected override async persistPaused(paused: boolean): Promise<void> {
+    this.refuseIfFaulted();
+    this.begin();
+    this.writeMeta(paused);
+    this.commit();
+  }
+
   /** Commit the build's open transaction: this is what makes the last passages durable. */
   async save(): Promise<void> {
     this.refuseIfFaulted();
+    const pauseTransition = this.pauseTransition;
+    if (pauseTransition) await pauseTransition.catch(() => {});
     this.flush();
   }
 
   async close(): Promise<void> {
+    const pauseTransition = this.pauseTransition;
+    if (pauseTransition) await pauseTransition.catch(() => {});
     // Released whether or not this object ever opened a database of its own: the salvage
     // is a second handle on a second file, and a server that keeps it would keep a lock
     // on the very file it told the user they may delete.
