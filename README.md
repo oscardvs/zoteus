@@ -14,10 +14,9 @@ An MCP server that gives Claude Desktop, claude.ai, Claude Code, Cursor and any 
 
 </div>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/demo-dark.svg">
-  <img alt="A real exchange between Claude Code and a Zotero library through Zoteus: the question, the three tool calls that answered it, a verbatim passage from a PDF with its page number, and two APA references." src="docs/assets/demo-light.svg" width="960">
-</picture>
+<img alt="Claude in the browser answering a question from a Zotero library through Zoteus: the question is typed, the Zoteus tools run, and the answer arrives with a verbatim passage, its page number, and APA references." src="docs/assets/demo.gif" width="800">
+
+<sub>A real session, 6 September 2026, against the maintainer's own library. Tool calls are shown as a time-lapse. The <a href="https://zoteus.com">full recording is on zoteus.com</a>.</sub>
 
 ## Install
 
