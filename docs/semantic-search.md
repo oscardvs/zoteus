@@ -1019,7 +1019,11 @@ A few things to know when indexing a big Zotero library:
   [Storage backends](#storage-backends)).
 - **Local embeddings are CPU-bound.** With `ZOTEUS_EMBEDDINGS=local` the model runs on
   your CPU, so embedding thousands of passages takes real time. If you just want fast
-  keyword search, set `ZOTEUS_EMBEDDINGS=off` for a quick keyword-only (BM25) index.
+  keyword search, set `ZOTEUS_EMBEDDINGS=off` for a quick keyword-only (BM25) index. The
+  model runs on a worker thread of its own, so the server keeps answering status polls,
+  searches and new connections while a batch is being embedded (before 1.15.0 each batch
+  blocked the whole process, which on a large model looked like a hang, #59); a search
+  that arrives mid-build waits for the batch in flight and no longer.
 - **First local run downloads the model** (~25 MB) before embedding begins — expect a
   one-time delay (and a slower first build) while it fetches and caches (under
   `<ZOTEUS_DATA_DIR>/models`).

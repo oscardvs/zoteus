@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from '../../src/config.js';
 import { MemorySearchIndex } from '../../src/features/search/index-manager.js';
+import { plantTransformersStub, type TransformersStub } from '../fixtures/transformers-stub.js';
 import {
   DEFAULT_LOCAL_MODEL,
   DEFAULT_POOLING,
@@ -167,48 +166,28 @@ describe('the pooling the pipeline is asked for', () => {
 });
 
 describe('from ZOTEUS_EMBEDDING_MODEL to the pipeline call', () => {
-  let root: string;
-  let stub: any;
+  let stub: TransformersStub;
 
+  // A stub whose extractor records the options each call is made with: the pooling is an
+  // argument to that call, not to pipeline(), so this is the only place it can be seen.
   beforeAll(() => {
-    root = mkdtempSync(join(tmpdir(), 'zoteus-pooling-'));
-    const pkg = join(root, 'node_modules', '@huggingface', 'transformers');
-    mkdirSync(pkg, { recursive: true });
-    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@huggingface/transformers', main: 'index.cjs' }));
-    // A stub whose extractor records the options each call is made with: the pooling is an
-    // argument to that call, not to pipeline(), so this is the only place it can be seen.
-    writeFileSync(
-      join(pkg, 'index.cjs'),
-      `const env = { cacheDir: '/stub/default/.cache' };
-const calls = [];
-async function pipeline(task, model, options) {
-  return async (input, callOptions) => {
-    const batch = Array.isArray(input) ? input : [input];
-    calls.push({ model, input: batch, options: callOptions });
-    return { data: new Float32Array(batch.length * 2).fill(0.5), dims: [batch.length, 2] };
-  };
-}
-module.exports = { env, pipeline, calls };
-`,
-    );
-    expect(resolveTransformers(root)).not.toBeNull();
+    stub = plantTransformersStub('zoteus-pooling-');
+    expect(resolveTransformers(stub.root)).not.toBeNull();
   });
 
-  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  afterAll(() => stub.remove());
 
-  beforeEach(async () => {
-    const mod = await import(resolveTransformers(root)!);
-    stub = mod.default ?? mod;
-    stub.calls.length = 0;
-  });
+  beforeEach(() => stub.reset());
 
   const config = (env: Record<string, string>) =>
     loadConfig({
       ZOTEUS_EMBEDDINGS: 'local',
-      ZOTEUS_TRANSFORMERS_PATH: root,
-      ZOTEUS_DATA_DIR: join(root, 'data'),
+      ZOTEUS_TRANSFORMERS_PATH: stub.root,
+      ZOTEUS_DATA_DIR: join(stub.root, 'data'),
       ...env,
     } as any);
+
+  const calls = () => stub.calls().map(({ model, input, options }) => ({ model, input, options }));
 
   it('pools a listed CLS model with cls, from the model setting alone', async () => {
     const { provider } = createEmbeddingProvider(
@@ -216,7 +195,7 @@ module.exports = { env, pipeline, calls };
       silentLogger,
     );
     await provider!.embed(['une pompe à chaleur']);
-    expect(stub.calls).toEqual([
+    expect(calls()).toEqual([
       {
         model: 'onnx-community/gte-multilingual-base',
         input: ['une pompe à chaleur'],
@@ -228,7 +207,7 @@ module.exports = { env, pipeline, calls };
   it('pools the default exactly as it always was, with nothing configured', async () => {
     const { provider } = createEmbeddingProvider(config({}), silentLogger);
     await provider!.embed(['a passage']);
-    expect(stub.calls).toEqual([
+    expect(calls()).toEqual([
       { model: DEFAULT_LOCAL_MODEL, input: ['a passage'], options: { pooling: 'mean', normalize: true } },
     ]);
   });
@@ -239,7 +218,7 @@ module.exports = { env, pipeline, calls };
       silentLogger,
     );
     await provider!.embed(['une pompe à chaleur']);
-    expect(stub.calls[0]!.options).toEqual({ pooling: 'cls', normalize: true });
+    expect(calls()[0]!.options).toEqual({ pooling: 'cls', normalize: true });
   });
 });
 

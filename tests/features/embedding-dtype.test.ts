@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from '../../src/config.js';
+import { plantTransformersStub, type TransformersStub } from '../fixtures/transformers-stub.js';
 import {
   ApiEmbeddingProvider,
   DEFAULT_LOCAL_DTYPE,
@@ -62,53 +61,28 @@ describe('the precision in the embedder identity', () => {
 });
 
 describe('the precision the pipeline is asked for', () => {
-  let root: string;
-  let stub: any;
+  let stub: TransformersStub;
 
+  // A stub that records the options it was constructed with, and can refuse a dtype the
+  // way a repository that never uploaded that file does: a fetch failure naming a path.
   beforeAll(() => {
-    root = mkdtempSync(join(tmpdir(), 'zoteus-dtype-'));
-    const pkg = join(root, 'node_modules', '@huggingface', 'transformers');
-    mkdirSync(pkg, { recursive: true });
-    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@huggingface/transformers', main: 'index.cjs' }));
-    // A stub that records the options it was constructed with, and can refuse a dtype the
-    // way a repository that never uploaded that file does: a fetch failure naming a path.
-    writeFileSync(
-      join(pkg, 'index.cjs'),
-      `const env = { cacheDir: '/stub/default/.cache' };
-const loaded = [];
-let missing = null;
-async function pipeline(task, model, options) {
-  loaded.push({ task, model, options });
-  if (missing && options && options.dtype === missing) {
-    throw new Error('Could not locate file: "https://huggingface.co/' + model + '/resolve/main/onnx/model_quantized.onnx".');
-  }
-  return async (input) => {
-    const batch = Array.isArray(input) ? input : [input];
-    return { data: new Float32Array(batch.length * 2).fill(0.5), dims: [batch.length, 2] };
-  };
-}
-module.exports = { env, pipeline, loaded, refuse: (d) => { missing = d; } };
-`,
-    );
-    expect(resolveTransformers(root)).not.toBeNull();
+    stub = plantTransformersStub('zoteus-dtype-');
+    expect(resolveTransformers(stub.root)).not.toBeNull();
   });
 
-  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  afterAll(() => stub.remove());
 
-  beforeEach(async () => {
-    const mod = await import(resolveTransformers(root)!);
-    stub = mod.default ?? mod;
-    stub.loaded.length = 0;
-    stub.refuse(null);
-  });
+  beforeEach(() => stub.reset());
 
   const config = (env: Record<string, string>) =>
     loadConfig({
       ZOTEUS_EMBEDDINGS: 'local',
-      ZOTEUS_TRANSFORMERS_PATH: root,
-      ZOTEUS_DATA_DIR: join(root, 'data'),
+      ZOTEUS_TRANSFORMERS_PATH: stub.root,
+      ZOTEUS_DATA_DIR: join(stub.root, 'data'),
       ...env,
     } as any);
+
+  const loaded = () => stub.pipelines().map(({ task, model, options }) => ({ task, model, options }));
 
   it('passes the default precision explicitly, rather than leaving it to the package', async () => {
     const { provider } = createEmbeddingProvider(config({}), silentLogger);
@@ -117,8 +91,8 @@ module.exports = { env, pipeline, loaded, refuse: (d) => { missing = d; } };
     // Unset must not mean "whatever this version of transformers picks for this device":
     // that value could move in a release, and `local:<model>` would silently start meaning
     // a different vector space than the index holding that identity was built with.
-    expect(stub.loaded).toHaveLength(1);
-    expect(stub.loaded[0].options).toEqual({ dtype: 'fp32' });
+    expect(loaded()).toHaveLength(1);
+    expect(loaded()[0]!.options).toEqual({ dtype: 'fp32' });
   });
 
   it('loads the quantized weights when ZOTEUS_EMBEDDING_DTYPE asks for them', async () => {
@@ -130,7 +104,7 @@ module.exports = { env, pipeline, loaded, refuse: (d) => { missing = d; } };
     expect(embedderIdentity(provider!)).toBe('local:Xenova/multilingual-e5-small@q8');
 
     await provider!.embed(['ein Absatz']);
-    expect(stub.loaded[0]).toEqual({
+    expect(loaded()[0]).toEqual({
       task: 'feature-extraction',
       model: 'Xenova/multilingual-e5-small',
       options: { dtype: 'q8' },

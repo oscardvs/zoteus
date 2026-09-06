@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import type { ZoteusConfig } from '../../config.js';
 import type { Logger } from '../../lib/logger.js';
 import { DEFAULT_EMBED_BATCH_SIZE, DEFAULT_EMBED_MAX_RETRIES } from './limits.js';
@@ -521,12 +522,132 @@ export function dtypeLoadHint(model: string, dtype: EmbeddingDtype, cause: unkno
   );
 }
 
+/**
+ * What one pipeline call answers with, and all the main thread ever sees of it: the
+ * row-major vectors of one batch, and their shape when the pipeline reports one.
+ */
+interface EmbedOutput {
+  data: ArrayLike<number>;
+  dims?: number[];
+}
+
+/** One feature-extraction call, wherever it actually runs. */
+type Extractor = (input: string[], options: { pooling: PoolingMode; normalize: true }) => Promise<EmbedOutput>;
+
+/**
+ * Why the transformers module could not be brought up, in the worker's own words: which
+ * step failed and what it said. The message the user reads is composed on this side, from
+ * these two facts, so that it is the same sentence whichever thread did the loading.
+ */
+type LoadFailure = { stage: 'import' | 'shape' | 'pipeline'; error: string };
+
+/**
+ * The thread that hosts the model. Everything from the import of the transformers package
+ * to the last inference happens here, and the reason is onnxruntime-node: its `run()` is a
+ * synchronous native call behind a `setImmediate`, so on the main thread every batch froze
+ * the whole process for as long as the model took (seconds for a small model, tens of
+ * seconds for a large one at full precision). While a build or update was embedding, the
+ * HTTP server answered nothing, a status poll waited for the batch to end, and an
+ * `initialize`, which needs several turns of the event loop, could not complete inside a
+ * client's timeout at all (#59). In here the same call blocks only this thread.
+ *
+ * Plain CommonJS handed to `new Worker(source, { eval: true })` rather than a file of its
+ * own: there is then nothing to resolve relative to `import.meta.url`, which points at a
+ * `.ts` source under the test runner and at `dist/` in production, and nothing extra for a
+ * desktop bundle to ship. The transformers package itself is imported dynamically from the
+ * URL the main thread already resolved, so the worker never repeats the search for it.
+ *
+ * Requests are answered in the order they arrive: one model, one thread, so a query that
+ * lands while a build is embedding waits for the batch in flight and no longer. The
+ * vectors travel back as one Float32Array whose buffer is transferred, not copied.
+ */
+const EMBED_WORKER_SOURCE = `
+const { parentPort, workerData } = require('node:worker_threads');
+const { specifier, model, dtype, cacheDir } = workerData;
+const fail = (id, stage, e) =>
+  parentPort.postMessage({ id, ok: false, stage, error: e instanceof Error ? e.message : String(e) });
+let extractor;
+let chain = Promise.resolve();
+(async () => {
+  let transformers;
+  try {
+    transformers = await import(specifier);
+  } catch (e) {
+    return fail(0, 'import', e);
+  }
+  const pipeline = transformers.pipeline ?? (transformers.default && transformers.default.pipeline);
+  if (typeof pipeline !== 'function') return fail(0, 'shape', new Error('no pipeline()'));
+  const env = transformers.env ?? (transformers.default && transformers.default.env);
+  if (env && cacheDir) env.cacheDir = cacheDir;
+  try {
+    extractor = await pipeline('feature-extraction', model, { dtype });
+  } catch (e) {
+    return fail(0, 'pipeline', e);
+  }
+  parentPort.postMessage({ id: 0, ok: true });
+})();
+parentPort.on('message', (msg) => {
+  chain = chain.then(async () => {
+    try {
+      const tensor = await extractor(msg.input, msg.options);
+      const data = Float32Array.from(tensor.data);
+      const dims = Array.isArray(tensor.dims) ? Array.from(tensor.dims) : undefined;
+      parentPort.postMessage({ id: msg.id, ok: true, data, dims }, [data.buffer]);
+    } catch (e) {
+      fail(msg.id, 'embed', e);
+    }
+  });
+});
+`;
+
+/** What the worker posts back: the load verdict (id 0), or one batch's answer. */
+type WorkerReply =
+  | { id: number; ok: true; data?: Float32Array; dims?: number[] }
+  | { id: number; ok: false; stage: LoadFailure['stage'] | 'embed'; error: string };
+
+/**
+ * A worker that never came up at all, as opposed to one that came up and reported that the
+ * transformers package would not load. The first is a property of the runtime and the
+ * in-thread loader is tried instead; the second would fail there identically.
+ */
+class EmbedWorkerUnavailable extends Error {}
+
+/**
+ * The sentence for a package that resolved and then blew up on import. Almost always a
+ * native onnxruntime binary that does not match this platform/Node ABI. Say that, rather
+ * than "not installed", and say WHICH file was loaded, under which Node. That is the whole
+ * diagnosis for the desktop failure in #38: the extension runs its own built-in Node, so a
+ * package installed under a version manager (or left behind by an nvm switch) resolves
+ * perfectly and then fails on a binary compiled for a different runtime. Without the path
+ * and the version, the two halves of that sentence are invisible.
+ */
+function importFailureHint(specifier: string, transformersPath: string | undefined, cause: string): string {
+  return (
+    `${TRANSFORMERS_MODULE} resolved but failed to load (${cause}). ` +
+    `Loaded from ${modulePath(specifier)}${searchedFrom(transformersPath)}, running Node ` +
+    `${process.version} on ${process.platform}-${process.arch}. ` +
+    'Reinstall it for this platform and Node version, or set ZOTEUS_EMBEDDINGS=off for keyword-only search.'
+  );
+}
+
+const NO_PIPELINE_HINT = `${TRANSFORMERS_MODULE} loaded but exposes no pipeline(). Is the install complete?`;
+
 /** Local on-device embeddings via @huggingface/transformers (optional, lazy). */
 export class LocalEmbeddingProvider implements EmbeddingProvider {
   readonly name = 'local';
   /** Texts handed to the transformers pipeline in a single call. */
   static readonly BATCH_SIZE = DEFAULT_EMBED_BATCH_SIZE;
-  private extractor: any;
+  private extractor: Extractor | undefined;
+  /**
+   * The load in progress, shared by every caller that arrives while it runs. Without it a
+   * query landing during a build's first batch started a second pipeline, which under the
+   * worker would be a second thread holding a second copy of the weights.
+   */
+  private loading: Promise<Extractor> | undefined;
+  private worker: Worker | undefined;
+  /** Batches posted to the worker and not yet answered, by request id. */
+  private readonly pending = new Map<number, { resolve: (out: EmbedOutput) => void; reject: (e: Error) => void }>();
+  private nextId = 1;
   constructor(
     readonly model: string = DEFAULT_LOCAL_MODEL,
     /** Injectable extractor factory (tests); defaults to the transformers.js pipeline. */
@@ -546,6 +667,8 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
       dtype?: EmbeddingDtype;
       /** Pooling policy for this model (see poolingFor); unset means auto, i.e. the table. */
       pooling?: PoolingSetting;
+      /** Where a fallback to in-thread loading announces itself; without one it is silent. */
+      logger?: Logger;
     } = {},
   ) {}
 
@@ -574,53 +697,164 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     return poolingFor(this.model, this.opts.pooling ?? 'auto');
   }
 
-  private async ensure(): Promise<any> {
-    if (this.extractor) return this.extractor;
-    if (this.loadExtractor) {
-      this.extractor = await this.loadExtractor();
-      return this.extractor;
-    }
+  private ensure(): Promise<Extractor> {
+    if (this.extractor) return Promise.resolve(this.extractor);
+    this.loading ??= this.load().then(
+      (extractor) => (this.extractor = extractor),
+      (e) => {
+        // Not cached: the next call retries, exactly as the in-thread loader always did.
+        this.loading = undefined;
+        throw e;
+      },
+    );
+    return this.loading;
+  }
+
+  /**
+   * Bring the model up: through an injected factory (tests), in a worker thread (the
+   * production path, see EMBED_WORKER_SOURCE), or on this thread when a worker cannot be
+   * started at all. A worker that starts and then reports that the package will not load is
+   * not a reason to try the other loader: it would fail there identically, and it would
+   * cost the failing import a second time.
+   */
+  private async load(): Promise<Extractor> {
+    if (this.loadExtractor) return this.loadExtractor();
     const specifier = resolveTransformers(this.opts.transformersPath);
     if (!specifier)
       throw new Error(
         missingTransformersHint({ dist: this.opts.dist, transformersPath: this.opts.transformersPath }),
       );
+    try {
+      return await this.spawn(specifier);
+    } catch (e) {
+      if (!(e instanceof EmbedWorkerUnavailable)) throw e;
+      this.opts.logger?.warn(
+        `Local embeddings could not be moved to a worker thread (${e.message}); the model runs on the ` +
+          "server's main thread instead, which pauses every request for as long as one batch takes to embed.",
+      );
+      return this.loadInThread(specifier);
+    }
+  }
+
+  /** The worker, up and holding a pipeline, wrapped as an extractor the main thread can call. */
+  private spawn(specifier: string): Promise<Extractor> {
+    return new Promise((resolve, reject) => {
+      let worker: Worker;
+      try {
+        worker = new Worker(EMBED_WORKER_SOURCE, {
+          eval: true,
+          workerData: { specifier, model: this.model, dtype: this.dtype, cacheDir: this.opts.modelCacheDir },
+        });
+      } catch (e) {
+        reject(new EmbedWorkerUnavailable(e instanceof Error ? e.message : String(e)));
+        return;
+      }
+      let ready = false;
+      worker.on('message', (msg: WorkerReply) => {
+        if (msg.id === 0) {
+          if (msg.ok) {
+            ready = true;
+            this.worker = worker;
+            // Never the reason the process stays alive: an idle model is not pending work.
+            worker.unref();
+            resolve(this.remoteExtractor(worker));
+          } else {
+            reject(new Error(this.loadFailureHint(specifier, msg)));
+            void worker.terminate();
+          }
+          return;
+        }
+        const waiter = this.pending.get(msg.id);
+        if (!waiter) return;
+        this.pending.delete(msg.id);
+        if (this.pending.size === 0) worker.unref();
+        if (msg.ok) waiter.resolve({ data: msg.data ?? new Float32Array(0), dims: msg.dims });
+        else waiter.reject(new Error(msg.error));
+      });
+      const died = (cause: string): void => {
+        if (this.worker === worker) {
+          this.worker = undefined;
+          this.extractor = undefined;
+          this.loading = undefined;
+        }
+        const waiting = [...this.pending.values()];
+        this.pending.clear();
+        const error = new Error(`The local embedding worker stopped unexpectedly (${cause}).`);
+        for (const w of waiting) w.reject(error);
+        if (!ready) reject(new EmbedWorkerUnavailable(cause));
+      };
+      worker.on('error', (e) => died(e instanceof Error ? e.message : String(e)));
+      worker.on('exit', (code) => died(`exit code ${code}`));
+    });
+  }
+
+  private remoteExtractor(worker: Worker): Extractor {
+    return (input, options) =>
+      new Promise((resolve, reject) => {
+        const id = this.nextId++;
+        this.pending.set(id, { resolve, reject });
+        // Referenced only while a batch is in flight, so a caller awaiting vectors is never
+        // left with an exited process, and an idle worker never holds it open.
+        if (this.pending.size === 1) worker.ref();
+        worker.postMessage({ id, input, options });
+      });
+  }
+
+  private loadFailureHint(specifier: string, failure: { stage: LoadFailure['stage'] | 'embed'; error: string }): string {
+    switch (failure.stage) {
+      case 'import':
+        return importFailureHint(specifier, this.opts.transformersPath, failure.error);
+      case 'shape':
+        return NO_PIPELINE_HINT;
+      default:
+        return dtypeLoadHint(this.model, this.dtype, failure.error);
+    }
+  }
+
+  /**
+   * The loader the worker replaced, kept for a runtime that cannot start one. Every step
+   * matches the worker's, message for message.
+   */
+  private async loadInThread(specifier: string): Promise<Extractor> {
     let transformers: any;
     try {
       transformers = await import(specifier);
     } catch (e) {
-      // Resolved but unloadable: almost always a native onnxruntime binary that does not
-      // match this platform/Node ABI. Say that, rather than "not installed", and say
-      // WHICH file was loaded, under which Node. That is the whole diagnosis for the
-      // desktop failure in #38: the extension runs its own built-in Node, so a package
-      // installed under a version manager (or left behind by an nvm switch) resolves
-      // perfectly and then fails on a binary compiled for a different runtime. Without
-      // the path and the version, the two halves of that sentence are invisible.
-      throw new Error(
-        `${TRANSFORMERS_MODULE} resolved but failed to load (${e instanceof Error ? e.message : String(e)}). ` +
-          `Loaded from ${modulePath(specifier)}${searchedFrom(this.opts.transformersPath)}, running Node ` +
-          `${process.version} on ${process.platform}-${process.arch}. ` +
-          'Reinstall it for this platform and Node version, or set ZOTEUS_EMBEDDINGS=off for keyword-only search.',
-      );
+      throw new Error(importFailureHint(specifier, this.opts.transformersPath, e instanceof Error ? e.message : String(e)));
     }
     // The package ships both an ESM and a CJS build; a resolved CJS entry arrives under `default`.
     const pipeline = transformers.pipeline ?? transformers.default?.pipeline;
-    if (typeof pipeline !== 'function') {
-      throw new Error(`${TRANSFORMERS_MODULE} loaded but exposes no pipeline(). Is the install complete?`);
-    }
+    if (typeof pipeline !== 'function') throw new Error(NO_PIPELINE_HINT);
     // Pin the model cache before the pipeline downloads anything. The package's default
-    // caches weights inside its own install directory, which outlives the data directory —
+    // caches weights inside its own install directory, which outlives the data directory,
     // and for a bundled desktop install pointed at a global module via
     // ZOTEUS_TRANSFORMERS_PATH, outlives the extension too. Deleting the data directory
     // is supposed to be the whole uninstall, and the weights are its largest artifact.
     const env = transformers.env ?? transformers.default?.env;
     if (env && this.opts.modelCacheDir) env.cacheDir = this.opts.modelCacheDir;
     try {
-      this.extractor = await pipeline('feature-extraction', this.model, { dtype: this.dtype });
+      return await pipeline('feature-extraction', this.model, { dtype: this.dtype });
     } catch (e) {
       throw new Error(dtypeLoadHint(this.model, this.dtype, e));
     }
-    return this.extractor;
+  }
+
+  /**
+   * Stop the worker and forget the model. Anything still waiting on a batch is told so.
+   * The next embed() starts over, which is also what happens after a worker dies on its own.
+   */
+  async close(): Promise<void> {
+    // A load still in flight settles first: killing its worker halfway would read as a
+    // runtime that cannot start one, and send the loader down the in-thread path.
+    if (this.loading) await this.loading.catch(() => {});
+    const worker = this.worker;
+    this.worker = undefined;
+    this.extractor = undefined;
+    this.loading = undefined;
+    const waiting = [...this.pending.values()];
+    this.pending.clear();
+    for (const w of waiting) w.reject(new Error('The local embedding worker was closed.'));
+    await worker?.terminate();
   }
 
   /**
@@ -647,11 +881,13 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
       // subtracted from. Cosine is scale-free besides. A model that publishes no Normalize
       // module is therefore not mis-served here the way a CLS model was.
       const tensor = await extractor(input, { pooling: this.pooling, normalize: true });
-      const data = tensor.data as Float32Array;
-      const dims: number[] | undefined = tensor.dims;
+      const data = tensor.data;
+      const dims = tensor.dims;
       const dim = dims && dims.length > 1 ? dims[dims.length - 1]! : data.length / batch.length;
       for (let b = 0; b < batch.length; b++) {
-        out.push(Array.from(data.slice(b * dim, (b + 1) * dim)));
+        const row = new Array<number>(dim);
+        for (let i = 0; i < dim; i++) row[i] = data[b * dim + i]!;
+        out.push(row);
       }
       if (i + size < texts.length) await batchPause(this.opts.batchDelayMs);
     }
@@ -861,6 +1097,7 @@ export function createEmbeddingProvider(config: ZoteusConfig, logger?: Logger): 
           // so switching it costs one rebuild rather than quietly mixing two vector spaces.
           dtype: config.embeddingDtype,
           pooling: config.embeddingPooling,
+          ...(logger ? { logger } : {}),
         }),
         configured: 'local',
       };

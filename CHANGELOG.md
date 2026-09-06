@@ -4,6 +4,26 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **The local embedding model no longer freezes the server while it runs (#59).** With
+  `ZOTEUS_EMBEDDINGS=local`, every batch the model embedded blocked the whole process for as
+  long as the inference took: onnxruntime-node's `run()` is a synchronous native call behind a
+  `setImmediate`, so the event loop got exactly one turn between batches. On a large model at
+  full precision that is seconds to tens of seconds per batch, and for as long as a build, an
+  update or a catch-up was embedding, the HTTP server answered nothing: a plain `GET /mcp`
+  could slip into the gap between two batches, an `initialize`, which needs several turns,
+  timed out, and the process sat at every core the runtime could take while reporting no
+  progress. It looked like a hang after a completed build; it was the next job embedding,
+  with nothing able to say so. The model, the pipeline and every inference now live on a
+  worker thread: the same call blocks only that thread, the server keeps answering, and a
+  query that lands mid-build waits for the batch in flight and no longer. Concurrent callers
+  share one model instead of each loading their own, a worker that dies is reported and
+  replaced on the next call, and a runtime that cannot start one falls back to the old
+  in-thread loader with a warning. Verified inside an Electron 42 `utilityProcess`, which is
+  how Claude Desktop runs the server, as well as under plain Node.
+
 ## [1.14.0] - 2026-09-04
 
 ### Added

@@ -1,8 +1,6 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { MemorySearchIndex } from '../../src/features/search/index-manager.js';
+import { plantTransformersStub, type TransformersStub } from '../fixtures/transformers-stub.js';
 import {
   ELECTRON_LOCAL_EMBED_BATCH,
   electronVersion,
@@ -118,66 +116,42 @@ describe('localEmbedBatchNotice', () => {
  * The stub's extractor records the size of every batch it is handed.
  */
 describe('the local embedder under Electron', () => {
-  let root: string;
-  let stubModule: any;
+  let stub: TransformersStub;
 
-  beforeAll(async () => {
-    root = mkdtempSync(join(tmpdir(), 'zoteus-electron-batch-'));
-    const pkg = join(root, 'node_modules', '@huggingface', 'transformers');
-    mkdirSync(pkg, { recursive: true });
-    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@huggingface/transformers', main: 'index.cjs' }));
-    writeFileSync(
-      join(pkg, 'index.cjs'),
-      `const env = { cacheDir: '/stub/.cache' };
-const batches = [];
-async function pipeline() {
-  return async (input) => {
-    const batch = Array.isArray(input) ? input : [input];
-    batches.push(batch.length);
-    return { data: new Float32Array(batch.length * 2).fill(0.5), dims: [batch.length, 2] };
-  };
-}
-module.exports = { env, pipeline, batches };
-`,
-    );
-    const specifier = resolveTransformers(root);
-    expect(specifier).not.toBeNull();
-    const mod = await import(specifier!);
-    stubModule = mod.default ?? mod;
+  beforeAll(() => {
+    stub = plantTransformersStub('zoteus-electron-batch-');
+    expect(resolveTransformers(stub.root)).not.toBeNull();
   });
 
-  afterAll(() => {
-    rmSync(root, { recursive: true, force: true });
-  });
+  afterAll(() => stub.remove());
 
-  beforeEach(() => {
-    stubModule.batches.length = 0;
-  });
+  beforeEach(() => stub.reset());
 
   const config = (env: Record<string, string> = {}) =>
-    loadConfig({ ZOTEUS_EMBEDDINGS: 'local', ZOTEUS_TRANSFORMERS_PATH: root, ...env } as any);
+    loadConfig({ ZOTEUS_EMBEDDINGS: 'local', ZOTEUS_TRANSFORMERS_PATH: stub.root, ...env } as any);
 
   const passages = (n: number) => Array.from({ length: n }, (_, i) => `passage ${i}`);
+  const batches = () => stub.calls().map((c) => c.input.length);
 
   it('hands the pipeline no more than the cap per call', async () => {
     pretendElectron();
     const { provider } = createEmbeddingProvider(config(), silentLogger as any);
     await provider!.embed(passages(20));
-    expect(stubModule.batches).toEqual([8, 8, 4]);
-    expect(Math.max(...stubModule.batches)).toBeLessThanOrEqual(ELECTRON_LOCAL_EMBED_BATCH);
+    expect(batches()).toEqual([8, 8, 4]);
+    expect(Math.max(...batches())).toBeLessThanOrEqual(ELECTRON_LOCAL_EMBED_BATCH);
   });
 
   it('batches by the default off Electron, unchanged', async () => {
     const { provider } = createEmbeddingProvider(config(), silentLogger as any);
     await provider!.embed(passages(40));
-    expect(stubModule.batches).toEqual([DEFAULT_EMBED_BATCH_SIZE, 40 - DEFAULT_EMBED_BATCH_SIZE]);
+    expect(batches()).toEqual([DEFAULT_EMBED_BATCH_SIZE, 40 - DEFAULT_EMBED_BATCH_SIZE]);
   });
 
   it('refuses to let ZOTEUS_EMBED_BATCH_SIZE raise it back over the cap', async () => {
     pretendElectron();
     const { provider } = createEmbeddingProvider(config({ ZOTEUS_EMBED_BATCH_SIZE: '64' }), silentLogger as any);
     await provider!.embed(passages(20));
-    expect(Math.max(...stubModule.batches)).toBe(ELECTRON_LOCAL_EMBED_BATCH);
+    expect(Math.max(...batches())).toBe(ELECTRON_LOCAL_EMBED_BATCH);
   });
 
   it('logs why the batch shrank, so a slower build is not a mystery', () => {

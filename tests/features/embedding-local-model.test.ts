@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from '../../src/config.js';
+import { plantTransformersStub, type TransformersStub } from '../fixtures/transformers-stub.js';
 import {
   DEFAULT_LOCAL_MODEL,
   E5_PREFIXES,
@@ -120,44 +119,22 @@ describe('E5 input prefixes', () => {
 });
 
 describe('configuration', () => {
-  let root: string;
+  let stub: TransformersStub;
 
   beforeAll(() => {
-    root = mkdtempSync(join(tmpdir(), 'zoteus-local-model-'));
-    const pkg = join(root, 'node_modules', '@huggingface', 'transformers');
-    mkdirSync(pkg, { recursive: true });
-    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@huggingface/transformers', main: 'index.cjs' }));
-    writeFileSync(
-      join(pkg, 'index.cjs'),
-      `const env = { cacheDir: '/stub/default/.cache' };
-const loaded = [];
-async function pipeline(task, model) {
-  loaded.push({ task, model, cacheDir: env.cacheDir });
-  return async (input) => {
-    const batch = Array.isArray(input) ? input : [input];
-    return { data: new Float32Array(batch.length * 2).fill(0.5), dims: [batch.length, 2] };
-  };
-}
-module.exports = { env, pipeline, loaded };
-`,
-    );
-    expect(resolveTransformers(root)).not.toBeNull();
+    stub = plantTransformersStub('zoteus-local-model-');
+    expect(resolveTransformers(stub.root)).not.toBeNull();
   });
 
-  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  afterAll(() => stub.remove());
 
-  let stub: any;
-  beforeEach(async () => {
-    const mod = await import(resolveTransformers(root)!);
-    stub = mod.default ?? mod;
-    stub.loaded.length = 0;
-  });
+  beforeEach(() => stub.reset());
 
   const config = (env: Record<string, string>) =>
-    loadConfig({ ZOTEUS_EMBEDDINGS: 'local', ZOTEUS_TRANSFORMERS_PATH: root, ...env } as any);
+    loadConfig({ ZOTEUS_EMBEDDINGS: 'local', ZOTEUS_TRANSFORMERS_PATH: stub.root, ...env } as any);
 
   it('lets ZOTEUS_EMBEDDING_MODEL pick the local model', async () => {
-    const dataDir = join(root, 'data');
+    const dataDir = join(stub.root, 'data');
     const { provider } = createEmbeddingProvider(
       config({ ZOTEUS_EMBEDDING_MODEL: ' Xenova/multilingual-e5-small ', ZOTEUS_DATA_DIR: dataDir }),
       silentLogger,
@@ -167,7 +144,7 @@ module.exports = { env, pipeline, loaded };
     await provider!.embed(['ein Absatz']);
     // The org-prefixed id reaches the pipeline whole, and the weights still land under the
     // data directory rather than inside the package (#27).
-    expect(stub.loaded).toEqual([
+    expect(stub.pipelines().map(({ task, model, cacheDir }) => ({ task, model, cacheDir }))).toEqual([
       { task: 'feature-extraction', model: 'Xenova/multilingual-e5-small', cacheDir: join(dataDir, 'models') },
     ]);
   });
