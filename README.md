@@ -46,6 +46,10 @@ claude mcp add --transport stdio zoteus -e ZOTERO_API_KEY=xxxxx -- npx -y @oscar
 
 > Get a key at [zotero.org/settings/keys](https://www.zotero.org/settings/keys). For key-free local reads, and the personal-library writes that go through the app (adding items by identifier, attachments, annotations, trash and restore), enable **Settings → Advanced → "Allow other applications on this computer to communicate with Zotero"** in the desktop app. Metadata edits, tags, collections and group libraries always need the key.
 
+## Uninstall
+
+Zoteus writes everything it derives — the search index, the on-device model weights, the update-check cache — into one directory: `ZOTEUS_DATA_DIR` if you set it, otherwise your OS's default application-data path. Stop the server, remove it from your MCP client's configuration, then delete that directory; your Zotero library lives elsewhere and nothing here touches it. Full steps, platform paths, and the pre-v1.10.0 case (model weights that used to land outside this directory): [`docs/uninstall.md`](./docs/uninstall.md).
+
 ---
 
 ## Features
@@ -96,7 +100,7 @@ Full table in [`docs/configuration.md`](./docs/configuration.md). To run a share
 
 ## Documentation
 
-**[zoteus.com/docs](https://zoteus.com/docs)** · [Getting started](./docs/getting-started.md) · [Configuration](./docs/configuration.md) · [Import & resolver](./docs/resolver.md) · [Architecture](./docs/architecture.md) · [Safe writes](./docs/writing.md) · [Citations](./docs/citations.md) · [Semantic search](./docs/semantic-search.md) · [Scholarly context](./docs/scholar.md) · [Code execution](./docs/code-execution.md) · [Deployment](./docs/deployment.md)
+**[zoteus.com/docs](https://zoteus.com/docs)** · [Getting started](./docs/getting-started.md) · [Configuration](./docs/configuration.md) · [Uninstall](./docs/uninstall.md) · [Import & resolver](./docs/resolver.md) · [Architecture](./docs/architecture.md) · [Safe writes](./docs/writing.md) · [Citations](./docs/citations.md) · [Semantic search](./docs/semantic-search.md) · [Scholarly context](./docs/scholar.md) · [Code execution](./docs/code-execution.md) · [Deployment](./docs/deployment.md)
 
 ## Privacy
 
