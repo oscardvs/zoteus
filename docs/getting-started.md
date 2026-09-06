@@ -34,7 +34,7 @@ Pick one. You can change your mind later.
 |---|---|---|
 | What you do | Download one file and install it in the Claude app | Paste a web address into claude.ai |
 | Where it runs | On your own computer | On the Zoteus server |
-| Cost | Free | A subscription, currently 30 euros a year |
+| Cost | Free | A subscription: 69 euros a year for one person, 99 euros a month for a lab of up to ten |
 | Reaches the Zotero app on your computer | Yes, which is the fast, key-free route to your own PDFs | No, it reads your library through your Zotero account online |
 | Works in a browser or on a phone | No, only in the Claude app on that computer | Yes, anywhere you are signed in to claude.ai |
 | Updates | You install them yourself, see [Keeping it up to date](#keeping-the-extension-up-to-date) | Kept up to date for you |
@@ -194,8 +194,10 @@ a conference, and in claude.ai in any browser. People who use it tend to be the 
 were tired of only being able to ask about their reading while sitting at one desk.
 
 It runs on a maintained server, which costs money to keep online, so it is a subscription:
-30 euros a year, about 2.50 a month. The extension stays free and always will, with every
-feature. You are paying for the server and the upkeep, not for a better Zoteus.
+69 euros a year (or 7 a month) for one person, and 99 euros a month for a lab of up to ten
+people sharing a Zotero group library. Current prices are always on zoteus.com/pricing. The
+extension stays free and always will, with every feature. You are paying for the server and
+the upkeep, not for a better Zoteus.
 
 **Set it up in about two minutes**
 
