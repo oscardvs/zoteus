@@ -57,7 +57,12 @@ describe('usage store', () => {
   sqliteIt('rolls a day of calls up per tool and per user', async () => {
     const dir = tempDir();
     const h = await open(dir);
-    const now = Date.UTC(2026, 8, 3, 12);
+    // Today at noon UTC, not a fixed date: dailyRows() only folds the last two days in on
+    // a read and leaves older days to maintain(), so a fixed date silently aged out of that
+    // window (this test went red on 2026-09-06 with events dated 2026-09-03).
+    const today = new Date();
+    const now = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 12);
+    const day = new Date(now).toISOString().slice(0, 10);
     h.recorder.record(call(now, { ms: 100 }));
     h.recorder.record(call(now, { ms: 300 }));
     h.recorder.record(call(now, { ms: 900, ok: false, errorKind: 'zotero_4xx' }));
@@ -66,7 +71,7 @@ describe('usage store', () => {
 
     const rows = h.store.dailyRows();
     const search = rows.find((r) => r.name === 'zotero_search_items' && r.userId === 777)!;
-    expect(search).toMatchObject({ day: '2026-09-03', calls: 3, errors: 1, msMax: 900 });
+    expect(search).toMatchObject({ day, calls: 3, errors: 1, msMax: 900 });
     expect(search.msP50).toBe(300);
     expect(search.msP95).toBe(900);
     // Per-user grain: the second user is a row of their own, not folded into the first.
