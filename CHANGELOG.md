@@ -14,6 +14,23 @@ All notable changes to Zoteus are documented here. The format is based on
   starting.
 
 ### Fixed
+- **`zotero_get_item` now honours `style` and `locale` (#58).** Both arguments were
+  accepted, documented and dropped on the floor: the request Zotero saw carried only
+  `include`, so `include:"bib"` with `style:"apa"` and with `style:"chicago"` rendered the
+  same entry, in Zotero's default style, every time. They are forwarded now, and `style`
+  goes through the same alias table `zotero_bibliography` uses, so "apa", "chicago
+  author-date", a CSL id and a CSL URL all work. When the desktop app serves the request
+  this also means the styles it has installed, and any it can fetch from the repository,
+  are usable from here without further plumbing.
+- **"chicago" resolved to a CSL id the style repository no longer has (#58).** The
+  repository renamed its Chicago styles for the 18th edition and `chicago-note-bibliography`
+  is gone: `zotero_format_bibliography style:"chicago"` failed with a 404 and `zotero_styles`
+  reported Chicago unavailable, while the suite asserted the stale id. The alias follows
+  the repository's own rename record to `chicago-shortened-notes-bibliography` (what
+  zotero.org redirects the old id to, and what the desktop app renders by default), "chicago
+  notes" and "chicago full note" name the full-notes variant, and a 404 on any id now
+  consults `renamed-styles.json` before giving up, so an id copied from Zotero's
+  preferences survives the next rename too.
 - **The local embedding model no longer freezes the server while it runs (#59).** With
   `ZOTEUS_EMBEDDINGS=local`, every batch the model embedded blocked the whole process for as
   long as the inference took: onnxruntime-node's `run()` is a synchronous native call behind a

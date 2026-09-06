@@ -5,7 +5,7 @@ const bibliography: ToolDefinition = {
   name: 'zotero_bibliography',
   title: 'Server-rendered bibliography (library items)',
   description:
-    'Produce a formatted bibliography for items already in a Zotero library, rendered server-side by Zotero in a CSL style. Provide `item_keys` and optionally `style` (name or CSL id; Zotero default is chicago-note-bibliography), `locale`, and `linkwrap`. Returns XHTML. Note: this endpoint is item-only and capped at 150 items. For arbitrary CSL-JSON or items not in the library, use zotero_format_bibliography instead.',
+    'Produce a formatted bibliography for items already in a Zotero library, rendered server-side by Zotero in a CSL style. Provide `item_keys` and optionally `style` (a name such as "apa" or "chicago author-date", or a CSL id; unset renders Zotero\'s default, chicago-shortened-notes-bibliography), `locale`, and `linkwrap`. Returns XHTML. Note: this endpoint is item-only and capped at 150 items. For arbitrary CSL-JSON or items not in the library, use zotero_format_bibliography instead.',
   inputSchema: {
     item_keys: z.array(z.string()).min(1).max(150).describe('Library item keys (max 150).'),
     style: z.string().optional().describe('Style name or CSL id.'),
@@ -31,7 +31,9 @@ const bibliography: ToolDefinition = {
       // the struct channel (e.g. the claude.ai connector) would otherwise see
       // the summary and none of the actual bibliography. See `ok()` in registry.ts.
       structuredContent: {
-        style: style ?? 'chicago-note-bibliography',
+        // The Web API's documented default, `chicago-note-bibliography`, is an id the style
+        // repository has since renamed; this is what it renders as (#58).
+        style: style ?? 'chicago-shortened-notes-bibliography',
         itemCount: args.item_keys.length,
         bibliography: text,
       },

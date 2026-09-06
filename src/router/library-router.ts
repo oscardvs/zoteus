@@ -115,7 +115,7 @@ export class LibraryRouter {
 
   async getItem(
     key: string,
-    opts: ReadOpts & { include?: string; format?: string } = {},
+    opts: ReadOpts & { include?: string; format?: string; style?: string; locale?: string } = {},
   ): Promise<any> {
     const { library, ...rest } = opts;
     const lib = library ?? this.defaultLibrary();

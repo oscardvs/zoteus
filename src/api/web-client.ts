@@ -166,7 +166,7 @@ export class WebApiClient {
   async getItem(
     lib: LibraryRef,
     key: string,
-    query: { include?: string; format?: string } = {},
+    query: { include?: string; format?: string; style?: string; locale?: string } = {},
   ): Promise<any> {
     const { json } = await this.getJson(this.prefix(lib) + `/items/${key}`, this.buildQuery(query));
     return json;

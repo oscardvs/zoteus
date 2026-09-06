@@ -147,7 +147,7 @@ export class LocalApiClient {
 
   async getItem(
     key: string,
-    query: { include?: string; format?: string } = {},
+    query: { include?: string; format?: string; style?: string; locale?: string } = {},
     lib?: LibraryRef,
   ): Promise<any> {
     const { json } = await this.getJson(

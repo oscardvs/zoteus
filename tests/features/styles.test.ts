@@ -6,8 +6,37 @@ describe('StyleResolver', () => {
     const r = new StyleResolver();
     expect(r.resolveId('APA 7th')).toBe('apa');
     expect(r.resolveId('IEEE')).toBe('ieee');
-    expect(r.resolveId('Chicago')).toBe('chicago-note-bibliography');
+    // The id "chicago" used to name was renamed upstream for the 18th edition; the alias
+    // follows the rename, so it keeps rendering what it always rendered (#58).
+    expect(r.resolveId('Chicago')).toBe('chicago-shortened-notes-bibliography');
+    expect(r.resolveId('Chicago notes')).toBe('chicago-notes-bibliography');
+    expect(r.resolveId('chicago author-date')).toBe('chicago-author-date');
     expect(r.resolveId('some-custom-style')).toBe('some-custom-style');
+  });
+
+  it('follows the repository\'s rename record when an id has moved (#58)', async () => {
+    // A raw file fetch does not get the redirect zotero.org applies, so an id copied from
+    // Zotero's preferences, or one this project's own table carried, 404s over a rename.
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith('/chicago-note-bibliography.csl')) return new Response('gone', { status: 404 });
+      if (url.endsWith('/renamed-styles.json')) {
+        return new Response(JSON.stringify({ 'chicago-note-bibliography': 'chicago-shortened-notes-bibliography' }), {
+          status: 200,
+        });
+      }
+      if (url.endsWith('/chicago-shortened-notes-bibliography.csl')) {
+        return new Response('<style>SHORTENED</style>', { status: 200 });
+      }
+      return new Response('nope', { status: 404 });
+    });
+    const r = new StyleResolver({ fetchImpl: fetchImpl as any });
+    expect(await r.fetchStyle('chicago-note-bibliography')).toContain('SHORTENED');
+    // Cached under the old id too: the record is read once and the 404 is not repeated.
+    expect(await r.fetchStyle('chicago-note-bibliography')).toContain('SHORTENED');
+    expect(fetchImpl.mock.calls.filter(([u]) => u.endsWith('/renamed-styles.json'))).toHaveLength(1);
+    expect(fetchImpl.mock.calls.filter(([u]) => u.endsWith('/chicago-note-bibliography.csl'))).toHaveLength(1);
+    // An id the record does not know stays a plain 404.
+    await expect(r.fetchStyle('no-such-style')).rejects.toThrow(/"no-such-style" not found \(HTTP 404\)/);
   });
 
   it('fetches and caches a style', async () => {
