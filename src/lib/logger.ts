@@ -1,5 +1,6 @@
 // IMPORTANT: stdout carries the JSON-RPC stream on stdio transport.
 // All logging MUST go to stderr.
+import { createWriteStream, type WriteStream } from 'node:fs';
 import { redactArgs } from './redact.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -11,13 +12,38 @@ export interface Logger {
   error(...args: unknown[]): void;
 }
 
+export interface LoggerOptions {
+  /**
+   * A file every line is appended to as well as stderr (ZOTEUS_LOG_FILE). For a server
+   * nobody's terminal is attached to, a Windows scheduled task or a service manager that
+   * discards stderr, it is the only record of what the process was doing when it stopped
+   * answering (#59). Same format as stderr; a file that cannot be written is reported once
+   * on stderr and then left alone, never a reason for the server not to start.
+   */
+  file?: string;
+}
+
 const ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
 export function createLogger(
   level: LogLevel | string = 'info',
   format: LogFormat = 'text',
+  opts: LoggerOptions = {},
 ): Logger {
   const threshold = ORDER[level as LogLevel] ?? ORDER.info;
+  let file: WriteStream | undefined;
+  if (opts.file) {
+    file = createWriteStream(opts.file, { flags: 'a' });
+    file.on('error', (e) => {
+      process.stderr.write(`[zoteus] WARN log file ${opts.file} is not writable (${e.message}); logging to stderr only\n`);
+      file?.destroy();
+      file = undefined;
+    });
+  }
+  const write = (line: string): void => {
+    process.stderr.write(line);
+    file?.write(line);
+  };
   const emit = (lvl: LogLevel, args: unknown[]) => {
     if (ORDER[lvl] < threshold) return;
     const redacted = redactArgs(args);
@@ -31,12 +57,10 @@ export function createLogger(
       const text = (fields ? redacted.slice(0, -1) : redacted)
         .map((a) => (typeof a === 'string' ? a : safeStringify(a)))
         .join(' ');
-      process.stderr.write(
-        `${safeStringify({ level: lvl, time: new Date().toISOString(), msg: text, ...fields })}\n`,
-      );
+      write(`${safeStringify({ level: lvl, time: new Date().toISOString(), msg: text, ...fields })}\n`);
     } else {
       const text = redacted.map((a) => (typeof a === 'string' ? a : safeStringify(a))).join(' ');
-      process.stderr.write(`[zoteus] ${lvl.toUpperCase()} ${text}\n`);
+      write(`[zoteus] ${lvl.toUpperCase()} ${text}\n`);
     }
   };
   return {

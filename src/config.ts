@@ -86,6 +86,8 @@ export interface ZoteusConfig {
   readOnly: boolean;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   logFormat: 'text' | 'json';
+  /** A file every log line is appended to as well as stderr (ZOTEUS_LOG_FILE). */
+  logFile?: string;
   /** Daily check against GitHub releases for a newer version (surfaced via zotero_whoami). */
   updateCheck: boolean;
   /** Distribution channel marker (the .dxt manifest sets "dxt"); tailors the update notice. */
@@ -270,6 +272,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
         ZOTEUS_READ_ONLY: bool(false),
         ZOTEUS_LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
         ZOTEUS_LOG_FORMAT: z.enum(['text', 'json']).default('text'),
+        ZOTEUS_LOG_FILE: z.string().min(1).optional(),
         ZOTEUS_UPDATE_CHECK: bool(false),
         ZOTEUS_DIST: z.string().min(1).optional(),
         ZOTEUS_ALLOW_INSECURE_HTTP: bool(false),
@@ -478,6 +481,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
     readOnly: parsed.ZOTEUS_READ_ONLY,
     logLevel: parsed.ZOTEUS_LOG_LEVEL,
     logFormat: parsed.ZOTEUS_LOG_FORMAT,
+    logFile: parsed.ZOTEUS_LOG_FILE,
     updateCheck: parsed.ZOTEUS_UPDATE_CHECK,
     dist: parsed.ZOTEUS_DIST,
     allowInsecureHttp: parsed.ZOTEUS_ALLOW_INSECURE_HTTP,

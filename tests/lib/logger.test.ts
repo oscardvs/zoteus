@@ -75,3 +75,52 @@ describe('logger', () => {
     expect(lines.join('')).toBe('');
   });
 });
+
+describe('ZOTEUS_LOG_FILE', () => {
+  /** The stream writes asynchronously: wait for the file to hold what was logged. */
+  async function fileContent(path: string, expected: string): Promise<string> {
+    const { readFileSync } = await import('node:fs');
+    for (let i = 0; i < 100; i++) {
+      try {
+        const text = readFileSync(path, 'utf8');
+        if (text.includes(expected)) return text;
+      } catch {
+        // not written yet
+      }
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error(`${path} never held "${expected}"`);
+  }
+
+  it('appends every line to the file as well as stderr, in the same format', async () => {
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const path = join(mkdtempSync(join(tmpdir(), 'zoteus-log-')), 'zoteus.log');
+    const { lines, restore } = capture();
+    const log = createLogger('info', 'json', { file: path });
+    log.info('first', { status: 200 });
+    log.warn('second', { token: 'secret' });
+    restore();
+    const text = await fileContent(path, 'second');
+    const records = text.trim().split('\n').map((l) => JSON.parse(l));
+    expect(records.map((r) => r.msg)).toEqual(['first', 'second']);
+    expect(records[0].status).toBe(200);
+    // The file gets exactly what stderr got, redaction included.
+    expect(text).not.toContain('secret');
+    expect(lines.join('')).toBe(text);
+  });
+
+  it('reports a file it cannot write once, and keeps logging to stderr', async () => {
+    const { lines, restore } = capture();
+    const log = createLogger('info', 'text', { file: '/nonexistent-dir-zoteus/zoteus.log' });
+    log.info('still here');
+    await new Promise((r) => setTimeout(r, 50));
+    log.info('and here');
+    restore();
+    const out = lines.join('');
+    expect(out).toContain('not writable');
+    expect(out).toContain('still here');
+    expect(out).toContain('and here');
+  });
+});
