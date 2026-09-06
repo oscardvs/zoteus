@@ -44,7 +44,7 @@ A cloud API key is optional. Add one for sync, group libraries, and writes when 
 claude mcp add --transport stdio zoteus -e ZOTERO_API_KEY=xxxxx -- npx -y @oscardvs/zoteus
 ```
 
-> Get a key at [zotero.org/settings/keys](https://www.zotero.org/settings/keys). For key-free local reads and writes, enable **Settings → Advanced → "Allow other applications on this computer to communicate with Zotero"** in the desktop app.
+> Get a key at [zotero.org/settings/keys](https://www.zotero.org/settings/keys). For key-free local reads, and the personal-library writes that go through the app (adding items by identifier, attachments, annotations, trash and restore), enable **Settings → Advanced → "Allow other applications on this computer to communicate with Zotero"** in the desktop app. Metadata edits, tags, collections and group libraries always need the key.
 
 ---
 
