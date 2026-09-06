@@ -7,6 +7,12 @@ All notable changes to Zoteus are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **An uninstall procedure, [`docs/uninstall.md`](./docs/uninstall.md) (#55).** Zoteus has
+  no host uninstall hook, so the removal surface is documentation: the one directory that
+  holds everything it derives, per platform, what that directory contains, the pre-v1.10.0
+  case where model weights landed outside it, what is deliberately left alone (the Zotero
+  library, cloud keys) and what Zotero itself remembers (the local-access setting, an
+  "Always Allow" grant).
 - **`ZOTEUS_LOG_FILE`, a file every log line is appended to as well as stderr.** The server
   in #59 ran under a Windows scheduled task whose stderr went nowhere, so when it stopped
   answering there was no record of what it had been doing. Same format as stderr (`text` or

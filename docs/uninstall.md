@@ -49,8 +49,11 @@ you set `ZOTEUS_DATA_DIR` yourself, read it back from wherever you set it.
 
    That is the whole removal. The index (`search-index.sqlite` and its
    `-wal`/`-shm` sidecars, or the older `search-index.json`), the downloaded
-   model weights under `<ZOTEUS_DATA_DIR>/models`, and `update-check.json`
-   all live inside it.
+   model weights under `<ZOTEUS_DATA_DIR>/models`, `update-check.json`, the
+   local-API key Zotero granted (`local-api-key.json`), the usage log if you
+   turned `ZOTEUS_USAGE_LOG` on (`usage.sqlite`), and on a self-hosted OAuth
+   deployment the encrypted token store (`oauth-store.json`) all live inside
+   it. A log file you named with `ZOTEUS_LOG_FILE` is wherever you put it.
 
 4. **Remove the embedding runtime, if you installed one by hand.** Semantic
    search needs `@huggingface/transformers`, which Zoteus does not vendor. If
@@ -69,12 +72,25 @@ add and edit items through the API like any other client, and removing it
 leaves those items where they are. Do not delete the directory as part of
 removing Zoteus.
 
-**Your cloud API keys.** They live wherever you put them — a shell profile,
-your MCP client's configuration, a secret manager. Zoteus never writes them to
-disk, so nothing in this list reaches them. The only key Zoteus stores is the
-one Zotero grants it for the local API; it lives at
+**Your cloud API keys.** They live wherever you put them: a shell profile,
+your MCP client's configuration, a secret manager. A personal install never
+writes them to disk, so nothing in this list reaches them. The only key such an
+install stores is the one Zotero grants it for the local API; it lives at
 `<ZOTEUS_DATA_DIR>/local-api-key.json`, and deleting the data directory in step
-3 removes it. Revoke cloud keys yourself if you want them gone.
+3 removes it. Revoke cloud keys yourself if you want them gone. The one
+exception is a self-hosted OAuth deployment run with `ZOTEUS_OAUTH_STORE=file`:
+it keeps its users' Zotero keys, encrypted with `ZOTEUS_OAUTH_TOKEN_SECRET`, in
+`<ZOTEUS_DATA_DIR>/oauth-store.json`, and step 3 removes that file too.
+
+**Zotero's own settings.** Two things on Zotero's side were changed for Zoteus
+and stay as they are. The setting you enabled for key-free local access
+(Settings → Advanced → "Allow other applications on this computer to
+communicate with Zotero") stays on; turn it off there if nothing else on the
+machine uses it. And if you ever answered "Always Allow" to Zotero 10's local
+write grant, Zotero remembers that grant in `localAPIKeys.json` in its
+*profile* directory (not its data directory). Deleting Zoteus's copy of the
+key does not revoke it there; a Zoteus that is gone can never use it, but if
+you want the record gone too, remove it with Zotero closed.
 
 ## If you installed before v1.10.0
 
