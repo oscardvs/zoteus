@@ -17,6 +17,7 @@
  */
 
 import { DEFAULT_PRECISE_MAX_BYTES } from './pdf-pages.js';
+import { loadPdfjs } from './pdfjs-loader.js';
 
 /** One place a passage occurs, in Zotero's stored coordinate form. */
 export interface PassageAnchor {
@@ -245,12 +246,10 @@ export async function pageHeights(
   const wanted = [...new Set(pageIndexes)].filter((n) => Number.isInteger(n) && n >= 0);
   if (!wanted.length) return new Map();
 
-  let pdfjs: any;
-  try {
-    pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs' as any);
-  } catch {
-    return null; // optional dependency absent, degrade
-  }
+  // Loaded through the shared loader: pdfjs must not be imported directly, or it breaks
+  // inside Electron (Claude Desktop). See pdfjs-loader.ts.
+  const pdfjs = await loadPdfjs();
+  if (!pdfjs) return null; // unavailable here (degrade); pdfjsLoadError() says why
   try {
     const doc = await pdfjs.getDocument({ data: bytes.slice(), useSystemFonts: true, isEvalSupported: false })
       .promise;
@@ -288,12 +287,10 @@ export async function locatePassages(
   const results: PassageAnchor[][] = passages.map(() => []);
   if (!needles.some((n) => n.length)) return results;
 
-  let pdfjs: any;
-  try {
-    pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs' as any);
-  } catch {
-    return null; // optional dependency absent, degrade
-  }
+  // Loaded through the shared loader: pdfjs must not be imported directly, or it breaks
+  // inside Electron (Claude Desktop). See pdfjs-loader.ts.
+  const pdfjs = await loadPdfjs();
+  if (!pdfjs) return null; // unavailable here (degrade); pdfjsLoadError() says why
   try {
     // pdfjs detaches the buffer it is handed; give it a copy so the caller keeps its bytes.
     const doc = await pdfjs.getDocument({ data: bytes.slice(), useSystemFonts: true, isEvalSupported: false })

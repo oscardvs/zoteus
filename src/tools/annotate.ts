@@ -13,6 +13,7 @@ import {
 import { locatePassages, pageHeights, type PassageAnchor } from '../features/fulltext/pdf-locate.js';
 import { DEFAULT_PRECISE_MAX_BYTES } from '../features/fulltext/pdf-pages.js';
 import { loadAttachmentBytes } from '../features/attachments/bytes.js';
+import { pdfjsUnavailableReason } from '../features/fulltext/pdfjs-loader.js';
 
 /** Zotero's stored placement for one annotation. */
 export interface Position {
@@ -520,7 +521,7 @@ async function anchorPassages(
     for (const p of pending) {
       problems.push(
         `annotations[${p.index}]: the PDF could not be parsed for text positions ` +
-          `(a scanned/corrupt PDF, a file over the ${maxMb} MB parsing limit, or the optional pdfjs-dist parser is missing). ` +
+          `(a scanned/corrupt PDF, a file over the ${maxMb} MB parsing limit, or ${pdfjsUnavailableReason()}). ` +
           `Pass an explicit \`position\`, or use type:"note" with \`page\`.`,
       );
     }

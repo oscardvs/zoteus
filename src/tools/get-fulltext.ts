@@ -13,6 +13,7 @@ import {
 } from '../features/fulltext/pdf-pages.js';
 import { extractEpubText, looksLikeZip, DEFAULT_EPUB_MAX_BYTES } from '../features/fulltext/epub.js';
 import { loadAttachmentBytes, type AttachmentByteSource } from '../features/attachments/bytes.js';
+import { pdfjsUnavailableReason } from '../features/fulltext/pdfjs-loader.js';
 
 function err(text: string): ToolHandlerResult {
   return { content: [{ type: 'text', text }], isError: true };
@@ -223,7 +224,7 @@ const getFulltext: ToolDefinition = {
       const outline = await extractPdfOutline(file.bytes);
       if (!outline) {
         return err(
-          `The outline of ${resolved.attachmentKey} could not be read (corrupt PDF, or the optional pdfjs-dist parser is missing).`,
+          `The outline of ${resolved.attachmentKey} could not be read (corrupt PDF, or ${pdfjsUnavailableReason()}).`,
         );
       }
       const truncated = outline.length > MAX_OUTLINE_ENTRIES;
@@ -303,7 +304,7 @@ const getFulltext: ToolDefinition = {
         if (!epub) {
           return err(
             `${noText}, and direct extraction yielded nothing (a scanned or corrupt file, an unsupported format, ` +
-              `or the optional pdfjs-dist parser is missing). Open the file once in Zotero to have it indexed, then retry.`,
+              `or ${pdfjsUnavailableReason()}). Open the file once in Zotero to have it indexed, then retry.`,
           );
         }
         content = epub.text;
@@ -337,16 +338,21 @@ const getFulltext: ToolDefinition = {
     // re-extracts by default. `precise_pages:false` opts back out.
     const wantsExact = args.precise_pages ?? Boolean(args.page_range);
     let tooLarge = false;
+    // Which half failed is known right here, so the notice below names it instead of
+    // offering the reader both and letting them guess.
+    let hadBytes = false;
+    let byteReasons: string[] = [];
     // An EPUB has already been read whole; there are no PDF pages to go back for.
     if (!pages && wantsExact && fulltextSource !== 'epub') {
       const file = await fetchAttachmentBytes(ctx, resolved, library);
       if (file.tooLarge) tooLarge = true;
       else if (file.bytes) {
+        hadBytes = true;
         // extractPdfPages self-guards on byte size too (catches unknown-size attachments).
         pages = await extractPdfPages(file.bytes);
         if (!pages && file.bytes.byteLength > DEFAULT_PRECISE_MAX_BYTES) tooLarge = true;
         if (pages) fileSource = file.source;
-      }
+      } else byteReasons = file.reasons;
     }
     const exact = Boolean(pages && pages.length);
     const pageSource = exact ? 'exact' : 'approximate';
@@ -354,7 +360,9 @@ const getFulltext: ToolDefinition = {
       indexed && wantsExact && !exact
         ? tooLarge
           ? ` Exact pages skipped: this PDF exceeds the ${maxMb} MB re-extraction limit on this instance; pageApprox is an estimate.`
-          : ' Exact pages unavailable (PDF bytes or the optional pdfjs-dist parser missing); pageApprox is an estimate.'
+          : hadBytes
+            ? ` Exact pages unavailable: the PDF was read but not parsed (${pdfjsUnavailableReason()}); pageApprox is an estimate.`
+            : ` Exact pages unavailable: the PDF bytes could not be read (${byteReasons.join('; ') || 'no source could produce the file'}); pageApprox is an estimate.`
         : '';
     if (exact && fileSource) base.fileSource = fileSource;
 

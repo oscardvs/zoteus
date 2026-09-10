@@ -1,3 +1,5 @@
+import { loadPdfjs } from './pdfjs-loader.js';
+
 /**
  * Default cap on PDF bytes for exact-page re-extraction. pdfjs decodes the whole document
  * (objects + images) into memory and can balloon to many× the file size — on a small host
@@ -18,13 +20,10 @@ export async function extractPdfPages(
   const maxBytes = opts.maxBytes ?? DEFAULT_PRECISE_MAX_BYTES;
   // Refuse before importing/parsing: a large PDF would OOM pdfjs on a small host.
   if (bytes.byteLength > maxBytes) return null;
-  let pdfjs: any;
-  try {
-    // Legacy build runs under Node without a DOM.
-    pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs' as any);
-  } catch {
-    return null; // dependency not installed — degrade
-  }
+  // Loaded through the shared loader: pdfjs must not be imported directly, or it breaks
+  // inside Electron (Claude Desktop). See pdfjs-loader.ts.
+  const pdfjs = await loadPdfjs();
+  if (!pdfjs) return null; // unavailable here (degrade); pdfjsLoadError() says why
   try {
     // pdfjs transfers (detaches) the buffer it is given; hand it a copy so the
     // caller's bytes stay intact (matters when the same buffer is re-extracted).
@@ -74,12 +73,10 @@ export async function extractPdfOutline(
 ): Promise<OutlineEntry[] | null> {
   const maxBytes = opts.maxBytes ?? DEFAULT_PRECISE_MAX_BYTES;
   if (bytes.byteLength > maxBytes) return null;
-  let pdfjs: any;
-  try {
-    pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs' as any);
-  } catch {
-    return null; // dependency not installed (degrade)
-  }
+  // Loaded through the shared loader: pdfjs must not be imported directly, or it breaks
+  // inside Electron (Claude Desktop). See pdfjs-loader.ts.
+  const pdfjs = await loadPdfjs();
+  if (!pdfjs) return null; // unavailable here (degrade); pdfjsLoadError() says why
   try {
     const data = bytes.slice();
     const doc = await pdfjs.getDocument({ data, useSystemFonts: true, isEvalSupported: false }).promise;
