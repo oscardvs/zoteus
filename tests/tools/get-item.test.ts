@@ -27,7 +27,7 @@ describe('zotero_get_item', () => {
     const getImpl = vi.fn(async () => ({ key: 'ABCD', bib: '<div/>', data: { itemType: 'book' } }));
     await getItem.handler({ item_key: 'ABCD', include: 'bib', style: 'Chicago', locale: 'en-GB' }, ctx(getImpl));
     expect(getImpl).toHaveBeenCalledWith('ABCD', {
-      include: 'bib',
+      include: 'data,bib',
       style: 'chicago-shortened-notes-bibliography',
       locale: 'en-GB',
       library: undefined,
@@ -35,6 +35,36 @@ describe('zotero_get_item', () => {
     // A bare CSL id or a URL is passed through as it is.
     await getItem.handler({ item_key: 'ABCD', include: 'citation', style: 'chicago-author-date' }, ctx(getImpl));
     expect(getImpl).toHaveBeenLastCalledWith('ABCD', expect.objectContaining({ style: 'chicago-author-date' }));
+  });
+
+  it('keeps the item record when `include` asks for rendered output', async () => {
+    // Zotero REPLACES the representation when `include` is set: `include=bib` answered with
+    // the rendered bib alone and no `data` object, so every bibliographic field the
+    // description promises went missing and the summary rendered "(no title)". Measured
+    // against a real library before the fix: `"title"` appeared nowhere in the response.
+    // `data` is asked for alongside whatever was requested now, which is what
+    // "additionally" always meant.
+    const getImpl = vi.fn(async (_key: string, opts: any) => ({
+      key: 'ABCD',
+      version: 5,
+      ...(String(opts.include).split(',').includes('data')
+        ? { data: { itemType: 'book', title: 'T' } }
+        : {}),
+      bib: '<div class="csl-bib-body"/>',
+    }));
+    const res = await getItem.handler({ item_key: 'ABCD', include: 'bib' }, ctx(getImpl));
+    expect(getImpl).toHaveBeenCalledWith('ABCD', expect.objectContaining({ include: 'data,bib' }));
+    const item = res.structuredContent?.item as any;
+    // Both halves survive: the record AND the rendered output.
+    expect(item.data.title).toBe('T');
+    expect(item.bib).toBeTruthy();
+    expect((res.content ?? []).map((c: any) => c.text).join('\n')).toContain('T');
+  });
+
+  it('does not ask for `data` twice when the caller already named it', async () => {
+    const getImpl = vi.fn(async () => ({ key: 'ABCD', data: { itemType: 'book' }, bib: '<div/>' }));
+    await getItem.handler({ item_key: 'ABCD', include: 'data,bib' }, ctx(getImpl));
+    expect(getImpl).toHaveBeenCalledWith('ABCD', expect.objectContaining({ include: 'data,bib' }));
   });
 
   it('includes children when requested', async () => {

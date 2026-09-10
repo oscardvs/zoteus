@@ -24,8 +24,24 @@ const getItem: ToolDefinition = {
     const library = optionalLibrary(args);
     // Both were accepted and neither was forwarded, so every style rendered the same (#58).
     // The alias table turns "Chicago" into an id; a bare id or a URL passes through.
+    // Zotero REPLACES the representation when `include` is set: `include=bib` answers with
+    // the rendered bib alone and no `data` object, so every bibliographic field this tool
+    // documents went missing and the summary rendered "(no title)". Asking for `data`
+    // alongside whatever was requested restores the record, which is what "additionally"
+    // in the description always meant.
+    const include = args.include
+      ? [
+          ...new Set([
+            'data',
+            ...String(args.include)
+              .split(',')
+              .map((part: string) => part.trim())
+              .filter(Boolean),
+          ]),
+        ].join(',')
+      : undefined;
     const item = await ctx.router.getItem(args.item_key, {
-      include: args.include,
+      include,
       style: args.style ? ctx.styles.resolveId(args.style) : undefined,
       locale: args.locale,
       library,
