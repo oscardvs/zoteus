@@ -27,7 +27,7 @@ const savedSearches: ToolDefinition = {
     if (args.action === 'list') {
       // The caller's library_type/library_id, like every other action here (#74).
       const lib = resolveLibrary(ctx, args);
-      const r = await ctx.web.listSearches(lib);
+      const r = await ctx.router.listSearches({ library: lib });
       const searches = r.data.map((s: any) => ({
         key: s.key ?? s.data?.key,
         name: s.data?.name,

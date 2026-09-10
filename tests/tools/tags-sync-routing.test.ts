@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import listTags from '../../src/tools/list-tags.js';
 import tagAudit from '../../src/tools/tag-audit.js';
 import sync from '../../src/tools/sync.js';
+import savedSearches from '../../src/tools/saved-searches.js';
 import { LibraryRouter } from '../../src/router/library-router.js';
 import { WebApiClient } from '../../src/api/web-client.js';
 import { LocalApiClient } from '../../src/api/local-client.js';
@@ -27,6 +28,19 @@ const GROUP = 6666644;
 const TAGS = [
   { tag: 'MPCC', meta: { type: 0, numItems: 1 } },
   { tag: 'Accuracy', meta: { type: 1, numItems: 1 } },
+];
+/** One saved-search definition, in the shape Zotero 10.0.1 serves it locally. */
+const SEARCHES = [
+  {
+    key: 'S1',
+    version: 42,
+    data: {
+      key: 'S1',
+      version: 42,
+      name: 'Unread 2024',
+      conditions: [{ condition: 'tag', operator: 'is', value: 'to-read' }],
+    },
+  },
 ];
 const ITEMS = [
   { key: 'I1', data: { key: 'I1', itemType: 'journalArticle', title: 'A', tags: [{ tag: 'MPCC' }] } },
@@ -54,7 +68,7 @@ function localAnswer(url: string): Response {
   if (path === '/items') return versions ? json({ I1: 623, I2: 624 }, 2) : json(ITEMS, ITEMS.length);
   if (path === '/items/top') return json(ITEMS, ITEMS.length);
   if (path === '/collections') return versions ? json({ C1: 508 }, 1) : json([], 0);
-  if (path === '/searches') return versions ? json({}, 0) : json([], 0);
+  if (path === '/searches') return versions ? json({}, 0) : json(SEARCHES, SEARCHES.length);
   return new Response('No endpoint found', { status: 404 });
 }
 
@@ -118,6 +132,23 @@ describe('tag and sync reads follow the library route', () => {
     expect(res.structuredContent?.autoTags).toEqual([{ name: 'Accuracy', numItems: 1 }]);
     expect(res.structuredContent?.itemsScanned).toBe(2);
     expect(webUrls).toEqual([]);
+  });
+
+  it('lists saved searches from the desktop app with no cloud key, and never asks the cloud', async () => {
+    // The last read still calling ctx.web directly. On the majority setup (desktop app
+    // running, no cloud key) that is api.zotero.org for users/0, which answers 400
+    // "Invalid user ID", and the tool then dressed it up as advice about field names and
+    // itemType, on a call that has no fields. Zotero 7+ serves /searches locally, so the
+    // answer was next door the whole time.
+    const { ctx, webUrls, localUrls } = harness();
+    const res = await savedSearches.handler({ action: 'list' }, ctx);
+    expect(res.isError).toBeUndefined();
+    expect(res.structuredContent?.searches).toEqual([
+      { key: 'S1', name: 'Unread 2024', conditions: [{ condition: 'tag', operator: 'is', value: 'to-read' }] },
+    ]);
+    expect(webUrls).toEqual([]);
+    expect(localUrls.some((u) => new URL(u).pathname === '/api/users/0/searches')).toBe(true);
+    expect(textOf(res)).not.toMatch(/Invalid user ID|zotero_schema/);
   });
 
   it('serves the sync delta from the desktop app and names what it cannot answer', async () => {

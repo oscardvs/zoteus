@@ -17,6 +17,9 @@ function makeCtx(overrides: any = {}): any {
       defaultLibrary: () => ({ type: 'user', id: 19552201 }),
       listCollections: vi.fn(async () => ({ data: [], totalResults: 0, lastModifiedVersion: 1 })),
       listTags: vi.fn(async () => ({ data: [{ tag: 'ml' }, { tag: 'robotics' }], totalResults: 2, lastModifiedVersion: 1 })),
+      // Saved-search listing is routed now, like every other read, so a desktop-only
+      // install can answer it without a cloud key.
+      listSearches: vi.fn(async () => ({ data: [{ key: 'S1', data: { name: 'recent', conditions: [] } }], totalResults: 1, lastModifiedVersion: 1 })),
     },
     web: {
       writeItems: vi.fn(async () => ({ successful: [{ index: 0, key: 'NEW1', version: 5 }], unchanged: [], failed: [], newLibraryVersion: 5 })),

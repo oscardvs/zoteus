@@ -321,6 +321,16 @@ export class LibraryRouter {
   }
 
   /**
+   * Saved-search definitions, routed like every other read so a running desktop app serves
+   * them with no cloud key (#64, #26, #67, same cause as the tag reads above).
+   */
+  async listSearches(opts: ReadOpts = {}): Promise<ListResult> {
+    const lib = opts.library ?? this.defaultLibrary();
+    if (await this.route(lib)) return this.local!.listSearches(lib);
+    return this.web.listSearches(lib);
+  }
+
+  /**
    * Items exported in a bibliographic format, routed like every other read. Before this
    * existed, `zotero_format_bibliography item_keys` exported its CSL-JSON from
    * api.zotero.org unconditionally, and in key-free local mode that is users/0, which the

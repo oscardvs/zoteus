@@ -491,6 +491,19 @@ export class LocalApiClient {
   }
 
   /**
+   * Saved-search definitions the desktop app holds.
+   *
+   * Zotero 7+ serves `/searches` locally, exactly as the cloud does. Added because
+   * zotero_saved_searches read `ctx.web` unconditionally, so a desktop-only install asked
+   * api.zotero.org for users/0 and got "Invalid user ID" back while the app beside it had
+   * the answer all along. Same defect, and same fix, as the tag and sync reads before it.
+   */
+  async listSearches(lib?: LibraryRef): Promise<ListResult> {
+    const { json, headers } = await this.getJson(`${localLibraryPrefix(lib)}/searches`);
+    return this.toListResult(json, headers);
+  }
+
+  /**
    * Whether this library really has that collection key.
    *
    * Asked because the desktop app does NOT refuse an unknown collection on the route that
