@@ -4,6 +4,88 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.1] - 2026-09-10
+
+### Added
+- **`zotero_whoami` reports the running Zoteus `version`.** Nothing in a conversation could
+  say which Zoteus was answering it. The update notice only appears when a NEWER release
+  exists, so silence meant either "you are current" or "nothing ever checked", and a client
+  pinned several releases back looked exactly like a healthy one. Found the hard way on the
+  machine this was written on: Claude Code was pinned to 1.17.0 and the Claude Desktop
+  extension was still 1.13.0, five releases behind, with nothing anywhere to say so. A
+  manually installed `.mcpb` never auto-updates, so this is the only place that answer can
+  come from.
+
+### Fixed
+- **Every PDF feature was degraded inside Claude Desktop, and the message blamed the wrong
+  thing.** Found by driving the shipped bundle through Claude Desktop itself; no issue was
+  filed, because nobody outside could have diagnosed it from the message it produced. pdfjs
+  decides once, while its module body runs, whether it is running under
+  Node, and the last clause of that test is `!(process.versions.electron && process.type &&
+  process.type !== "browser")`. Claude Desktop runs MCP servers inside Electron, where
+  `process.type` is `"utility"`, so pdfjs concluded it was in a browser, evaluated the browser
+  half of its own module body, and threw `DOMMatrix is not defined` before reading a byte of
+  any file. The import is wrapped in a bare `catch` that returns null to degrade gracefully,
+  so nothing surfaced: `zotero_get_fulltext outline:true` answered "could not be read (corrupt
+  PDF, or the optional pdfjs-dist parser is missing)", `page_range` and `precise_pages` fell
+  back to `pageSource: "approximate"`, and `zotero_annotate` lost the text anchoring that
+  places a highlight from a quoted passage. Every one of those blamed a missing optional
+  dependency that was installed and working. Measured on Electron 44.2.0, which ships Node
+  24.20.0, so neither the Node version nor a native ABI mismatch was ever involved: the same
+  1.8 MB PDF, the same installed pdfjs 5.6.205, read 14 pages and 9 outline entries under
+  plain Node and failed to import at all with `process.type` set. `process.type` is now
+  masked for the duration of the import and restored in a `finally`, which is the whole
+  window that matters because `isNodeJS` is captured then and never read again; a
+  non-configurable descriptor is left alone rather than forced, since deleting one throws and
+  a thrown loader is worse than the degradation it prevents. pdfjs is imported in exactly one
+  place now, so the four call sites cannot drift apart again. Verified end to end against the
+  1.18.0 bundle installed in Claude Desktop: under a process made to look like Electron's it
+  reproduces the reported failure, and the fixed build returns the 19 outline headings and
+  `pageSource: "exact"` in the same environment.
+
+  The messages no longer offer a cause they have not checked. Where the parser really cannot
+  load, the error it threw is quoted instead of asserting the dependency is absent; and
+  `zotero_get_fulltext` knows at the branch point whether it failed to read the bytes or
+  failed to parse them, so it now says which, rather than handing back "PDF bytes or the
+  optional pdfjs-dist parser missing" and leaving the reader to guess between two unrelated
+  problems.
+
+- **`zotero_saved_searches action:"list"` reached the cloud too.** The last read still
+  calling `ctx.web` directly, and the same defect as `zotero_manage_tags action:"list"` one
+  release earlier, with `zotero_list_tags` and `zotero_sync` before that. A desktop-only
+  install asked api.zotero.org for `users/0`, got "Invalid user ID" back, and the tool then
+  dressed that up as advice to "check field names and itemType against the schema" on a call
+  that carries no fields at all. Zotero 7+ serves the definitions locally (measured: `GET
+  /api/users/0/searches` answers 200), so they were next door the whole time. The list action
+  is routed now, like every other read, and an explicit `library_id` still picks the group it
+  names. Installs holding a cloud key were never affected, so this broke exactly the keyless
+  desktop user, which is the setup the documentation calls local-only read mode.
+
+- **`zotero_tag_audit` no longer reports the whole library as one collection's coverage.**
+  `scope.collection_keys` was passed straight to the item listing with nothing checking that
+  the library had those keys. The desktop app answers `/collections/<unknown>/items` with the
+  WHOLE library rather than a 404, so a mistyped or stale key came back as that collection's
+  coverage, counting every item in the library. Measured against a 285-item library with a
+  required tier: the real collection `RANF9BFV` reports `itemCount: 6`, and `ZZZZZZZZ`, which
+  does not exist, reported `itemCount: 285` under that same key, with nothing in the answer to
+  say which question had been answered. In an audit that is the worst shape a wrong answer can
+  take, because the same typo against a vocabulary with no required tier reports an empty
+  `missingByTier`, which reads as perfect compliance. `zotero_search_items` and `zotero_export`
+  already refuse an unknown collection key for this exact reason and say so in the refusal;
+  the audit now uses the same guard, and refuses before any listing work rather than after
+  paying for a full-library scan.
+
+- **`include` on `zotero_get_item` no longer drops the item record it promises.** The
+  description offers `include` as a way to "additionally" request rendered output, but Zotero
+  REPLACES the representation when `include` is set: `include=bib` answers with the rendered
+  bibliography alone and no `data` object at all. Every bibliographic field the tool documents
+  went missing, silently, and the summary line rendered `Item SUU9EI96: (no title)` for an
+  item whose title the same call had just formatted into its bibliography. Measured against a
+  real library before the fix: the string `"title"` appeared nowhere in the response. `data` is
+  now requested alongside whatever was asked for, so the record and the rendered output both
+  come back, and a caller that already named `data` is not charged for it twice. `bib`,
+  `citation` and `csljson` all behaved this way and all three are fixed.
+
 ## [1.18.0] - 2026-09-10
 
 ### Fixed
