@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { resolveCallerPath, CallerPathError } from '../lib/caller-path.js';
 import type { ToolContext, ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
 import { ok, optionalLibrary } from '../registry/registry.js';
+import { refuseUnknownCollection } from './collection-guard.js';
 import type { LibraryRef } from '../api/web-client.js';
 import {
   auditOffTaxonomy,
@@ -211,6 +212,19 @@ const tagAudit: ToolDefinition = {
     const library: LibraryRef | undefined = optionalLibrary(args);
     const lib = library ?? ctx.router.defaultLibrary();
     const cap = args.limit ?? 50;
+
+    // A scope key this library does not have would otherwise be audited as though it did:
+    // the desktop app answers `/collections/<unknown>/items` with the WHOLE library, so
+    // that collection's coverage came back counting every item in the library (measured:
+    // 285 against the 6 the real collection holds), labelled as that collection and with
+    // nothing in the answer to say which question had been answered. In an audit that is
+    // the worst possible wrong answer, because a mistyped key reports compliance nobody
+    // has. Refused before any listing work, exactly as zotero_search_items and
+    // zotero_export already refuse the same key.
+    for (const ck of args.scope?.collection_keys ?? []) {
+      const unknown = await refuseUnknownCollection(ctx, ck, lib, 'audited');
+      if (unknown) return unknown;
+    }
 
     const libraryTags = await listAllTags(ctx, lib);
     const { offTaxonomy, autoTags } = auditOffTaxonomy(libraryTags, vocab, Boolean(args.include_auto));

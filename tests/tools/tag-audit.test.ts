@@ -111,6 +111,44 @@ describe('zotero_tag_audit', () => {
  * item(s)" whether the scope key was spelled right or wrong, with no per-collection
  * coverage in the second and nothing to say it had been asked for.
  */
+describe('zotero_tag_audit refuses a collection key the library does not have', () => {
+  /**
+   * The desktop app answers `/collections/<unknown>/items` with the WHOLE library, so an
+   * audit scoped to a mistyped key reported every item in the library as that collection's
+   * coverage. Measured before this guard: `itemCount: 285` for a key that does not exist,
+   * against the 6 the real collection holds, with nothing in the answer to say which
+   * question had been answered. In an audit that is the worst possible wrong answer,
+   * because a mistyped key reports compliance nobody has. zotero_search_items and
+   * zotero_export already refuse the same key for the same reason.
+   */
+  function scopedCtx(known: string[]) {
+    const c = ctx();
+    c.local = { collectionExists: vi.fn(async (k: string) => known.includes(k)) };
+    c.router.servesLocally = () => true;
+    return c;
+  }
+
+  it('names the unknown key and audits nothing at all', async () => {
+    const c = scopedCtx(['REAL1234']);
+    const res = await tagAudit.handler({ vocabulary, scope: { collection_keys: ['ZZZZZZZZ'] } }, c);
+    expect(res.isError).toBe(true);
+    const text = (res.content ?? []).map((x: any) => x.text).join('\n');
+    expect(text).toContain('ZZZZZZZZ');
+    expect(text).toContain('zotero_list_collections');
+    // Refused before any listing work, so no partial audit is reported alongside.
+    expect(res.structuredContent).toBeUndefined();
+    expect(c.router.listTags).not.toHaveBeenCalled();
+    expect(c.router.searchItems).not.toHaveBeenCalled();
+  });
+
+  it('still audits a key the library really has', async () => {
+    const c = scopedCtx(['REAL1234']);
+    const res = await tagAudit.handler({ vocabulary, scope: { collection_keys: ['REAL1234'] } }, c);
+    expect(res.isError).toBeUndefined();
+    expect((res.structuredContent as any).collections[0].collectionKey).toBe('REAL1234');
+  });
+});
+
 describe('zotero_tag_audit refuses keys it does not know', () => {
   const parse = (args: Record<string, unknown>) => z.object(tagAudit.inputSchema).safeParse(args);
   const messagesOf = (res: z.SafeParseReturnType<unknown, unknown>) =>
