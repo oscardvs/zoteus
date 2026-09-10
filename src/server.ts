@@ -30,11 +30,11 @@ import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
 import { tools } from './tools/index.js';
 import { UpdateChecker } from './lib/update-check.js';
-import { createRequire } from 'node:module';
+import { VERSION as SERVER_VERSION } from './lib/version.js';
 
 // Read from package.json so release bumps can't leave a stale hardcoded string
 // (healthz/serverInfo reported 1.0.1 for several releases).
-const VERSION: string = createRequire(import.meta.url)('../package.json').version;
+const VERSION: string = SERVER_VERSION;
 
 export interface ContextOverrides {
   /** Per-user Zotero API key (multi-tenant); defaults to config.apiKey. */

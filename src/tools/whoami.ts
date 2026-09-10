@@ -1,12 +1,13 @@
 import type { ToolDefinition } from '../registry/registry.js';
 import { ok } from '../registry/registry.js';
 import { ATTRIBUTION_LINE, CITEPROC_ATTRIBUTION } from '../lib/notices.js';
+import { VERSION } from '../lib/version.js';
 
 const whoami: ToolDefinition = {
   name: 'zotero_whoami',
   title: 'Zotero identity & access',
   description:
-    'Resolve the current Zotero identity (userID, username, display name) and per-library access scopes from the configured API key, and report which library backends are available (cloud Web API and/or the desktop local API). Call this first to discover the userID — never ask the user to type a numeric ID. If no API key is configured, the server runs in local-only read mode against the desktop library (users/0).',
+    'Resolve the current Zotero identity (userID, username, display name) and per-library access scopes from the configured API key, report the running Zoteus `version`, and report which library backends are available (cloud Web API and/or the desktop local API). Call this first to discover the userID — never ask the user to type a numeric ID. If no API key is configured, the server runs in local-only read mode against the desktop library (users/0).',
   inputSchema: {},
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (_args, ctx) => {
@@ -18,6 +19,10 @@ const whoami: ToolDefinition = {
     const lib = ctx.router.defaultLibrary();
     const update = ctx.updates?.available ?? null;
     const structured = {
+      // What is actually running. Both of this machine's clients were found several
+      // releases behind with nothing to say so, because the update notice below only
+      // appears when a newer release exists.
+      version: VERSION,
       cloud: Boolean(cloud),
       userID: cloud?.userID,
       username: cloud?.username,
