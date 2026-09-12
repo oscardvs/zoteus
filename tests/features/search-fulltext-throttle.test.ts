@@ -58,7 +58,12 @@ function makeCtx(opts: {
 
   const searchItems = vi.fn(async (q: any) => {
     const start = q.start ?? 0;
-    const source = q.itemType === 'attachment' ? attachments : items;
+    let source: any[] = q.itemType === 'attachment' ? attachments : items;
+    // The attachment map asks by key, 50 at a time, so the double has to answer by key.
+    if (q.itemKey) {
+      const want = new Set(String(q.itemKey).split(','));
+      source = source.filter((row) => want.has(row.key));
+    }
     return {
       data: source.slice(start, start + (q.limit ?? PAGE_SIZE)),
       totalResults: source.length,
