@@ -592,4 +592,40 @@ describe('LocalApiClient tag and sync-delta reads', () => {
       status: 500,
     });
   });
+
+  // #79: `top` on an itemType-filtered search is resolved from key sets rather than by
+  // trusting `/items/top`, so the keys read is the request that has to be exactly right.
+  describe('listItemKeys', () => {
+    it('reads /items with format=keys and splits the plain-text body', async () => {
+      const fetchImpl = vi.fn(async (url: string) => {
+        expect(url).toContain('/users/0/items?');
+        expect(url).not.toContain('/items/top');
+        expect(url).toContain('format=keys');
+        expect(url).toContain('itemType=attachment');
+        return new Response('AAAAAAAA\nBBBBBBBB\nCCCCCCCC', {
+          status: 200,
+          headers: { 'Total-Results': '3', 'Last-Modified-Version': '681' },
+        });
+      });
+      const res = await makeLocal(fetchImpl).listItemKeys({ itemType: 'attachment' });
+      expect(res.keys).toEqual(['AAAAAAAA', 'BBBBBBBB', 'CCCCCCCC']);
+      expect(res.totalResults).toBe(3);
+      expect(res.lastModifiedVersion).toBe(681);
+    });
+
+    it('reads /items/top for the top-level key set', async () => {
+      const fetchImpl = vi.fn(async (url: string) => {
+        expect(url).toContain('/users/0/items/top?');
+        expect(url).toContain('format=keys');
+        return new Response('AAAAAAAA\n', { status: 200, headers: { 'Total-Results': '1' } });
+      });
+      const res = await makeLocal(fetchImpl).listItemKeys({ top: true });
+      expect(res.keys).toEqual(['AAAAAAAA']);
+    });
+
+    it('reads an empty key set as no keys rather than one blank one', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200, headers: { 'Total-Results': '0' } }));
+      expect((await makeLocal(fetchImpl).listItemKeys({ itemType: 'book' })).keys).toEqual([]);
+    });
+  });
 });
