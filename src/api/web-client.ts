@@ -218,6 +218,33 @@ export class WebApiClient {
     return this.toListResult(json, headers);
   }
 
+  /**
+   * The keys of a listing and nothing else (`format=keys`), in the query's own sort order.
+   * The cloud twin of `LocalApiClient.listItemKeys`, and the same bargain: keys only, no
+   * item bodies, and no page cap, so one request settles a whole set.
+   */
+  async listItemKeys(
+    lib: LibraryRef,
+    query: ItemQuery = {},
+  ): Promise<{ keys: string[]; totalResults: number; lastModifiedVersion: number }> {
+    const { top: _top, collectionKey, ...rest } = query;
+    const base = collectionKey ? `/collections/${collectionKey}` : '';
+    const segment = query.top ? `${base}/items/top` : `${base}/items`;
+    const { text, headers } = await this.getRaw(
+      this.prefix(lib) + segment,
+      this.buildQuery({ ...(rest as any), format: 'keys' }),
+    );
+    const keys = text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    return {
+      keys,
+      totalResults: numOrUndef(headers.get('total-results')) ?? keys.length,
+      lastModifiedVersion: numOrUndef(headers.get('last-modified-version')) ?? 0,
+    };
+  }
+
   async getItem(
     lib: LibraryRef,
     key: string,

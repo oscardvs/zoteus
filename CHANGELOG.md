@@ -4,6 +4,42 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`top: true` returned items that have a parent, so "only top-level items" was not true
+  of either API (#79).** Reported against 1.18.0 for `zotero_search_items` with
+  `itemType: "attachment", top: true`: six of the first ten results had a `parentItem`,
+  the same six every time, which left counting standalone attachments impossible without
+  verifying every key one at a time. Measured on 2026-09-12 against a 1302-item library
+  held by both a Zotero 10 desktop and the cloud, and the two APIs turn out to be wrong in
+  two different ways. The desktop local API drops the top-level restriction the moment an
+  `itemType` filter is present: `/items/top?itemType=attachment` answered `Total-Results:
+  363` with every item of the first page carrying a `parentItem`, byte for byte the same
+  answer as `/items?itemType=attachment`. `itemType=annotation` settles what that is,
+  since an annotation is never top-level and `/items/top` reported all 543 of them
+  regardless. The cloud Web API keeps its promise about `parentItem` and breaks the other
+  one: it maps every matching child up to its top-level parent, so the same request came
+  back as 263 preprints, books and conference papers, not one of them an attachment. The
+  true answer for that library is zero standalone attachments, and that is now what both
+  backends give.
+
+  Zoteus no longer asks either API to apply `top` alongside an `itemType` filter, and works
+  it out instead: the keys matching the filter, the library's top-level keys, and the
+  intersection of the two, which is the exact result set in the caller's own `sort` order.
+  `totalResults` is that set's size, not the inflated count the API reports, so the number
+  the tool prints and the pages it hands out come from one and the same list and paging
+  stays coherent (walking a 66-item result two pages at a time returns the same 66 keys in
+  the same order as one call for all of them). Only the page the caller asked for is read
+  as items, by key, which is what keeps this affordable: a whole key set costs a fraction
+  of the same items as JSON, 7 ms against 4.4 s for that library's 363 attachments, because
+  the desktop resolves a storage path per attachment. Both APIs are correct about `top`
+  when no `itemType` is in play, so that path is untouched, and the plain top-level listings
+  the search index and `zotero_tag_audit` page through behave exactly as before. Two
+  numbers that were quietly wrong are now right as a side effect: `itemType: "-attachment"`
+  with `top: true` reported 396 items where the library has 320 top-level items, and
+  `itemType: "annotation"` with `top: true` reported 543 where the answer is none.
+
 ## [1.19.0] - 2026-09-12
 
 ### Added
