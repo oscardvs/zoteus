@@ -151,13 +151,14 @@ export class LibraryRouter {
     const key = keys[keys.length - 1];
     if (!key) return;
     const slot = this.librarySlot(lib);
-    this.pending.note(slot, { type, key, removed, before: undefined });
+    const write: PendingWrite = { type, key, removed, before: undefined };
+    this.pending.note(slot, write);
     // A delete is watched for the object disappearing, so it needs no baseline; and a
     // library the desktop does not serve has nothing to compare against.
     if (removed || !this.local || !this.useLocal(lib)) return;
     void this.local
       .objectVersion(type, key, lib)
-      .then((before) => this.pending.setBaseline(slot, key, before))
+      .then((before) => this.pending.setBaseline(slot, write, before))
       .catch(() => {
         // Without a baseline the write clears as soon as the desktop has the key at all.
         // That is exact for a create and weak for an update, which is the right way round:
@@ -179,8 +180,9 @@ export class LibraryRouter {
     const write = this.pending.get(slot);
     if (!write) return true;
     if (!(await this.desktopHasCaughtUp(library, write))) return false;
-    this.pending.clear(slot);
-    return true;
+    // A newer write may have arrived while the desktop check was in flight. Its state
+    // belongs to that write, not this read; keep this read on the cloud in that case too.
+    return this.pending.clear(slot, write);
   }
 
   /**

@@ -4,6 +4,13 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- An older read's desktop catch-up check no longer clears the pending marker for a newer
+  cloud write in the same library. Baseline probes also belong to the exact write that
+  started them, so two writes to the same key cannot inherit one another's baseline.
+
 ## [1.19.0] - 2026-09-12
 
 ### Added

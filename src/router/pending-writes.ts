@@ -46,16 +46,19 @@ export class PendingCloudWrites {
   }
 
   /**
-   * Fill in the baseline for a write that is still the pending one. Scoped to the key
-   * because the baseline is measured after the entry is recorded: a second write landing in
-   * between replaces the entry, and the first write's baseline must not be pasted onto it.
+   * Fill in the baseline only for the exact write that started the probe. The same key can
+   * be written twice while a probe is in flight; matching the key would let the older
+   * probe initialize the newer write with a version that predates it.
    */
-  setBaseline(slot: string, key: string, before: number | null): void {
+  setBaseline(slot: string, write: PendingWrite, before: number | null): void {
     const current = this.bySlot.get(slot);
-    if (current?.key === key && current.before === undefined) current.before = before;
+    if (current === write && current.before === undefined) current.before = before;
   }
 
-  clear(slot: string): void {
+  /** Retire only the write that a completed catch-up check actually witnessed. */
+  clear(slot: string, write: PendingWrite): boolean {
+    if (this.bySlot.get(slot) !== write) return false;
     this.bySlot.delete(slot);
+    return true;
   }
 }
