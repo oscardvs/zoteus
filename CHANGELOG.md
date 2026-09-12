@@ -6,6 +6,30 @@ All notable changes to Zoteus are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+- **Every tool now advertises what it takes and what it gives back: parameter descriptions
+  on all 31 tools, and an `outputSchema` for each of them.** Smithery's quality breakdown
+  scored this server 4 of 31 for complete parameter descriptions and 0 of 31 for output
+  schemas, and both numbers are read off `tools/list` rather than off the prose, so an
+  argument carrying no `description` is invisible to a directory listing (and to a model
+  choosing arguments) however well the tool paragraph explains it. Eighty-five properties
+  had none. The largest share of them were `library_type` and `library_id`, spelled out
+  again in twenty-five tool files with nothing said about either: the two arguments most
+  likely to send a write into the wrong library were the two the schema described least.
+  They now come from one shared definition, which says what each means, that a group is
+  addressed by its numeric id, and that `library_type: "group"` on its own is refused.
+
+  The output schemas describe the JSON mirror every tool already returns beside its summary
+  line, so `structuredContent` is declared rather than merely present. They are precise
+  about the stable top-level fields and deliberately open underneath (`additionalProperties:
+  true`, with Zotero's own records left as open objects), because an item's fields vary by
+  item type and a handler may add a notice. The MCP SDK validates `structuredContent`
+  against the advertised schema on every successful call, so a mismatch is a broken tool
+  rather than a documentation slip: the test suite now puts every tool result it produces
+  through that same check, which is what covers the write paths that must not be run against
+  a real library. One handler had to change for it, `zotero_fulltext action:"get"`, whose
+  found branch had dropped the `item_key` its not-found branch carried.
+
 ### Fixed
 - An older read's desktop catch-up check no longer clears the pending marker for a newer
   cloud write in the same library. Baseline probes also belong to the exact write that
