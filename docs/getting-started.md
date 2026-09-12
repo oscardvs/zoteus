@@ -1,9 +1,9 @@
 # Getting started
 
-Zoteus connects Claude to your Zotero library. Once it is set up, you can ask Claude to find
-a paper you saved three years ago, quote the right passage from its PDF, build a bibliography
-in the style your journal wants, or file a new reference by its DOI. Claude works from the
-references you actually have, so the citations are real.
+Zoteus connects Claude or ChatGPT to your Zotero library. Once it is set up, you can ask
+either one to find a paper you saved three years ago, quote the right passage from its PDF,
+build a bibliography in the style your journal wants, or file a new reference by its DOI. The
+assistant works from the references you actually have, so the citations are real.
 
 There is no code to write and nothing to program. This page takes you from nothing to a
 working setup. Read the short checklist, pick one of the two ways to install, and follow it
@@ -17,8 +17,9 @@ You need two things.
 
 1. **A Zotero library.** If you already use the Zotero app on your computer, you are ready.
    If not, download it from <https://www.zotero.org/download/> and add a few references.
-2. **Claude.** For the first way below you need the Claude app installed on your computer.
-   For the second you only need claude.ai in a web browser.
+2. **Claude or ChatGPT.** For the first way below you need the Claude app installed on your
+   computer. For the second you only need claude.ai in a web browser, or ChatGPT on a paid
+   plan. ChatGPT has no equivalent of the first way.
 
 You do **not** need to download the source code from GitHub, install a programming language,
 or open a terminal. In most cases you do not need a Zotero API key either. There is more on
@@ -32,21 +33,21 @@ Pick one. You can change your mind later.
 
 | | **Install the extension** | **Connect to the hosted Zoteus** |
 |---|---|---|
-| What you do | Download one file and install it in the Claude app | Paste a web address into claude.ai |
+| What you do | Download one file and install it in the Claude app | Paste a web address into claude.ai or ChatGPT |
 | Where it runs | On your own computer | On the Zoteus server |
 | Cost | Free | A subscription: 69 euros a year for one person, 99 euros a month for a lab of up to ten |
 | Reaches the Zotero app on your computer | Yes, which is the fast, key-free route to your own PDFs | No, it reads your library through your Zotero account online |
-| Works in a browser or on a phone | No, only in the Claude app on that computer | Yes, anywhere you are signed in to claude.ai |
+| Works in a browser or on a phone | No, only in the Claude app on that computer | Yes, anywhere you are signed in to claude.ai, and in ChatGPT on the web |
 | Updates | You install them yourself, see [Keeping it up to date](#keeping-the-extension-up-to-date) | Kept up to date for you |
 
 **Choose the extension** if you use the Claude app on a computer where Zotero is also
 installed. This is the setup Zoteus is built around: your library never leaves your machine,
 your PDFs are readable in full, and it costs nothing.
 
-**Choose the hosted connector** if you work in claude.ai in a browser or on a phone, or if
-you would rather not install or maintain anything. Your library reaches it through your
-Zotero account online, so anything you have not synced to Zotero's servers is not visible
-to it.
+**Choose the hosted connector** if you work in claude.ai in a browser or on a phone, if you
+use ChatGPT (which can only reach Zoteus this way), or if you would rather not install or
+maintain anything. Your library reaches it through your Zotero account online, so anything
+you have not synced to Zotero's servers is not visible to it.
 
 ---
 
@@ -190,14 +191,17 @@ Your settings, including any API key, stay where they are.
 
 ## Way 2: connect to the hosted Zoteus
 
-Your whole library, in Claude, on any device you can open a browser on. Nothing to
-download, nothing to keep up to date, and it keeps working when your laptop is shut.
+Your whole library, in Claude or ChatGPT, on any device you can open a browser on. Nothing
+to download, nothing to keep up to date, and it keeps working when your laptop is shut.
 
 This is not a better version of the extension. It does a different job. The extension ties
-Claude to the Zotero app on one computer. The hosted service ties Claude to your Zotero
-account, so the same library is there on your phone on the train, on a borrowed machine at
-a conference, and in claude.ai in any browser. People who use it tend to be the ones who
-were tired of only being able to ask about their reading while sitting at one desk.
+Claude to the Zotero app on one computer. The hosted service ties Claude or ChatGPT to your
+Zotero account, so the same library is there on your phone on the train, on a borrowed
+machine at a conference, and in claude.ai or ChatGPT in any browser. People who use it tend
+to be the ones who were tired of only being able to ask about their reading while sitting at
+one desk. If you use ChatGPT rather than Claude, this is also the only way in: ChatGPT
+connects to services on the web, not to programs on your computer, so the extension is not
+an option there.
 
 It runs on a maintained server, which costs money to keep online, so it is a subscription:
 69 euros a year (or 7 a month) for one person, and 99 euros a month for a lab of up to ten
@@ -207,20 +211,69 @@ the upkeep, not for a better Zoteus.
 
 **Set it up in about two minutes**
 
-1. Subscribe at <https://zoteus.com/pricing>, then follow the setup instructions in the
-   email you receive. It has everything you need for the steps below.
-2. In claude.ai, open **Settings**, then **Connectors**, then **Add custom connector**.
-3. For the address, enter exactly:
+Subscribe at <https://zoteus.com/pricing>, then follow the setup instructions in the email
+you receive. It has everything you need for the steps below, including your subscription
+key. Then pick the app you use.
+
+**In claude.ai**
+
+1. Open **Settings**, then **Connectors**, then **Add custom connector**.
+2. For the address, enter exactly:
 
    ```
    https://mcp.zoteus.com/mcp
    ```
 
-4. Click **Connect**. Your browser goes to zotero.org, which asks whether to give Zoteus
+3. Click **Connect**. Your browser goes to zotero.org, which asks whether to give Zoteus
    access to your library. Approve it, and you land back in Claude.
 
-You sign in with your own Zotero account, so Claude sees your library and nobody else's.
-To check it worked, start a chat and ask *"Am I connected to my Zotero library?"*
+**In ChatGPT**
+
+You need a paid ChatGPT plan (Plus, Pro, Business, Enterprise or Edu) and ChatGPT open in a
+web browser, which is where developer mode is offered. A free account cannot add Zoteus. On
+a Business or Enterprise plan, an administrator may have to allow developer mode before the
+first step works.
+
+1. Open **Settings**, then **Security and login**, and switch on **Developer mode**. ChatGPT
+   marks it as elevated risk; it is the switch that lets you add services ChatGPT does not
+   ship with, and Zoteus is one of those. The same switch is linked from **Settings**, then
+   **Plugins**.
+2. Open **Plugins** (in the left sidebar, or at <https://chatgpt.com/plugins>) and click
+   **Create app**.
+3. In the **New Plugin** dialog, type `Zoteus` as the name (the description can stay empty),
+   choose **Server URL** under Connection, and for the MCP Server URL enter exactly:
+
+   ```
+   https://mcp.zoteus.com/mcp
+   ```
+
+   Leave Authentication on **OAuth**, tick **I understand and want to continue**, and click
+   **Create**. There is nothing to fill in under Advanced OAuth settings; a note there saying
+   *CIMD unavailable* is expected and harmless.
+4. ChatGPT now shows **Add Zoteus to ChatGPT** with a **Sign in with Zoteus** button. Click
+   it. A window opens on the Zoteus page *Connect ChatGPT to Zoteus* and asks for your
+   subscription key, then sends you to zotero.org to sign in and approve access to your
+   library. Untick write access there if you want ChatGPT to read your library but never
+   change it. Approve, and you land back in ChatGPT, where the Zoteus page says *Connected
+   on* today's date.
+5. If the **Actions** section of that page says *No app actions available yet*, click
+   **Refresh** under **Information**. The thirty Zoteus tools then appear, each labelled as
+   a read or a write.
+
+To use it, start a chat, click the **+** button in the message box (*Add files and more*),
+pick **Zoteus** from the menu, and ask as you normally would. Reading your library never asks
+for permission. Before changing something, ChatGPT decides for itself whether to ask: in our
+testing, adding a tag ran straight away, while removing one showed *Allow ChatGPT to use
+Zoteus?* with the choice of allowing once, always, or for this conversation. The plugin
+page's **Permissions** control (*Choose when ChatGPT should ask for permission when using
+this plugin*) sets this. The default, **Allow low-risk actions**, approves low-risk actions
+automatically and denies or asks about actions involving sensitive information. If you would
+rather be asked before every change, choose **Allow read actions**: it reads without asking
+and asks before making changes. **Always ask** asks before reading too, and **Allow all
+actions** never asks, which ChatGPT marks as elevated risk.
+
+You sign in with your own Zotero account, so Claude or ChatGPT sees your library and nobody
+else's. To check it worked, start a chat and ask *"Am I connected to my Zotero library?"*
 
 **Before you decide.** The hosted service reaches your library through your Zotero account
 online, so anything you have not synced to Zotero's servers is invisible to it, and PDFs
@@ -315,7 +368,9 @@ anything you paste.
 Zoteus works with any app that speaks the Model Context Protocol, the common language these
 tools use to reach outside services: Cursor, VS Code, Zed, Codex, and others. Those apps have
 no one-click installer, so you point them at Zoteus in their own settings file. This part does
-involve a text editor.
+involve a text editor. ChatGPT is the one exception: it does not run programs on your
+computer, so none of this applies to it, and it reaches Zoteus over the web instead, as
+described in [Way 2](#way-2-connect-to-the-hosted-zoteus).
 
 1. Install [Node.js](https://nodejs.org) (the LTS version, all default choices). Zoteus needs
    it to run outside the Claude app.

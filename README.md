@@ -2,9 +2,9 @@
 
 # Zoteus
 
-**Your whole Zotero library, inside Claude.**
+**Your whole Zotero library, inside Claude and ChatGPT.**
 
-An MCP server that gives Claude Desktop, claude.ai, Claude Code, Cursor and any other MCP client access to a [Zotero](https://www.zotero.org) library: search by keyword or by meaning, passages from your PDFs with page numbers, citations in any CSL style, adding items, and safe writes.
+An MCP server that gives Claude Desktop, claude.ai, ChatGPT, Claude Code, Cursor and any other MCP client access to a [Zotero](https://www.zotero.org) library: search by keyword or by meaning, passages from your PDFs with page numbers, citations in any CSL style, adding items, and safe writes.
 
 [![npm](https://img.shields.io/npm/v/@oscardvs/zoteus.svg?color=2ea44f)](https://www.npmjs.com/package/@oscardvs/zoteus)
 [![npm downloads](https://img.shields.io/npm/dm/@oscardvs/zoteus.svg)](https://www.npmjs.com/package/@oscardvs/zoteus)
@@ -28,6 +28,7 @@ For most clients there is nothing to download: the client fetches Zoteus with `n
 | **Claude Code** | `claude mcp add --transport stdio zoteus -- npx -y @oscardvs/zoteus` |
 | **Cursor, VS Code, Zed, Codex, Gemini CLI, any MCP client** | `npx add-mcp @oscardvs/zoteus`, or add `npx -y @oscardvs/zoteus` as a stdio server by hand. |
 | **claude.ai in the browser** | Add a custom connector pointing at a [hosted Zoteus](https://zoteus.com/pricing) or at [your own remote instance](./docs/remote-oauth.md). |
+| **ChatGPT (web)** | Needs Developer mode on a paid ChatGPT plan (**Settings → Security and login**). Then **Plugins → Create app**, with the server URL of a [hosted Zoteus](https://zoteus.com/pricing) (`https://mcp.zoteus.com/mcp`) or of [your own remote instance](./docs/remote-oauth.md#connect-from-chatgpt), and OAuth as the authentication. ChatGPT only connects to remote servers, so the `npx` install does not apply. |
 
 Then run the Zotero desktop app. Reads, and the personal-library writes that go through the app (adding items by identifier, attachments, annotations, trash and restore), need no cloud key. Add a Zotero API key for sync, group libraries, metadata edits, tags and collections, and for when the app is closed:
 
