@@ -65,10 +65,13 @@ class FakeZotero {
         const start = q.start ?? 0;
         const limit = q.limit ?? PAGE_SIZE;
         if (q.itemType === 'attachment') {
-          const page = atts().slice(start, start + limit);
+          // The map asks for attachments by key, 50 at a time, so this answers by key.
+          const want = q.itemKey ? new Set(String(q.itemKey).split(',')) : undefined;
+          const all = want ? atts().filter((a) => want.has(a.key)) : atts();
+          const page = all.slice(start, start + limit);
           return {
             data: page.map((a) => ({ key: a.key, data: { key: a.key, itemType: 'attachment', parentItem: a.parent } })),
-            totalResults: atts().length,
+            totalResults: all.length,
             lastModifiedVersion: this.itemVersion,
           };
         }
@@ -465,19 +468,16 @@ describe.each(backends)('a build whose attachment map stopped early (%s backend)
   });
 
   /**
-   * The two doors out of the page loop that are not the `catch`. Neither throws, so
-   * neither used to mark the map incomplete, and the census-wide cursor was stamped over a
-   * map that had covered a fraction of the library: the same silent gap, reached without
-   * a failed request. The predicate has to mean what it says: the map did not reach the
-   * end of the library.
+   * The map resolving NOTHING is the one answer that is never taken at face value. Zotero
+   * has just said this library holds attachments with extracted text; a keyed lookup that
+   * names none of them is a broken map, not a library view without them, and stamping a
+   * census-wide cursor over it is the silent gap #78 is about, reached without any request
+   * failing at all.
    */
-  it('marks the map incomplete when the crawl runs out of pages', async () => {
-    // 503 attachments Zotero has never opened, and behind them the two it has. The crawl
-    // spends its whole page ceiling on the unextracted ones and never reaches the text.
+  it('withholds the cursor when the keyed lookups resolve no attachment at all', async () => {
     const zotero = new FakeZotero();
     zotero.putItem('K1', 'Deep learning', 'convolutional networks classify images');
     zotero.putItem('K2', 'Photovoltaic perovskites', 'tandem cell stability');
-    for (let i = 0; i < 503; i++) zotero.attach(`PAD${i}`, 'K1');
     zotero.attach('ATT1', 'K1');
     zotero.attach('ATT2', 'K2');
     zotero.extract('ATT1', BODY_ONE);
@@ -486,9 +486,11 @@ describe.each(backends)('a build whose attachment map stopped early (%s backend)
     const search = await openIndex(backend);
     const router = zotero.router();
     const listing = router.searchItems;
-    // One attachment per page, so the 500-page ceiling is what ends this crawl.
+    // Zotero answers the keyed lookup, and names nothing.
     router.searchItems = vi.fn(async (q: any) =>
-      q.itemType === 'attachment' ? listing({ ...q, limit: 1 }) : listing(q),
+      q.itemType === 'attachment'
+        ? { data: [], totalResults: 0, lastModifiedVersion: zotero.itemVersion }
+        : listing(q),
     );
     startIndexBuild(makeCtx(search, router), undefined, undefined, { fulltext: true });
     await settle(search);
@@ -501,44 +503,42 @@ describe.each(backends)('a build whose attachment map stopped early (%s backend)
     await search.close();
   });
 
-  it('marks the map incomplete when a page comes back empty with the listing unfinished', async () => {
+  /**
+   * The other side of that rule, and it has to hold or the cursor freezes forever: an
+   * attachment Zotero ANSWERS about without naming is one it does not serve in this
+   * library view (a trashed attachment, on the desktop API), which is exactly what the old
+   * crawl concluded when it walked the whole listing and never saw the key. The rest of
+   * the map is whole, so the cursor is stamped.
+   */
+  it('stamps the cursor when a lookup answers without naming one of its keys', async () => {
     const zotero = threeExtracted();
     const search = await openIndex(backend);
     const router = zotero.router();
     const listing = router.searchItems;
-    let attachmentPages = 0;
     router.searchItems = vi.fn(async (q: any) => {
       if (q.itemType !== 'attachment') return listing(q);
-      // One attachment, then nothing at all, although the listing's own total says two
-      // thirds of the library's attachments are still to come.
-      if (attachmentPages++ > 0) return { data: [], totalResults: 3, lastModifiedVersion: zotero.itemVersion };
-      return listing({ ...q, limit: 1 });
+      const res = await listing(q);
+      return { ...res, data: res.data.filter((row: any) => row.key !== 'ATT3') };
     });
     startIndexBuild(makeCtx(search, router), undefined, undefined, { fulltext: true });
     await settle(search);
 
     const s = search.buildStatus();
     expect(s.state).toBe('done');
-    expect(s.fulltextItems).toBe(1);
-    expect(s.fulltextVersion).toBe(0);
-    expect(s.fulltextReason).toMatch(/attachment map stopped early after 1\/3/);
+    expect(s.fulltextItems).toBe(2);
+    expect(s.fulltextVersion).toBe(zotero.fulltextVersion);
+    expect(s.fulltextReason).toBeUndefined();
     await search.close();
   });
 
-  /** The usual exit is not a truncation: every attachment with text was located. */
-  it('stamps the cursor when the map located every attachment that has text', async () => {
+  /** The usual exit: every attachment with text was resolved, by key, in one batch. */
+  it('stamps the cursor over a keyed map, and never pages the attachment listing', async () => {
     const zotero = threeExtracted();
-    // Three more attachments Zotero has never opened, sitting after the extracted ones, so
-    // the crawl stops on `mapped === total` with pages of the library still unread.
+    // Three more attachments Zotero has never opened. The map is driven by the full-text
+    // census, so they cost no request at all: nothing walks the attachment listing.
     for (let i = 0; i < 3; i++) zotero.attach(`PAD${i}`, 'K1');
     const search = await openIndex(backend);
     const router = zotero.router();
-    const listing = router.searchItems;
-    // One at a time, so the crawl exits on "every attachment with text is located" with
-    // half the listing still unwalked, which is the exit it takes on a real library.
-    router.searchItems = vi.fn(async (q: any) =>
-      q.itemType === 'attachment' ? listing({ ...q, limit: 1 }) : listing(q),
-    );
     startIndexBuild(makeCtx(search, router), undefined, undefined, { fulltext: true });
     await settle(search);
 
@@ -546,6 +546,15 @@ describe.each(backends)('a build whose attachment map stopped early (%s backend)
     expect(s.fulltextItems).toBe(3);
     expect(s.fulltextVersion).toBe(zotero.fulltextVersion);
     expect(s.fulltextReason).toBeUndefined();
+
+    // Three extracted attachments is one batch of keys, and no offset is ever requested:
+    // the deep pages that timed out on a 9k-attachment library are gone (#78).
+    const lookups = router.searchItems.mock.calls
+      .map((c: any[]) => c[0])
+      .filter((q: any) => q.itemType === 'attachment');
+    expect(lookups).toHaveLength(1);
+    expect(lookups[0].itemKey.split(',').sort()).toEqual(['ATT1', 'ATT2', 'ATT3']);
+    expect(lookups.every((q: any) => q.start === undefined)).toBe(true);
     await search.close();
   });
 });

@@ -108,8 +108,10 @@ function makeCtx(opts: {
   withText?: Record<string, number>;
   fulltext?: Record<string, any>;
   sinceThrows?: boolean;
-  /** Page the attachment crawl one at a time and fail its second page, mid-map. */
-  pageTwoThrows?: boolean;
+  /** Fail the first N keyed attachment lookups, whichever keys they name. */
+  failFirstLookups?: number;
+  /** Fail every keyed lookup naming one of these attachment keys, forever. */
+  failKeys?: string[];
   config?: Record<string, string>;
 } = {}) {
   const attachments = opts.attachments ?? [];
@@ -119,12 +121,23 @@ function makeCtx(opts: {
     return withText;
   });
   const getFullText = vi.fn(async (key: string) => opts.fulltext?.[key] ?? null);
+  const BUDGET = 'Zotero took longer than the 25s budget to answer a single request';
+  let lookups = 0;
   const searchItems = vi.fn(async (q: any) => {
     const start = q.start ?? 0;
     const source = q.itemType === 'attachment' ? attachments : [];
-    if (opts.pageTwoThrows && q.itemType === 'attachment' && start > 0) throw new Error('page two gone');
-    const size = opts.pageTwoThrows ? 1 : (q.limit ?? PAGE_SIZE);
-    return { data: source.slice(start, start + size), totalResults: source.length, lastModifiedVersion: 1 };
+    // The attachment map asks by key, so the double answers by key, as both APIs do.
+    const want = q.itemKey ? new Set(String(q.itemKey).split(',')) : undefined;
+    if (q.itemType === 'attachment') {
+      if (++lookups <= (opts.failFirstLookups ?? 0)) throw new Error(BUDGET);
+      if (want && opts.failKeys?.some((k) => want.has(k))) throw new Error(BUDGET);
+    }
+    const rows = want ? source.filter((row: any) => want.has(row.key)) : source;
+    return {
+      data: rows.slice(start, start + (q.limit ?? PAGE_SIZE)),
+      totalResults: rows.length,
+      lastModifiedVersion: 1,
+    };
   });
   const ctx: any = {
     config: loadConfig((opts.config ?? {}) as any),
@@ -279,19 +292,95 @@ describe('createFulltextSource', () => {
     expect(src.readFailures()).toBe(1);
   });
 
-  it('refuses to answer for an item its attachment map never reached', async () => {
-    // The map stopped early, so an item it does not hold may simply be on the pages this
-    // crawl never read. Saying "no text" there is a guess an update would index (#67).
+  it('refuses to answer for an item whose batch of keys Zotero never answered', async () => {
+    // A batch that never answered leaves its items unknown, so an item the map does not
+    // hold may simply belong to it. Saying "no text" there is a guess an update would
+    // index over the body passages the item already has (#67).
     const { ctx } = makeCtx({
       attachments: [attachment('ATT1', 'ITEM1'), attachment('ATT2', 'ITEM2')],
       withText: { ATT1: 1, ATT2: 2 },
       fulltext: { ATT1: { content: 'first body' } },
-      pageTwoThrows: true,
+      // ATT1 and ATT2 are one batch, so break it after a first pass has mapped ATT1: the
+      // sweep over what is left is what fails for good.
+      failKeys: ['ATT2'],
     });
+    // Resolve ATT1 out of band, the way a first pass does, then let the sweep fail.
+    ctx.router.searchItems.mockImplementationOnce(async () => ({
+      data: [attachment('ATT1', 'ITEM1')],
+      totalResults: 1,
+      lastModifiedVersion: 1,
+    }));
     const src = await createFulltextSource(ctx, undefined);
-    expect(src.incomplete).toMatch(/attachment map stopped early after 1\/2 attachment\(s\): page two gone/);
+    expect(src.incomplete).toMatch(/attachment map stopped early after 1\/2 attachment\(s\): .*25s budget/);
     expect(await src.textFor('ITEM1')).toBe('first body');
     await expect(src.textFor('ITEM2')).rejects.toThrow(/stopped early/);
+  });
+
+  /** #78: the map is driven by the full-text census, in keyed batches, never by offsets. */
+  describe('keyed batching (#78)', () => {
+    /** `n` attachments, each under its own item, all of them extracted. */
+    function manyAttachments(n: number) {
+      const attachments = Array.from({ length: n }, (_, i) => attachment(key(i), `ITEM${i}`));
+      const withText = Object.fromEntries(attachments.map((a, i) => [a.key, i + 1]));
+      const fulltext = Object.fromEntries(attachments.map((a) => [a.key, { content: `body of ${a.key}` }]));
+      return { attachments, withText, fulltext };
+    }
+    /** Zero-padded, so the map's sorted batches are the obvious ones. */
+    const key = (i: number) => `A${String(i).padStart(3, '0')}`;
+
+    /** Every attachment lookup the map issued. */
+    const lookups = (searchItems: any) =>
+      searchItems.mock.calls.map((c: any[]) => c[0]).filter((q: any) => q.itemType === 'attachment');
+
+    it('asks by key, at most 50 at a time, and never asks for an offset', async () => {
+      const { ctx, searchItems } = makeCtx(manyAttachments(120));
+      const src = await createFulltextSource(ctx, undefined);
+
+      expect(src.incomplete).toBeUndefined();
+      expect(src.attachments).toBe(120);
+      const asked = lookups(searchItems);
+      expect(asked).toHaveLength(3); // 50 + 50 + 20
+      for (const q of asked) {
+        expect(q.itemKey.split(',').length).toBeLessThanOrEqual(50);
+        expect(q.limit).toBe(50);
+        // The load-bearing filter: an `itemKey` lookup on the desktop API answers with the
+        // named items AND all their descendants unless the type is named.
+        expect(q.itemType).toBe('attachment');
+        expect(q.start).toBeUndefined();
+      }
+      // Sorted keys, so batch one is exactly the first fifty.
+      expect(asked[0].itemKey.split(',')).toEqual(Array.from({ length: 50 }, (_, i) => key(i)));
+    });
+
+    it('retries a batch that fails twice and then succeeds, and stays complete', async () => {
+      const { ctx, searchItems } = makeCtx({ ...manyAttachments(20), failFirstLookups: 2 });
+      const src = await createFulltextSource(ctx, undefined);
+
+      // Two failures, then the answer: the map is whole, so the cursor may be stamped.
+      expect(lookups(searchItems)).toHaveLength(3);
+      expect(src.incomplete).toBeUndefined();
+      expect(src.attachments).toBe(20);
+      expect(src.maxVersion).toBe(20);
+      expect(await src.textFor('ITEM7')).toBe(`body of ${key(7)}`);
+    });
+
+    it('carries on past a batch that never answers, and ends incomplete', async () => {
+      // The middle batch is broken for good; the third must still be asked for. Before
+      // this, one failed request ended the whole map (#78).
+      const { ctx, searchItems } = makeCtx({ ...manyAttachments(120), failKeys: [key(60)] });
+      const src = await createFulltextSource(ctx, undefined);
+
+      expect(src.attachments).toBe(70); // batches one and three
+      expect(src.items).toBe(70);
+      expect(src.incomplete).toMatch(/attachment map stopped early after 70\/120 attachment\(s\)/);
+      // The batch after the broken one was asked for, and its text is served.
+      expect(await src.textFor('ITEM110')).toBe(`body of ${key(110)}`);
+      // Three attempts on the failing batch in the first pass, three more in the sweep.
+      const failed = lookups(searchItems).filter((q: any) => q.itemKey.includes(key(60)));
+      expect(failed).toHaveLength(6);
+      // An item on the batch that never answered is unknown, not textless (#67).
+      await expect(src.textFor('ITEM60')).rejects.toThrow(/stopped early/);
+    });
   });
 });
 
@@ -378,6 +467,31 @@ describe('startIndexBuild with full text', () => {
     const hits = await ctx.search.query('best moment card come up review', { limit: 1 });
     expect(hits[0]!.itemKey).toBe('PAGE1');
     expect(hits[0]!.source).toBe('fulltext');
+  });
+
+  it('stamps the full-text cursor over a map whose retries made it whole (#78)', async () => {
+    const { ctx } = makeCtx({
+      attachments: [attachment('ATT1', 'K1')],
+      withText: { ATT1: 9 },
+      fulltext: { ATT1: { content: BODY } },
+      failFirstLookups: 2,
+    });
+    const items = makeLibrary(3);
+    const listAttachments = ctx.router.searchItems;
+    ctx.router.searchItems = vi.fn(async (q: any) =>
+      q.top ? { data: items.slice(q.start ?? 0), totalResults: items.length, lastModifiedVersion: 1 } : listAttachments(q),
+    );
+
+    startIndexBuild(ctx, undefined, undefined, { fulltext: true });
+    await finished(ctx.search);
+
+    const s = ctx.search.buildStatus();
+    expect(s.state).toBe('done');
+    expect(s.fulltextItems).toBe(1);
+    // Two failed attempts cost the map nothing: it is whole, so the cursor is stamped and
+    // the next update asks Zotero's full-text sequence from there rather than from 0.
+    expect(s.fulltextReason).toBeUndefined();
+    expect(s.fulltextVersion).toBe(9);
   });
 
   it('says why a requested full-text build produced nothing', async () => {
