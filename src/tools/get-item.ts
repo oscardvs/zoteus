@@ -1,5 +1,7 @@
+import { provenance, zoteroObject } from './common-output.js';
 import { z } from 'zod';
 import type { ToolDefinition } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { okLibraryContent, optionalLibrary } from '../registry/registry.js';
 
 const getItem: ToolDefinition = {
@@ -16,9 +18,20 @@ const getItem: ToolDefinition = {
       .optional()
       .describe('Style name, CSL style id or CSL URL for bib/citation (unset: Zotero\'s default Chicago style).'),
     locale: z.string().optional().describe('Locale for bib/citation, e.g. en-US.'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      item: zoteroObject.describe(
+        'The full record: key, version, library, meta, and a `data` object whose fields depend on the item type. Carries the rendered bib/citation/csljson too when `include` asked for them.',
+      ),
+      children: z
+        .array(zoteroObject)
+        .optional()
+        .describe("The item's child notes and attachments; present only when include_children was set."),
+      provenance,
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const library = optionalLibrary(args);

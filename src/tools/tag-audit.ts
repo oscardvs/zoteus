@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { readFile } from 'node:fs/promises';
 import { resolveCallerPath, CallerPathError } from '../lib/caller-path.js';
 import type { ToolContext, ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { ok, optionalLibrary } from '../registry/registry.js';
 import { refuseUnknownCollection } from './collection-guard.js';
 import type { LibraryRef } from '../api/web-client.js';
@@ -97,19 +98,42 @@ function closedObject<T extends z.ZodRawShape>(shape: T, where: string) {
   }, z.object(shape));
 }
 
-const vocabTagSchema = closedObject({ name: z.string(), tier: z.string().optional() }, 'a `vocabulary.tags` entry');
+const vocabTagSchema = closedObject(
+  {
+    name: z.string().describe('The tag exactly as it is spelled in Zotero (case-sensitive), e.g. "method/bayesian".'),
+    tier: z.string().optional().describe('Name of the tier this tag belongs to, matching a `vocabulary.tiers` entry, e.g. "topic".'),
+  },
+  'a `vocabulary.tags` entry',
+);
 const vocabTierSchema = closedObject(
-  { name: z.string(), required: z.boolean().optional() },
+  {
+    name: z.string().describe('Tier name, referenced by a tag\'s `tier`, e.g. "topic" or "status".'),
+    required: z
+      .boolean()
+      .optional()
+      .describe('Whether every item must carry a tag from this tier (default false). Items that do not are reported per tier.'),
+  },
   'a `vocabulary.tiers` entry',
 );
 const vocabSchema = closedObject(
   {
-    tags: z.array(vocabTagSchema),
-    tiers: z.array(vocabTierSchema).optional(),
+    tags: z.array(vocabTagSchema).describe('The tags the library is allowed to use; anything else is reported as off-taxonomy.'),
+    tiers: z
+      .array(vocabTierSchema)
+      .optional()
+      .describe('Tier definitions referenced by the tags, e.g. [{"name":"topic","required":true}].'),
   },
   '`vocabulary`',
 );
-const scopeSchema = closedObject({ collection_keys: z.array(z.string()).optional() }, '`scope`');
+const scopeSchema = closedObject(
+  {
+    collection_keys: z
+      .array(z.string())
+      .optional()
+      .describe('8-character collection keys to report coverage for, one report per key, e.g. ["ABCD1234"].'),
+  },
+  '`scope`',
+);
 
 /** Zod's own `error.message` is a JSON dump of the issues; a caller reading a file wants the sentences. */
 function explainIssues(error: z.ZodError): string {
@@ -161,7 +185,11 @@ const tagAudit: ToolDefinition = {
   description:
     'Audit a library against a controlled tag vocabulary with priority tiers. Provide the vocabulary inline as `vocabulary` (or a JSON file via `vocabulary_path`): { tags:[{name,tier?}], tiers?:[{name,required?}] }. Reports (1) off-taxonomy tags (library tags not in the vocabulary; Zotero auto-applied tags are bucketed separately unless include_auto), (2) items missing a tag from each required tier, and (3) optional per-collection coverage when `scope.collection_keys` is given. A key that none of these objects knows is refused and named, never dropped: a dropped `scope`, `tier` or `required` would change the question without changing the answer. Read-only. Tag and item enumeration both follow the library route, so a running Zotero desktop app serves the whole audit with no cloud API key.',
   inputSchema: {
-    vocabulary: vocabSchema.optional(),
+    vocabulary: vocabSchema
+      .optional()
+      .describe(
+        'The controlled vocabulary, inline: { tags: [{name, tier?}], tiers?: [{name, required?}] }. Use `vocabulary_path` instead to read it from a JSON file; passing both is refused.',
+      ),
     vocabulary_path: z.string().optional().describe('Path to a JSON file with the vocabulary.'),
     scope: scopeSchema
       .optional()
@@ -170,9 +198,54 @@ const tagAudit: ToolDefinition = {
       ),
     include_auto: z.boolean().optional().describe('Treat Zotero auto-applied tags as off-taxonomy too.'),
     limit: z.number().int().min(1).max(500).optional().describe('Max items listed per report (default 50).'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: (() => {
+    const tagEntry = z
+      .object({
+        name: z.string().describe('The tag as the library spells it.'),
+        numItems: z.number().optional().describe('Items carrying it.'),
+      })
+      .passthrough();
+    const missingTier = z
+      .object({
+        tier: z.string().describe('Tier name from the vocabulary.'),
+        itemCount: z.number().describe('Items carrying no tag from this tier.'),
+        items: z
+          .array(
+            z
+              .object({
+                key: z.string().describe('Item key.'),
+                title: z.string().optional().describe('Item title.'),
+              })
+              .passthrough(),
+          )
+          .describe('The first `limit` of those items.'),
+        omitted: z.number().describe('How many more there are beyond `limit`.'),
+      })
+      .passthrough();
+    return z
+      .object({
+        offTaxonomy: z.array(tagEntry).describe('Library tags the vocabulary does not list, capped at `limit`.'),
+        offTaxonomyTotal: z.number().describe('How many there are in total.'),
+        autoTags: z.array(tagEntry).describe('Zotero auto-applied tags, bucketed apart unless include_auto was set.'),
+        autoTagsTotal: z.number().describe('How many of those there are in total.'),
+        missingByTier: z.array(missingTier).describe('Per required tier, the items carrying no tag from it.'),
+        collections: z
+          .array(
+            z
+              .object({
+                collectionKey: z.string().describe('The collection this report is for.'),
+                missingByTier: z.array(missingTier).describe('The same per-tier gaps, inside that collection.'),
+              })
+              .passthrough(),
+          )
+          .optional()
+          .describe('Per-collection coverage; present only when scope.collection_keys was given.'),
+        itemsScanned: z.number().describe('Top-level items audited (notes and attachments are skipped).'),
+      })
+      .passthrough();
+  })(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     let vocab: Vocabulary;

@@ -1,5 +1,7 @@
+import { newLibraryVersion, writeFailures } from './common-output.js';
 import { z } from 'zod';
 import type { ToolDefinition } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { ok, requireCloudLibrary } from '../registry/registry.js';
 import { itemsArraySchema } from '../schema/item-payload.js';
 
@@ -22,9 +24,24 @@ const createItems: ToolDefinition = {
     items: itemsArraySchema.describe(
       `Array of Zotero item-data objects (itemType + fields; include key+version to update). Example: ${JSON.stringify({ items: [itemDataExample] })}`,
     ),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      created: z
+        .array(
+          z
+            .object({
+              key: z.string().describe('Key of the item written.'),
+              version: z.number().optional().describe('Its version after the write.'),
+            })
+            .passthrough(),
+        )
+        .describe('One entry per item Zotero accepted, created or updated.'),
+      failed: writeFailures,
+      libraryVersion: newLibraryVersion,
+    })
+    .passthrough(),
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const lib = requireCloudLibrary(ctx, args);

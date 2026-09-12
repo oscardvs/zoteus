@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ToolDefinition } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { optionalLibrary } from '../registry/registry.js';
 import type { LibraryRef } from '../api/web-client.js';
 
@@ -30,9 +31,17 @@ const bibliography: ToolDefinition = {
     style: z.string().optional().describe('Style name or CSL id.'),
     locale: z.string().optional().describe('Locale (e.g. en-US).'),
     linkwrap: z.boolean().optional().describe('Wrap URLs/DOIs in links.'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      style: z.string().describe("The CSL style Zotero rendered in; \"chicago-shortened-notes-bibliography\" is the default when `style` was unset."),
+      entryCount: z.number().describe('Entries Zotero actually rendered, counted from the XHTML.'),
+      requestedCount: z.number().describe('Keys the call asked for. A key the library does not have, or a child item, renders nothing.'),
+      bibliography: z.string().describe('The rendered XHTML.'),
+      note: z.string().optional().describe('Present when fewer entries rendered than keys were asked for, and why that happens.'),
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const lib = optionalLibrary(args) ?? ctx.router.defaultLibrary();

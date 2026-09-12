@@ -1,6 +1,8 @@
+import { writeFailures, writeTarget } from './common-output.js';
 import { z } from 'zod';
 import type { LibraryRef } from '../api/web-client.js';
 import type { ToolContext, ToolDefinition } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import {
   ok,
   resolveLibrary,
@@ -235,9 +237,32 @@ const annotateTool: ToolDefinition = {
     annotations: z.array(annotationSchema).optional()
       .describe('Annotations to add. Field names are snake_case (`page_label`, `sort_index`, `char_offset`, `page_height`); a key this tool does not know is refused, never ignored.'),
     annotation_keys: z.array(z.string()).optional().describe('Annotation keys to trash (action:"delete").'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      target: writeTarget,
+      attachment: z.string().optional().describe('The PDF attachment the annotations were written to.'),
+      anchoredFromText: z.number().optional().describe('How many annotations had their coordinates computed from the passage in `text`.'),
+      created: z
+        .array(
+          z
+            .object({
+              key: z.string().describe('Key of the annotation created.'),
+              type: z.unknown().optional().describe('Its annotation type, e.g. "highlight".'),
+              text: z.unknown().optional().describe('The highlighted passage, as stored.'),
+              comment: z.unknown().optional().describe('The comment, as stored.'),
+            })
+            .passthrough(),
+        )
+        .optional()
+        .describe('action:"add": the annotations that landed.'),
+      trashed: z.array(z.string()).optional().describe('action:"delete": annotation keys moved to the trash (reversible).'),
+      sessionID: z.string().optional().describe('Connector save session, when the desktop app took the write.'),
+      note: z.string().optional().describe('Set when fewer annotations could be matched back than were sent.'),
+      failed: writeFailures,
+    })
+    .passthrough(),
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const action = args.action ?? 'add';

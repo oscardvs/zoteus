@@ -1,5 +1,7 @@
+import { collectionRow } from './common-output.js';
 import { z } from 'zod';
 import type { ToolDefinition } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { ok, optionalLibrary } from '../registry/registry.js';
 
 const listCollections: ToolDefinition = {
@@ -9,9 +11,15 @@ const listCollections: ToolDefinition = {
     'List collections in a Zotero library (key, name, parent collection key, item count). Read-only — available even in read-only mode (unlike zotero_manage_collections, which also writes). Use the keys to scope zotero_search_items (collectionKey) or zotero_tag_audit (scope.collection_keys).',
   inputSchema: {
     top: z.boolean().optional().describe('Only top-level collections.'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      collections: z
+        .array(collectionRow)
+        .describe('The collections in the library. Use a key to scope zotero_search_items or zotero_tag_audit.'),
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const library = optionalLibrary(args);

@@ -11,6 +11,22 @@ const searchTools: ToolDefinition = {
     query: z.string().optional().describe('Keyword to match against tool names/titles/descriptions.'),
     detail: z.enum(['names', 'descriptions']).optional().describe('How much to return (default "descriptions").'),
   },
+  outputSchema: z
+    .object({
+      tools: z
+        .array(
+          z
+            .object({
+              name: z.string().describe('Tool name to call, e.g. "zotero_search_items".'),
+              title: z.string().optional().describe('Human-readable title; omitted with detail:"names".'),
+              description: z.string().optional().describe('First 220 characters of the tool description; omitted with detail:"names".'),
+            })
+            .passthrough(),
+        )
+        .describe('The matching tools, or the whole catalog when no query was given.'),
+      count: z.number().describe('How many matched.'),
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: false },
   handler: async (args, ctx) => {
     const catalog = ctx.toolCatalog ?? [];

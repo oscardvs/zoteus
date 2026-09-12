@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ToolDefinition } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { ok, requireCloudLibrary } from '../registry/registry.js';
 import { ZoteroApiError } from '../api/errors.js';
 import { itemPatchSchema } from '../schema/item-payload.js';
@@ -34,9 +35,32 @@ const updateItem: ToolDefinition = {
     ),
     version: z.number().int().optional().describe('Known current version; fetched automatically if omitted.'),
     dry_run: z.boolean().optional().describe('Preview the field-level before→after diff without writing.'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      item_key: z.string().describe('The item this call addressed.'),
+      newVersion: z.number().optional().describe('Version after the PATCH; absent on a dry run.'),
+      retried: z.boolean().optional().describe('True when a version conflict (412) was re-fetched and retried once.'),
+      dryRun: z.boolean().optional().describe('True when nothing was written.'),
+      version: z.number().nullable().optional().describe('Current version on the server (dry run only).'),
+      diff: z
+        .record(
+          z
+            .object({
+              before: z.unknown().describe('Value the item carries now.'),
+              after: z.unknown().describe('Value the patch would set.'),
+            })
+            .passthrough(),
+        )
+        .optional()
+        .describe('Field-level before/after for a dry run; only fields the patch would actually change.'),
+      arrayReplacements: z
+        .array(z.string())
+        .optional()
+        .describe('Fields in that diff that PATCH replaces wholesale rather than merging, e.g. ["tags"].'),
+    })
+    .passthrough(),
   annotations: {
     readOnlyHint: false,
     destructiveHint: true,

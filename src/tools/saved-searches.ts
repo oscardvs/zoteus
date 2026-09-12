@@ -1,5 +1,7 @@
+import { newLibraryVersion } from './common-output.js';
 import { z } from 'zod';
 import type { ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { ok, requireCloudLibrary, resolveLibrary } from '../registry/registry.js';
 
 function err(text: string): ToolHandlerResult {
@@ -12,16 +14,47 @@ const savedSearches: ToolDefinition = {
   description:
     'List, create, or delete saved-search DEFINITIONS. NOTE: the Zotero cloud Web API stores saved searches but does NOT execute them — to get the items a saved search matches, run an equivalent zotero_search_items query (or use the desktop local API when available). Set `action` to "list" (all saved searches with their conditions), "create" (needs `name` and `conditions`, each `{condition, operator, value}`), or "delete" (needs `search_key`). Writes go to the cloud Web API.',
   inputSchema: {
-    action: z.enum(['list', 'create', 'delete']),
+    action: z
+      .enum(['list', 'create', 'delete'])
+      .describe(
+        'What to do. "list" returns every saved-search definition; "create" needs `name` + `conditions`; "delete" needs `search_key`.',
+      ),
     name: z.string().optional().describe('Saved-search name (create).'),
     conditions: z
-      .array(z.object({ condition: z.string(), operator: z.string(), value: z.string() }))
+      .array(
+        z.object({
+          condition: z.string().describe('Zotero search field, e.g. "title", "tag", "itemType", "dateAdded".'),
+          operator: z.string().describe('Zotero operator for that field, e.g. "is", "isNot", "contains", "doesNotContain", "isBefore".'),
+          value: z.string().describe('Value to compare against, as a string, e.g. "kalman" or "journalArticle".'),
+        }),
+      )
       .optional()
       .describe('Search conditions (create).'),
     search_key: z.string().optional().describe('Saved-search key (delete).'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      searches: z
+        .array(
+          z
+            .object({
+              key: z.string().optional().describe('8-character saved-search key.'),
+              name: z.string().optional().describe('Saved-search name.'),
+              conditions: z
+                .array(z.record(z.unknown()))
+                .optional()
+                .describe('Its conditions, each { condition, operator, value } as Zotero stores them.'),
+            })
+            .passthrough(),
+        )
+        .optional()
+        .describe('Saved-search definitions (action:"list"). The cloud API stores them but does not execute them.'),
+      created: z.array(z.string()).optional().describe('Key of the saved search created.'),
+      deleted: z.string().optional().describe('Key of the saved search deleted.'),
+      libraryVersion: newLibraryVersion,
+    })
+    .passthrough(),
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     if (args.action === 'list') {

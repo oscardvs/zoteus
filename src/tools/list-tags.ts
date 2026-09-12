@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ToolDefinition } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { ok, optionalLibrary } from '../registry/registry.js';
 
 const listTags: ToolDefinition = {
@@ -10,9 +11,24 @@ const listTags: ToolDefinition = {
   inputSchema: {
     q: z.string().optional().describe('Substring filter.'),
     limit: z.number().int().min(1).max(100).optional().describe('Max tags (default 100).'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      tags: z
+        .array(
+          z
+            .object({
+              name: z.string().describe('The tag itself; tag names are case-sensitive.'),
+              numItems: z.number().optional().describe('Items carrying it, when the backend reports the count.'),
+              auto: z.boolean().describe('True when Zotero applied it automatically rather than the reader.'),
+            })
+            .passthrough(),
+        )
+        .describe('The tags in the library, filtered by `q` when one was given.'),
+      totalResults: z.number().optional().describe('Tags matching in total, not just this page.'),
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const lib = optionalLibrary(args) ?? ctx.router.defaultLibrary();

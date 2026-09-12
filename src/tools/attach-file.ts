@@ -1,6 +1,8 @@
+import { writeTarget } from './common-output.js';
 import { z } from 'zod';
 import { resolveCallerPath, CallerPathError } from '../lib/caller-path.js';
 import type { ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import {
   ok,
   ensureLocalApi,
@@ -42,9 +44,20 @@ const attachFile: ToolDefinition = {
     filename: z.string().optional().describe('File name to store; inferred from path/url if omitted.'),
     content_type: z.string().optional().describe('MIME type; inferred from the extension if omitted (pdf -> application/pdf).'),
     title: z.string().optional().describe('Attachment title, e.g. "Full Text PDF".'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional().describe('Group library to attach in; forces the cloud path.'),
+    ...libraryArgs,
+    library_id: libraryArgs.library_id.describe('Group library to attach the file in (from zotero_groups); forces the cloud path instead of the desktop app.'),
   },
+  outputSchema: z
+    .object({
+      attachment: z.string().describe('Key of the attachment item created.'),
+      parent: z.string().describe('The item it hangs off.'),
+      filename: z.string().describe('File name stored.'),
+      bytes: z.number().describe('Size of the stored file.'),
+      contentType: z.string().describe('MIME type stored, e.g. "application/pdf".'),
+      target: writeTarget,
+      alreadyInStorage: z.boolean().optional().describe('True when Zotero already held these bytes and only the item was created (cloud path).'),
+    })
+    .passthrough(),
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     if (!args.path && !args.url) {

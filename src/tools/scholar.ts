@@ -31,11 +31,42 @@ const scholar: ToolDefinition = {
   description:
     'Explore the EXTERNAL scholarly graph around a paper (OpenAlex, Crossref fallback). This does NOT search, list, or read your Zotero library — it queries the open web, and results are works from the scholarly web, not your items. To search or inspect YOUR library use zotero_search_items, zotero_semantic_search, zotero_get_item, or zotero_list_tags instead. Provide a `doi` and an `action`: "lookup" (metadata + citation count), "references" (works this paper cites), "citations" (works that cite this paper, most-cited first), or "related" (similar works). Set `include_in_library: true` to additionally flag which results your library already holds (off by default because it scans the library); otherwise every result is just a web record. `limit` caps results (default 20); every list answer also carries `total`, the size of the list the results were cut from, and `truncated: true` when the limit dropped some, so a review with 150 references never looks like one with 20. Read-only; calls external scholarly APIs. This is a thin citation-graph helper around a single DOI: for full OpenAlex querying (keyword search, filters, paging, `select`) call https://api.openalex.org directly, see the LLM quick reference in the OpenAlex help pages.',
   inputSchema: {
-    action: z.enum(['lookup', 'references', 'citations', 'related']),
+    action: z
+      .enum(['lookup', 'references', 'citations', 'related'])
+      .describe(
+        'What to fetch for `doi` from the external scholarly graph: "lookup" (metadata and citation count), "references" (works it cites), "citations" (works citing it, most-cited first), or "related" (similar works).',
+      ),
     doi: z.string().describe('The DOI of the paper (with or without the https://doi.org/ prefix).'),
     limit: z.number().int().min(1).max(100).optional().describe('Max results (default 20). The answer says how many there were in total.'),
     include_in_library: z.boolean().optional().describe('Also scan the library and flag results already saved (default false; scanning is expensive).'),
   },
+  outputSchema: (() => {
+    const work = z
+      .object({
+        title: z.string().optional().describe('Work title.'),
+        doi: z.string().optional().describe('DOI, lower-cased, without the https://doi.org/ prefix.'),
+        year: z.number().optional().describe('Publication year.'),
+        authors: z.array(z.string()).optional().describe('Author names, in order; absent when the provider reported none.'),
+        citationCount: z.number().optional().describe('Citations OpenAlex knows of.'),
+        openalexId: z.string().optional().describe('OpenAlex work id.'),
+        venue: z.string().optional().describe('Journal, conference or repository.'),
+        type: z.string().optional().describe('OpenAlex work type, e.g. "article".'),
+        inLibrary: z.boolean().optional().describe('Whether your library already holds this DOI; set only with include_in_library.'),
+      })
+      .passthrough();
+    return z
+      .object({
+        action: z.string().describe('The action this answer is for, echoed back.'),
+        doi: z.string().optional().describe('The DOI asked about, normalised.'),
+        work: work.optional().describe('action:"lookup": the paper itself.'),
+        results: z.array(work).optional().describe('The works on the other end of the relation, most-cited first for citations.'),
+        count: z.number().optional().describe('Works returned here.'),
+        total: z.number().optional().describe('Works in the list they were cut from, so 20 of 150 never reads as the whole list.'),
+        truncated: z.boolean().optional().describe('True when `limit` dropped some.'),
+        inLibrary: z.number().optional().describe('How many of the results your library already holds; undefined unless include_in_library was set.'),
+      })
+      .passthrough();
+  })(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const limit = args.limit ?? 20;

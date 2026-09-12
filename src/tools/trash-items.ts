@@ -1,5 +1,7 @@
+import { newLibraryVersion, writeFailures, writeTarget } from './common-output.js';
 import { z } from 'zod';
 import type { ToolDefinition } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import {
   ok,
   resolveLibrary,
@@ -27,9 +29,16 @@ const trashItems: ToolDefinition = {
       .boolean()
       .optional()
       .describe('Required to trash more items in one call than the server\'s bulk-write threshold.'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      updated: z.array(z.string()).describe('Keys of the items trashed or restored.'),
+      failed: writeFailures,
+      target: writeTarget,
+      libraryVersion: newLibraryVersion,
+    })
+    .passthrough(),
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const deleted = args.action === 'restore' ? 0 : 1;

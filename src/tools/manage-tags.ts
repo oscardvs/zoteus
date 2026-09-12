@@ -1,5 +1,7 @@
+import { writeFailures } from './common-output.js';
 import { z } from 'zod';
 import type { ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { ok, requireCloudLibrary, resolveLibrary, requireBulkConfirm } from '../registry/registry.js';
 
 function err(text: string): ToolHandlerResult {
@@ -12,7 +14,11 @@ const manageTags: ToolDefinition = {
   description:
     'List tags, or add/remove tags on items. Set `action` to "list" (returns library tags; supports `q` substring filter), "add" (add `tags` to each of `item_keys`), or "remove" (remove `tags` from each of `item_keys`). Tags are stored on the parent item\'s tag array, so add/remove edits the items (cloud Web API). Tag names are case-sensitive. When the server sets a bulk-write threshold (ZOTEUS_CONFIRM_BULK_WRITES, off by default), editing more items than that in one call also needs `confirm: true`.',
   inputSchema: {
-    action: z.enum(['list', 'add', 'remove']),
+    action: z
+      .enum(['list', 'add', 'remove'])
+      .describe(
+        'What to do. "list" returns the library\'s tags (filter with `q`); "add" and "remove" edit `tags` on each of `item_keys`.',
+      ),
     tags: z.array(z.string()).optional().describe('Tag names to add or remove.'),
     item_keys: z.array(z.string()).optional().describe('Items to modify (add/remove).'),
     q: z.string().optional().describe('Substring filter for list.'),
@@ -20,10 +26,17 @@ const manageTags: ToolDefinition = {
       .boolean()
       .optional()
       .describe("Required to edit more items in one call than the server's bulk-write threshold."),
-    limit: z.number().int().min(1).max(100).optional(),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    limit: z.number().int().min(1).max(100).optional().describe('Max tags to return for action:"list" (default 100, max 100).'),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      tags: z.array(z.string()).optional().describe('Tag names in the library (action:"list").'),
+      totalResults: z.number().optional().describe('Tags matching the filter in total, not just this page.'),
+      updated: z.array(z.string()).optional().describe('Item keys whose tags were changed (add/remove).'),
+      failed: writeFailures,
+    })
+    .passthrough(),
   annotations: {
     readOnlyHint: false,
     destructiveHint: true,

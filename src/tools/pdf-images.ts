@@ -1,3 +1,4 @@
+import { attachmentIdentity, provenance } from './common-output.js';
 import { z } from 'zod';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -8,6 +9,7 @@ import type {
   ToolHandlerResult,
 } from '../registry/registry.js';
 import { okLibraryContent, optionalLibrary } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import type { LibraryRef } from '../api/web-client.js';
 import {
   detectKind,
@@ -171,9 +173,75 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
       .describe(
         'Also write each image under the Zoteus data directory and return its path. Default: true for figures on a local install, false otherwise. Not available on a shared server.',
       ),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      ...attachmentIdentity,
+      mode: z.string().describe('"pages" for rendered pages, "figures" for the raster images embedded in them.'),
+      numPages: z.number().describe('Pages the PDF holds.'),
+      requested: z.string().describe('The page span asked for, echoed back, e.g. "3-7".'),
+      pages: z
+        .array(
+          z
+            .object({
+              page: z.number().describe('1-based page number.'),
+              width: z.number().describe('Rendered width in pixels.'),
+              height: z.number().describe('Rendered height in pixels.'),
+              dpi: z.number().describe('Resolution it was rendered at.'),
+              mimeType: z.string().describe('"image/jpeg" or "image/png".'),
+              bytes: z.number().describe('Size of the rendered image.'),
+              inline: z.boolean().describe('Whether this page is also one of the image blocks in `content`.'),
+              path: z.string().optional().describe('File it was saved to, when `save` was on.'),
+            })
+            .passthrough(),
+        )
+        .optional()
+        .describe('mode "pages": one entry per rendered page, in page order.'),
+      images: z
+        .array(
+          z
+            .object({
+              page: z.number().describe('1-based page the image sits on.'),
+              index: z.number().describe('Position of the image on that page.'),
+              width: z.number().describe('Pixel width of the stored image.'),
+              height: z.number().describe('Pixel height.'),
+              mimeType: z.string().describe('"image/jpeg" or "image/png".'),
+              bytes: z.number().describe('Size of the stored image.'),
+              source: z.string().optional().describe('How it was obtained from the page.'),
+              bbox: z.unknown().optional().describe('Where it sits on the page, in points from the top left.'),
+              coversPage: z.boolean().optional().describe('True when the image is the whole page, i.e. a scan.'),
+              inline: z.boolean().describe('Whether it is also one of the image blocks in `content`.'),
+              preview: z
+                .object({
+                  width: z.number().describe('Pixel width of the preview.'),
+                  height: z.number().describe('Pixel height of the preview.'),
+                  mimeType: z.string().describe('"image/jpeg" or "image/png".'),
+                  bytes: z.number().describe('Size of the preview in bytes.'),
+                })
+                .passthrough()
+                .optional()
+                .describe('The smaller copy actually shown inline, when the original was too large.'),
+              path: z.string().optional().describe('File it was saved to, when `save` was on.'),
+            })
+            .passthrough(),
+        )
+        .optional()
+        .describe('mode "figures": one entry per embedded image returned.'),
+      skipped: z
+        .record(z.number())
+        .optional()
+        .describe('Images left out, by reason: tiny, duplicate, undecodable.'),
+      pagesWithoutImages: z.array(z.number()).optional().describe('Pages that embed no raster image; a figure there is drawn as vectors.'),
+      bitmapTextPages: z
+        .array(z.record(z.unknown()))
+        .optional()
+        .describe('Pages painting their text as small stencil bitmaps (a scan with no text layer), with how many.'),
+      inlineBase64Chars: z.number().describe('Base64 characters of image data in this response, against the inline budget.'),
+      notice: z.string().optional().describe('Scanned pages, vector-only pages, caps hit and files saved, in one sentence.'),
+      provenance,
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const library: LibraryRef | undefined = optionalLibrary(args);

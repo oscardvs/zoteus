@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { LocalGroup } from '../api/local-client.js';
 import type { ToolContext, ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
 import { ensureLocalApi, ok } from '../registry/registry.js';
@@ -55,6 +56,26 @@ const groups: ToolDefinition = {
   description:
     'List the group libraries this server can reach, with each group\'s id and name. Use a returned group id with the `library_id`/`library_type:"group"` parameters of other tools to operate on that group library; `library_type` alone does not address a group. With a cloud API key each group the key can access is listed with its type, item count, description and edit permissions. Without a key the list falls back to the group libraries a running Zotero 10+ desktop app holds, which are exactly the groups still readable, key-free, from that app: those rows carry id, name, description and the desktop\'s own item count, and no type or edit permissions, because the desktop does not store them. Where both are available every row says which it came from, in `source`: "cloud", "local", or "both" for a group the key can see and the desktop also holds. Writing to a group always goes through the cloud, even when the Zotero desktop app holds that group, and needs a key with write access to it; `libraryEditing` says whether the group itself lets ordinary members edit its library.',
   inputSchema: {},
+  outputSchema: z
+    .object({
+      groups: z
+        .array(
+          z
+            .object({
+              id: z.number().describe('Group id; pass it as library_id together with library_type:"group".'),
+              name: z.string().optional().describe('Group name.'),
+              type: z.string().optional().describe('Zotero group type, e.g. "Private" or "PublicClosed"; absent on a desktop-only row.'),
+              numItems: z.number().optional().describe("Item count. A desktop row counts every row it holds, so it differs from the cloud's figure."),
+              description: z.string().optional().describe('Group description.'),
+              libraryEditing: z.string().optional().describe('Who may edit the group library, e.g. "members" or "admins"; absent on a desktop-only row.'),
+              source: z.string().optional().describe('Where the row came from: "cloud", "local", or "both".'),
+            })
+            .passthrough(),
+        )
+        .describe('The group libraries this server can reach.'),
+      note: z.string().optional().describe('What a desktop-served row does and does not say; present only when one is listed.'),
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (_args, ctx): Promise<ToolHandlerResult> => {
     const me = ctx.router.whoami();

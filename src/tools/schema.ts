@@ -10,6 +10,15 @@ const schemaTool: ToolDefinition = {
   inputSchema: {
     item_type: z.string().optional().describe('If set, return the fields & creator types for this item type.'),
   },
+  outputSchema: z
+    .object({
+      version: z.number().describe('Zotero schema version this answer came from.'),
+      itemTypes: z.array(z.string()).optional().describe('Every item type name; returned when no item_type was given.'),
+      itemType: z.string().optional().describe('The item type asked about.'),
+      fields: z.array(z.string()).optional().describe('Valid field names for that item type.'),
+      creatorTypes: z.array(z.string()).optional().describe('Valid creator types for it, primary first.'),
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const schema = await ctx.schema.getSchema();

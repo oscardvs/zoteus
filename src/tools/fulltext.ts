@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import {
   ok,
   isPersonalLibrary,
@@ -18,17 +19,37 @@ const fulltext: ToolDefinition = {
   description:
     "Not a search — to find which items contain a term, use `zotero_search_items` with qmode=everything. This reads, sets, or tracks one attachment's already-extracted full text by key. `action`: \"get\" returns the indexed text content plus indexing stats for an attachment item (only attachment items have full text; returns found:false if none); \"set\" stores extracted text for an attachment (provide `content` and the indexing counts); \"since\" returns the map of attachment keys whose full text changed after a given library `version` (useful for incremental indexing). Only attachment items support full text. \"get\" and \"since\" read through the running Zotero desktop app when there is one (no cloud key needed), otherwise the cloud Web API; \"set\" always writes via the cloud Web API, which has no desktop equivalent, so it needs ZOTERO_API_KEY even for the personal library.",
   inputSchema: {
-    action: z.enum(['get', 'set', 'since']),
+    action: z
+      .enum(['get', 'set', 'since'])
+      .describe(
+        'What to do. "get" reads one attachment\'s indexed text (needs `item_key`); "set" stores extracted text for it (needs `item_key` + `content`, cloud only); "since" lists attachment keys whose text changed after `since`.',
+      ),
     item_key: z.string().optional().describe('Attachment item key (get/set).'),
     since: z.number().int().optional().describe('Library version for "since" (default 0).'),
     content: z.string().optional().describe('Extracted text (set).'),
-    indexed_chars: z.number().int().optional(),
-    total_chars: z.number().int().optional(),
-    indexed_pages: z.number().int().optional(),
-    total_pages: z.number().int().optional(),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    indexed_chars: z.number().int().optional().describe('Characters of the document that were indexed (set); defaults to none reported.'),
+    total_chars: z.number().int().optional().describe('Characters the document holds in total (set).'),
+    indexed_pages: z.number().int().optional().describe('Pages that were indexed (set); PDFs only.'),
+    total_pages: z.number().int().optional().describe('Pages the document holds in total (set); PDFs only.'),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      found: z.boolean().optional().describe('action:"get": whether Zotero holds extracted text for this attachment.'),
+      item_key: z.string().optional().describe('The attachment this call addressed.'),
+      content: z.string().optional().describe('The extracted text itself (action:"get").'),
+      indexedChars: z.number().optional().describe('Characters Zotero has indexed of the document.'),
+      totalChars: z.number().optional().describe('Characters the document holds in total.'),
+      indexedPages: z.number().optional().describe('Pages indexed (PDFs).'),
+      totalPages: z.number().optional().describe('Pages in the document (PDFs).'),
+      changed: z
+        .record(z.number())
+        .optional()
+        .describe('action:"since": attachment key to the full-text version it changed at.'),
+      count: z.number().optional().describe('How many attachments that map holds.'),
+      length: z.number().optional().describe('Characters stored (action:"set").'),
+    })
+    .passthrough(),
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const readLib = optionalLibrary(args) ?? ctx.router.defaultLibrary();

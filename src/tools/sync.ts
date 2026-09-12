@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { ok, optionalLibrary } from '../registry/registry.js';
 import { LocalApiUnsupportedError } from '../api/local-client.js';
 import type { VersionBackend } from '../features/search/backend.js';
@@ -29,9 +30,39 @@ const sync: ToolDefinition = {
     since: z.number().int().min(0).optional().describe('Library version to diff from (default 0).'),
     types: z.array(z.enum(SYNC_TYPES)).optional().describe('Which object types to check (default all).'),
     include_deleted: z.boolean().optional().describe('Include the deletion log (default true).'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      since: z.number().describe('The version this delta was taken from, echoed back.'),
+      backend: z.string().describe('Which API answered: "local" (Zotero desktop app) or "cloud". The two number versions independently.'),
+      changed: z
+        .record(
+          z
+            .object({
+              count: z.number().describe('How many objects of this type changed.'),
+              keys: z.array(z.string()).describe('Their keys; fetch them with zotero_get_item or zotero_search_items.'),
+            })
+            .passthrough(),
+        )
+        .describe('Per object type (items/collections/searches/tags), what changed after `since`.'),
+      deleted: z
+        .record(z.array(z.string()))
+        .optional()
+        .describe('The deletion log per object type; absent when include_deleted was false or the backend has none.'),
+      unavailable: z
+        .array(
+          z
+            .object({
+              what: z.string().describe('The part of the delta this backend cannot serve.'),
+              reason: z.string().describe('Why, and where the answer does live.'),
+            })
+            .passthrough(),
+        )
+        .optional()
+        .describe('What was asked for and could not be answered, instead of an empty result.'),
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const lib = optionalLibrary(args) ?? ctx.router.defaultLibrary();

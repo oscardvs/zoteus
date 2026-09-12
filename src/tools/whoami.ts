@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { ToolDefinition } from '../registry/registry.js';
 import { ok } from '../registry/registry.js';
 import { ATTRIBUTION_LINE, CITEPROC_ATTRIBUTION } from '../lib/notices.js';
@@ -9,6 +10,55 @@ const whoami: ToolDefinition = {
   description:
     'Resolve the current Zotero identity (userID, username, display name) and per-library access scopes from the configured API key, report the running Zoteus `version`, and report which library backends are available (cloud Web API and/or the desktop local API). Call this first to discover the userID — never ask the user to type a numeric ID. If no API key is configured, the server runs in local-only read mode against the desktop library (users/0).',
   inputSchema: {},
+  outputSchema: z
+    .object({
+      version: z.string().describe('The Zoteus release answering this call, e.g. "1.19.0".'),
+      cloud: z.boolean().describe('Whether a cloud API key is configured and identified a Zotero user.'),
+      userID: z.number().optional().describe('Zotero numeric user id that key belongs to.'),
+      username: z.string().optional().describe('Zotero username on that account.'),
+      displayName: z.string().optional().describe('Display name on that account, when it has one.'),
+      access: z
+        .record(z.unknown())
+        .nullable()
+        .optional()
+        .describe('What the key may do, as Zotero reports it: { user: {...}, groups: {...} }. Null when no key is configured.'),
+      localApi: z.boolean().describe('Whether the Zotero desktop local API answered the probe taken for this call.'),
+      localApiChecked: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('ISO timestamp of that probe, or null when this server does not watch for the desktop app.'),
+      localApiWatched: z.boolean().optional().describe('Whether this server watches for the desktop app at all (false in hosted mode).'),
+      defaultLibrary: z
+        .object({
+          type: z.string().describe('"user" or "group".'),
+          id: z.number().describe("Library id; 0 is the desktop app's own personal library."),
+        })
+        .passthrough()
+        .describe('The library every tool reads and writes when a call names none.'),
+      embeddings: z
+        .object({
+          configured: z.string().optional().describe('The requested ZOTEUS_EMBEDDINGS value, whether or not it works.'),
+          active: z.boolean().optional().describe('True only while that provider is genuinely producing vectors.'),
+          effective: z.string().optional().describe('The embedder actually in use, or "none (...)" with the reason.'),
+          reason: z.string().optional().describe('Why the configured provider is not active.'),
+        })
+        .passthrough()
+        .describe('Semantic-search health, so a keyword-only fallback is visible here and not only in zotero_index.'),
+      update: z
+        .object({
+          current: z.string().describe('Version running now.'),
+          latest: z.string().describe('Newer published version.'),
+          url: z.string().describe('Where to get it.'),
+        })
+        .passthrough()
+        .nullable()
+        .describe('A newer Zoteus release, or null when this is the latest (or the check is off).'),
+      attribution: z
+        .record(z.unknown())
+        .describe('citeproc-js attribution (CPAL Exhibit B): phrase, copyright, licence and URL.'),
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (_args, ctx) => {
     // The diagnostic tool answers from a probe taken now, not from one cached behind a

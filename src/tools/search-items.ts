@@ -1,5 +1,7 @@
+import { provenance } from './common-output.js';
 import { z } from 'zod';
 import type { ToolDefinition } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { okLibraryContent, optionalLibrary } from '../registry/registry.js';
 import { refuseUnknownCollection } from './collection-guard.js';
 
@@ -38,7 +40,12 @@ const searchItems: ToolDefinition = {
     'Search or list items in a Zotero library or collection. Quick search via `q` (`qmode`: titleCreatorYear=default, matches title/creator/year only; everything=also searches notes & attachment full text). For presence checks ("is X in my library?"): a default-mode `q` that matches nothing auto-retries once in `everything` mode, so terms appearing only inside PDF text don\'t false-negative — pin `qmode` explicitly to disable. An empty `everything` result is reported as strong-but-not-conclusive, since un-indexed/scanned/un-synced PDFs aren\'t full-text searchable. Also supports boolean `itemType` filters (use `||` for OR, repeat or `&&` for AND, leading `-` to negate, e.g. "journalArticle || book", "-attachment"), boolean `tag` filters (same syntax; escape a literal leading hyphen as "\\-"), `since` (version) for incremental queries, `sort`/`direction`, and `limit`/`start` paging. Set `response_format` to "detailed" to also return technical fields (version, tags, collections, DOI, url) needed before chaining a write; the default "concise" returns high-signal projections (key, itemType, title, creators, date). Reads are served from the fast desktop local API when available, otherwise the cloud Web API. Returns `totalResults` so you can tell when to page rather than assuming you saw everything. For conceptual/"papers about X" queries by meaning rather than exact fields, use zotero_semantic_search instead.',
   inputSchema: {
     q: z.string().optional().describe('Quick/full-text search string.'),
-    qmode: z.enum(['titleCreatorYear', 'everything']).optional(),
+    qmode: z
+      .enum(['titleCreatorYear', 'everything'])
+      .optional()
+      .describe(
+        'How `q` is matched: "titleCreatorYear" (default) searches titles, creators and years only; "everything" also searches notes and attachment full text. Unset lets an empty default-mode result retry once in "everything".',
+      ),
     itemType: z.string().optional().describe('Boolean itemType filter, e.g. "journalArticle || book".'),
     tag: z.string().optional().describe('Boolean tag filter, e.g. "to-read && 2024".'),
     collectionKey: z
@@ -49,15 +56,46 @@ const searchItems: ToolDefinition = {
       ),
     top: z.boolean().optional().describe('Only top-level items (exclude child notes/attachments).'),
     since: z.number().int().optional().describe('Return items modified after this library version.'),
-    includeTrashed: z.boolean().optional(),
-    sort: z.string().optional(),
-    direction: z.enum(['asc', 'desc']).optional(),
+    includeTrashed: z.boolean().optional().describe('Also return items in the trash (default false).'),
+    sort: z
+      .string()
+      .optional()
+      .describe(
+        'Zotero sort field, e.g. "dateModified" (the default), "dateAdded", "title", "creator", "date", "itemType".',
+      ),
+    direction: z.enum(['asc', 'desc']).optional().describe('Sort direction; Zotero\'s own default for the chosen `sort` field when unset.'),
     limit: z.number().int().min(1).max(MAX_LIMIT).optional().describe('Max items (default 25, max 100).'),
-    start: z.number().int().min(0).optional(),
+    start: z.number().int().min(0).optional().describe('Zero-based offset into the result set, for paging (default 0). Page with start += limit while `totalResults` is larger.'),
     response_format: z.enum(['concise', 'detailed']).optional().describe('Detail level of returned items.'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      items: z
+        .array(
+          z
+            .object({
+              key: z.string().optional().describe('8-character item key; pass it to zotero_get_item or zotero_bibliography.'),
+              itemType: z.string().optional().describe('Zotero item type, e.g. "journalArticle".'),
+              title: z.string().optional().describe('Item title, or "(untitled)".'),
+              creatorSummary: z.string().optional().describe('Short creator line, e.g. "Kalman & Bucy" or "Smith et al.".'),
+              date: z.string().optional().describe('Date as Zotero stores it, e.g. "2019-04" or "1960".'),
+              version: z.number().optional().describe('Item version, needed before a write (response_format:"detailed" only).'),
+              tags: z.array(z.string()).optional().describe('Tag names (response_format:"detailed" only).'),
+              collections: z.array(z.string()).optional().describe('Collection keys the item is in (response_format:"detailed" only).'),
+              DOI: z.string().optional().describe('DOI (response_format:"detailed" only).'),
+              url: z.string().optional().describe('URL (response_format:"detailed" only).'),
+            })
+            .passthrough(),
+        )
+        .describe('The page of matching items, projected: concise by default, with the technical fields when response_format is "detailed".'),
+      totalResults: z.number().describe('Matches in the whole result set, not just this page; page with start/limit while it is larger.'),
+      libraryVersion: z.number().optional().describe("The library's Last-Modified-Version when the search ran."),
+      qmode: z.string().describe('The quick-search mode actually used: "titleCreatorYear" or "everything".'),
+      broadened: z.boolean().describe('True when an empty default-mode search was retried once in "everything" mode.'),
+      provenance,
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const detailed = args.response_format === 'detailed';

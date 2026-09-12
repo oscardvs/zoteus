@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { optionalLibrary } from '../registry/registry.js';
 import { BbtClient } from '../api/bbt-client.js';
 import { refuseUnknownCollection } from './collection-guard.js';
@@ -100,20 +101,34 @@ const exportTool: ToolDefinition = {
   description:
     'Export items in a bibliographic format and return the raw text. Choose `format` (bibtex, biblatex, better-biblatex, ris, csljson, csv, mods, tei, coins, rdf_*, refer, wikipedia, bookmarks). Stock formats are rendered by Zotero itself: by the desktop app when it serves the selected library (no cloud key needed), by the Web API otherwise. `biblatex` is Zotero\'s STOCK translator; BBT-specific options (citation-key generation, sentence-case, biblatexExtendedNameFormat, unicode→LaTeX) are NOT available there. `better-biblatex` uses the local desktop Better BibTeX plugin (your configured BBT export options apply) and is only available when desktop Zotero + BBT are running; it degrades to built-in `biblatex` otherwise. Narrow with `item_keys`, `collection_key`, `q`, or `item_type`. A `limit` (default 50) is always applied. An export that renders no entries says so instead of returning a blank body: named `item_keys` that render none are an error, and any other selection that renders none comes back with `empty: true`. For styled human bibliographies use the bibliography tools.',
   inputSchema: {
-    format: z.enum(EXPORT_FORMATS),
-    item_keys: z.array(z.string()).optional(),
+    format: z
+      .enum(EXPORT_FORMATS)
+      .describe(
+        'Export format to render, e.g. "bibtex", "biblatex", "better-biblatex", "ris", "csljson", "csv". "better-biblatex" needs the desktop Better BibTeX plugin and degrades to "biblatex" without it.',
+      ),
+    item_keys: z.array(z.string()).optional().describe('Restrict to these 8-character item keys. Keys that render no entry are an error rather than a blank body.'),
     collection_key: z
       .string()
       .optional()
       .describe(
         'Restrict to a collection by key. A key this library does not have is refused, never answered with the whole library.',
       ),
-    q: z.string().optional(),
-    item_type: z.string().optional(),
-    limit: z.number().int().min(1).max(100).optional(),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    q: z.string().optional().describe('Quick-search string to narrow the export (title/creator/year).'),
+    item_type: z.string().optional().describe('Boolean itemType filter, e.g. "journalArticle || book" or "-attachment".'),
+    limit: z.number().int().min(1).max(100).optional().describe('Max items to export (default 50, max 100).'),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      format: z.string().describe('The format actually rendered; "biblatex" when better-biblatex degraded to the built-in translator.'),
+      length: z.number().describe('Characters of exported text.'),
+      text: z.string().describe('The raw export, the same bytes as the text block.'),
+      empty: z.boolean().optional().describe('True when Zotero rendered no entries at all for the selection.'),
+      notice: z.string().optional().describe('Why an empty export is empty.'),
+      source: z.string().optional().describe('Set to "local-bbt" when the desktop Better BibTeX plugin rendered it.'),
+      degradedToBuiltIn: z.boolean().optional().describe("True when better-biblatex was asked for and Zotero's built-in biblatex answered."),
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const lib = optionalLibrary(args) ?? ctx.router.defaultLibrary();

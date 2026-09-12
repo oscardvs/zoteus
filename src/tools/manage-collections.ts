@@ -1,5 +1,7 @@
+import { collectionRow, newLibraryVersion, writeFailures } from './common-output.js';
 import { z } from 'zod';
 import type { ToolContext, ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { ok, optionalLibrary, requireCloudLibrary, requireBulkConfirm } from '../registry/registry.js';
 import type { LibraryRef } from '../api/web-client.js';
 
@@ -18,7 +20,11 @@ const manageCollections: ToolDefinition = {
   description:
     'List, create, rename, reparent, or delete collections, and move items into or out of a collection. Set `action` to one of: "list" (all collections with key/name/parent), "create" (needs `name`, optional `parent_collection` key — omit for top-level), "rename" (needs `collection_key` + `name`), "reparent" (needs `collection_key`; `parent_collection` key, or omit to move to top level), "delete" (needs `collection_key`), "add_items" / "remove_items" (need `collection_key` + `item_keys`; collection membership lives on each item). All actions except "list" write to the cloud Web API. When the server sets a bulk-write threshold (ZOTEUS_CONFIRM_BULK_WRITES, off by default), removing more items than that from a collection in one call also needs `confirm: true`.',
   inputSchema: {
-    action: z.enum(['list', 'create', 'rename', 'reparent', 'delete', 'add_items', 'remove_items']),
+    action: z
+      .enum(['list', 'create', 'rename', 'reparent', 'delete', 'add_items', 'remove_items'])
+      .describe(
+        'What to do. "list" reads every collection; "create" needs `name`; "rename" needs `collection_key` + `name`; "reparent" needs `collection_key`; "delete" needs `collection_key`; "add_items"/"remove_items" need `collection_key` + `item_keys`.',
+      ),
     name: z.string().optional().describe('Collection name (create/rename).'),
     collection_key: z.string().optional().describe('Target collection key (all actions except list/create).'),
     parent_collection: z.string().optional().describe('Parent collection key; omit for top-level.'),
@@ -27,9 +33,19 @@ const manageCollections: ToolDefinition = {
       .boolean()
       .optional()
       .describe("Required to remove more items in one call than the server's bulk-write threshold."),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      collections: z.array(collectionRow).optional().describe('Every collection in the library (action:"list").'),
+      created: z.array(z.string()).optional().describe('Key of the collection created (action:"create").'),
+      collection_key: z.string().optional().describe('The collection renamed or reparented.'),
+      deleted: z.string().optional().describe('Key of the collection deleted.'),
+      updated: z.array(z.string()).optional().describe('Item keys added to or removed from the collection.'),
+      failed: writeFailures,
+      libraryVersion: newLibraryVersion,
+    })
+    .passthrough(),
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     if (args.action === 'list') {

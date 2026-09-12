@@ -1,5 +1,7 @@
+import { writeFailures, writeTarget, zoteroObject } from './common-output.js';
 import { z } from 'zod';
 import type { ToolDefinition, ToolHandlerResult, ToolContext } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import {
   ok,
   resolveLibrary,
@@ -65,16 +67,53 @@ const importTool: ToolDefinition = {
   description:
     'Resolve bibliographic metadata to Zotero item-data and optionally save it to your library. `action: "by_identifier"` resolves a DOI, ISBN, PMID, arXiv id, or ADS bibcode (set `identifier`); `action: "by_url"` scrapes a web page (set `url`) and may return multiple choices to pick from. Set `save_to_library:true` (and optionally `collection_key`) to persist the resolved items — saved into the running Zotero desktop app when available, otherwise via the cloud Web API (requires ZOTERO_API_KEY); otherwise the resolved metadata is returned without saving. When a Zotero translation-server is reachable (ZOTEUS_TRANSLATION_SERVER_URL, default http://127.0.0.1:1969) it is the primary path; if none is running, DOI and arXiv ids fall back to built-in resolution (OpenAlex/Crossref and the arXiv API respectively) — the result then carries a `source` field ("scholar" or "arxiv"). ISBN/PMID/bibcode and web URLs require a translation-server.',
   inputSchema: {
-    action: z.enum(['by_identifier', 'by_url']),
+    action: z
+      .enum(['by_identifier', 'by_url'])
+      .describe(
+        'What to resolve: "by_identifier" takes `identifier` (DOI, ISBN, PMID, arXiv id, ADS bibcode); "by_url" scrapes `url` and needs a translation-server.',
+      ),
     identifier: z.string().optional().describe('DOI (10.…), arXiv id (YYMM.NNNNN), ISBN, PMID, or ADS bibcode.'),
     url: z.string().optional().describe('Web page URL to scrape (needs a translation-server).'),
     save_to_library: z.boolean().optional().describe('Persist the resolved items — into the running Zotero desktop app when available, otherwise the cloud Web API (needs a cloud key).'),
     collection_key: z.string().optional().describe('Collection to add saved items to: an 8-char collection key or a Zotero treeViewID like "C20".'),
     attach_url: z.string().url().optional().describe('File URL (e.g. an arXiv PDF) to download and attach as a stored attachment to the (single) imported item. Works on every save path: the desktop app when one is reachable, otherwise the cloud Web API.'),
     attach_title: z.string().optional().describe('Title for the attached file, e.g. "Full Text PDF".'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      source: z.string().optional().describe('What resolved the metadata: "translation-server", "scholar" or "arxiv".'),
+      items: z.array(zoteroObject).optional().describe('The resolved item-data objects, returned when save_to_library was not set.'),
+      count: z.number().optional().describe('How many were resolved.'),
+      saved: z.boolean().optional().describe('False when nothing was written to the library.'),
+      resolved: z.number().optional().describe('How many items the save was asked to write.'),
+      created: z
+        .array(z.string())
+        .optional()
+        .describe('Keys of the items written to the library.'),
+      failed: writeFailures,
+      target: writeTarget,
+      sessionID: z.string().optional().describe('Connector save session, when the desktop app took the write.'),
+      placedIn: z.string().optional().describe('The collection the saved items were filed in.'),
+      attached: z
+        .object({
+          key: z.string().optional().describe('Key of the attachment item created.'),
+          bytes: z.number().optional().describe('Size of the downloaded file.'),
+          contentType: z.string().optional().describe('Its MIME type.'),
+          filename: z.string().optional().describe('File name stored.'),
+          alreadyInStorage: z.boolean().optional().describe('True when Zotero already held those bytes.'),
+        })
+        .passthrough()
+        .optional()
+        .describe('The file attached from attach_url, when one was asked for and landed.'),
+      warning: z.string().optional().describe('The items were saved, but something after that did not work (a failed attachment, a collection that could not be set).'),
+      note: z.string().optional().describe('Set when fewer items could be matched back than were sent.'),
+      multiple: z
+        .record(z.unknown())
+        .optional()
+        .describe('action:"by_url" on a page offering several items: the choices, as key to label. Re-run with a more specific URL.'),
+    })
+    .passthrough(),
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     // Check what the caller sent before probing the translation-server. An empty

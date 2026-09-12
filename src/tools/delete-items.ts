@@ -1,5 +1,7 @@
+import { writeTarget } from './common-output.js';
 import { z } from 'zod';
 import type { ToolDefinition } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import {
   ok,
   resolveLibrary,
@@ -17,9 +19,15 @@ const deleteItems: ToolDefinition = {
   inputSchema: {
     item_keys: z.array(z.string()).min(1).describe('Item keys to permanently delete.'),
     confirm: z.boolean().optional().describe('Must be true to proceed with permanent deletion.'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      deleted: z.array(z.string()).describe('Keys purged from the library; this is not the trash and cannot be undone.'),
+      count: z.number().describe('How many were purged.'),
+      target: writeTarget,
+    })
+    .passthrough(),
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     if (!ctx.config.allowDelete) {

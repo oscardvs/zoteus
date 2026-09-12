@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { optionalLibrary } from '../registry/registry.js';
 import { formatBibliography } from '../features/citation/citeproc-engine.js';
 
@@ -18,9 +19,16 @@ const formatBib: ToolDefinition = {
     style: z.string().optional().describe('Style name or CSL id (default "apa").'),
     locale: z.string().optional().describe('Locale (default "en-US").'),
     format: z.enum(['html', 'text', 'rtf']).optional().describe('Output format (default html).'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      styleId: z.string().describe('The CSL style id actually used, e.g. "apa".'),
+      entryCount: z.number().describe('Entries citeproc rendered.'),
+      entries: z.array(z.string()).describe('The rendered entries, one string each, in bibliography order.'),
+      bibliography: z.string().describe('Those entries joined: the ready-to-use bibliography, in the requested format.'),
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     let cslItems: any[] | undefined = args.items;

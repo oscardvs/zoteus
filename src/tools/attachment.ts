@@ -1,9 +1,11 @@
+import { zoteroObject } from './common-output.js';
 import { z } from 'zod';
 import { resolveCallerPath, CallerPathError } from '../lib/caller-path.js';
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { ok, optionalLibrary, requireCloudLibrary } from '../registry/registry.js';
 import { uploadFile, downloadFile } from '../api/attachments.js';
 import { AttachmentDownloadError, readAttachmentSource, storeCloudAttachment } from '../features/attachments/store.js';
@@ -18,21 +20,35 @@ const attachment: ToolDefinition = {
   description:
     "Upload, download, or inspect attachment files. `action`: \"upload\" stores a file as a Zotero attachment using the full File Storage protocol (provide `url` to have Zoteus fetch it, or `file_path` for a file on the machine running Zoteus; optional `parent_item` to attach it under an item, `title`, `content_type`) and returns the new attachment key; \"download\" fetches an attachment's file to a local path (provide `item_key`; optional `save_path`, default under the Zoteus data dir) and returns the path and byte count; \"info\" returns an attachment item's metadata. File bytes are written to / read from disk, never streamed through the conversation. Upload/download use the cloud Web API and your file-storage quota. When Zoteus runs on a different machine than Zotero, `file_path` refers to the server's disk, so use `url` instead.",
   inputSchema: {
-    action: z.enum(['upload', 'download', 'info']),
+    action: z
+      .enum(['upload', 'download', 'info'])
+      .describe(
+        'What to do. "upload" stores a file as an attachment (needs `file_path` or `url`); "download" writes an attachment\'s file to disk (needs `item_key`); "info" returns the attachment item\'s metadata.',
+      ),
     file_path: z.string().optional().describe('File to upload, on the machine running Zoteus.'),
     url: z.string().url().optional().describe('URL to download and upload instead of `file_path`; works on remote/hosted servers.'),
     parent_item: z.string().optional().describe('Parent item key to attach under (upload).'),
-    title: z.string().optional(),
-    content_type: z.string().optional(),
+    title: z.string().optional().describe('Attachment title (upload), e.g. "Full Text PDF"; the filename is used when omitted.'),
+    content_type: z.string().optional().describe('MIME type of the uploaded file, e.g. "application/pdf"; inferred from the filename when omitted.'),
     item_key: z.string().optional().describe('Attachment item key (download/info).'),
     save_path: z.string().optional().describe('Where to write the downloaded file.'),
     overwrite: z
       .boolean()
       .optional()
       .describe('Allow `save_path` to replace a file that already exists (default false).'),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      attachment: zoteroObject.optional().describe("action:\"info\": the attachment item's full record."),
+      key: z.string().optional().describe('action:"upload": key of the attachment item created.'),
+      exists: z.boolean().optional().describe('True when Zotero already held these bytes and only the item was created.'),
+      filename: z.string().optional().describe('File name stored.'),
+      bytes: z.number().optional().describe('Bytes uploaded or written.'),
+      savePath: z.string().optional().describe('action:"download": where the file was written.'),
+      contentType: z.string().optional().describe('MIME type of the downloaded file.'),
+    })
+    .passthrough(),
   annotations: {
     readOnlyHint: false,
     destructiveHint: true,

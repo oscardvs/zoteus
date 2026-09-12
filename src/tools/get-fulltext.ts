@@ -1,5 +1,7 @@
+import { attachmentIdentity, provenance } from './common-output.js';
 import { z } from 'zod';
 import type { ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
+import { libraryArgs } from './common-args.js';
 import { okLibraryContent, optionalLibrary } from '../registry/registry.js';
 import type { LibraryRef } from '../api/web-client.js';
 import { rankPassages, approxPage, type Passage } from '../features/fulltext/passages.js';
@@ -62,9 +64,56 @@ const getFulltext: ToolDefinition = {
       .describe(
         'When Zotero has no indexed full text for the attachment, read the file itself and extract it directly (default true).',
       ),
-    library_type: z.enum(['user', 'group']).optional(),
-    library_id: z.number().int().optional(),
+    ...libraryArgs,
   },
+  outputSchema: z
+    .object({
+      ...attachmentIdentity,
+      mode: z.string().describe('Which reading this is: "passages", "page_range", "document" or "outline".'),
+      fulltextSource: z.string().optional().describe('Where the text came from: Zotero\'s index, or the file itself.'),
+      fileSource: z.string().optional().describe('Where the file was read from: the desktop app, local Zotero storage, or cloud storage.'),
+      pageSource: z.string().optional().describe('How page numbers were arrived at: "exact" from re-extraction, or an estimate.'),
+      totalChars: z.number().optional().describe('Characters the document holds.'),
+      totalPages: z.number().optional().describe('Pages the document holds.'),
+      indexedChars: z.number().optional().describe('Characters Zotero had indexed.'),
+      indexedPages: z.number().optional().describe('Pages Zotero had indexed.'),
+      passages: z
+        .array(
+          z
+            .object({
+              text: z.string().describe('The passage itself.'),
+              charStart: z.number().describe('Character offset where it starts in the document text.'),
+              charEnd: z.number().describe('Character offset where it ends.'),
+              score: z.number().describe('Relevance to `query`; higher is better.'),
+              page: z.number().optional().describe('Exact 1-based page, when the PDF was re-extracted.'),
+              pageApprox: z.number().optional().describe('Proportional 1-based page estimate, when it was not.'),
+              section: z.string().optional().describe('Nearest heading above the passage, when one was found.'),
+            })
+            .passthrough(),
+        )
+        .optional()
+        .describe('mode "passages": the best-matching passages for `query`, in rank order.'),
+      text: z.string().optional().describe('mode "page_range" or "document": the text itself.'),
+      page_range: z.string().optional().describe('The span returned, echoed back.'),
+      outline: z
+        .array(
+          z
+            .object({
+              title: z.string().describe('Heading text.'),
+              page: z.number().optional().describe('1-based page it points at, when the destination resolved.'),
+              level: z.number().describe('Nesting depth: 0 for a top-level heading.'),
+            })
+            .passthrough(),
+        )
+        .optional()
+        .describe("mode \"outline\": the PDF's own table of contents."),
+      entries: z.number().optional().describe('How many outline headings are listed.'),
+      truncated: z.boolean().optional().describe('True when max_chars (or the outline cap) left something out.'),
+      omittedChars: z.number().optional().describe('Characters left out by that cap.'),
+      notice: z.string().optional().describe('What was degraded, estimated or left out, in one sentence.'),
+      provenance,
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const library: LibraryRef | undefined = optionalLibrary(args);

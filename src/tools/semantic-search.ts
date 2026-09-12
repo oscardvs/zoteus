@@ -1,3 +1,4 @@
+import { provenance } from './common-output.js';
 import { z } from 'zod';
 import type { ToolDefinition } from '../registry/registry.js';
 import { okLibraryContent } from '../registry/registry.js';
@@ -21,12 +22,49 @@ const semanticSearch: ToolDefinition = {
   inputSchema: {
     q: z.string().min(1).describe('Natural-language query.'),
     limit: z.number().int().min(1).max(50).optional().describe('Max results (default 10).'),
-    mode: z.enum(['auto', 'keyword', 'semantic']).optional(),
+    mode: z
+      .enum(['auto', 'keyword', 'semantic'])
+      .optional()
+      .describe(
+        'How to rank: "auto" (default) fuses keyword and vector scores, "keyword" is BM25 only, "semantic" is vector only and errors when no embedder or no vectors are available.',
+      ),
     auto_build: z
       .boolean()
       .optional()
       .describe('Start building the index automatically in the background when it is empty (default true).'),
   },
+  outputSchema: z
+    .object({
+      hits: z
+        .array(
+          z
+            .object({
+              itemKey: z.string().describe('8-character item key; read the full record with zotero_get_item.'),
+              title: z.string().describe('Title of the item the passage belongs to.'),
+              snippet: z.string().describe('The matching passage.'),
+              score: z.number().describe('Fused relevance score; higher is better, and only comparable within one answer.'),
+              source: z
+                .string()
+                .optional()
+                .describe('Where the snippet came from when it was not the item\'s own metadata: "fulltext", "note" or "annotation".'),
+            })
+            .passthrough(),
+        )
+        .describe('Best-matching items, one row per item, in rank order.'),
+      embedder: z.string().describe('The embedder that ranked this query, or "none (...)" with the reason.'),
+      embedderConfigured: z.string().describe('The requested ZOTEUS_EMBEDDINGS value, whether or not it works.'),
+      embedderActive: z.boolean().describe('True only while that provider is genuinely producing vectors.'),
+      embedderReason: z.string().optional().describe('Why it is not active, and what to do about it.'),
+      vectorsStaleReason: z.string().optional().describe('Set when stored vectors were discarded because another embedder had produced them.'),
+      passagesWithoutVectors: z.number().optional().describe('Indexed passages nothing has embedded yet: the gap between what keyword search covers and what meaning can rank.'),
+      fulltextEnabled: z.boolean().describe('Whether attachment body text is in the index.'),
+      fulltextReason: z.string().optional().describe('Why body text is missing or not current, when it was asked for.'),
+      ownWordsEnabled: z.boolean().describe("Whether the reader's own notes and annotations are in the index."),
+      ownWordsReason: z.string().optional().describe('Why they are missing or not current.'),
+      persistError: z.string().optional().describe('The index never reached disk; these results exist only until restart.'),
+      provenance,
+    })
+    .passthrough(),
   annotations: { readOnlyHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     if (ctx.search.isEmpty) {
