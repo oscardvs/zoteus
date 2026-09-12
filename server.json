@@ -4,7 +4,7 @@
   "description": "Zotero MCP server for Claude and ChatGPT: search, citations, safe writes, PDF passages and pages.",
   "title": "Zoteus",
   "websiteUrl": "https://zoteus.com",
-  "version": "1.19.0",
+  "version": "1.20.0",
   "repository": {
     "url": "https://github.com/oscardvs/zoteus",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "@oscardvs/zoteus",
-      "version": "1.19.0",
+      "version": "1.20.0",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {

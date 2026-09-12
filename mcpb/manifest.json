@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "zoteus",
   "display_name": "Zoteus: Zotero MCP",
-  "version": "1.19.0",
+  "version": "1.20.0",
   "description": "MCP server that gives Claude, ChatGPT and other MCP clients access to a Zotero library: search, citations, adding items, safe writes, semantic search, PDF passages and page images.",
   "long_description": "Zoteus gives Claude, ChatGPT and other MCP clients complete, safe access to your Zotero library via the Web API v3 and the desktop local API: items, collections, tags, attachments, full-text, sync, groups, add-by-DOI/ISBN/PMID/arXiv, CSL bibliography formatting, hybrid semantic search, and an OpenAlex/Crossref scholarly graph.",
   "author": {
