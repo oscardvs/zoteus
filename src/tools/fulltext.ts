@@ -37,7 +37,9 @@ const fulltext: ToolDefinition = {
       const ft = await ctx.router.getFullText(args.item_key, { library: readLib });
       if (!ft) return ok({ found: false, item_key: args.item_key }, `No extracted full text for ${args.item_key}.`);
       const length = typeof ft.content === 'string' ? ft.content.length : 0;
-      return ok({ found: true, ...ft }, `Full text for ${args.item_key}: ${length} characters.`);
+      // `item_key` on both branches: the not-found mirror carried it and the found one did
+      // not, so the payload a caller chains on changed shape with the answer.
+      return ok({ found: true, item_key: args.item_key, ...ft }, `Full text for ${args.item_key}: ${length} characters.`);
     }
 
     if (args.action === 'since') {
