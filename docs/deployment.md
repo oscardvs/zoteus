@@ -1,18 +1,18 @@
 # Zoteus — Production deployment runbook
 
 End-to-end guide for running Zoteus as an always-on, public HTTPS connector that
-survives restarts and redeploys with **no re-auth** from claude.ai.
+survives restarts and redeploys with **no re-auth** from claude.ai or ChatGPT.
 
 ---
 
 ## 1. Overview & topology
 
 ```
-claude.ai  ──HTTPS──►  Caddy (TLS terminator)  ──HTTP──►  Zoteus :3939
-                         (preserves Host header)               │
-                                                          /data volume
-                                                    (encrypted file store +
-                                                     per-user search indexes)
+claude.ai / ChatGPT  ──HTTPS──►  Caddy (TLS terminator)  ──HTTP──►  Zoteus :3939
+                                   (preserves Host header)               │
+                                                                    /data volume
+                                                              (encrypted file store +
+                                                               per-user search indexes)
 ```
 
 - **Single instance only.** Pending OAuth consents live in process memory and the
@@ -128,7 +128,7 @@ via `.gitignore`).
 | `ZOTERO_OAUTH_CLIENT_SECRET` | (same registration) | Required for zotero mode. |
 | `ZOTEUS_OAUTH_PASSCODE` | `openssl rand -base64 24` | Required for passcode mode; ≥ 12 characters. |
 | `ZOTEUS_OAUTH_TOKEN_SECRET` | `openssl rand -base64 32` | AES-256-GCM key for the encrypted file store. **Back this up separately** — losing it means all users must re-auth. |
-| `ZOTEUS_PUBLIC_URL` | `https://$ZOTEUS_DOMAIN` | Must match the exact origin claude.ai will connect to (no trailing slash). |
+| `ZOTEUS_PUBLIC_URL` | `https://$ZOTEUS_DOMAIN` | Must match the exact origin claude.ai or ChatGPT will connect to (no trailing slash). |
 | `ZOTEUS_DOMAIN` | (your DuckDNS or custom subdomain) | Used by `deploy/Caddyfile`. |
 | `DUCKDNS_TOKEN` | (from duckdns.org dashboard) | Only needed if using DNS-01 challenge for DuckDNS. |
 
@@ -201,13 +201,31 @@ to disk, and exits 0 before the new container takes over.
 
 ---
 
-## 6. Add the connector in claude.ai
+## 6. Add the connector in claude.ai or ChatGPT
+
+**claude.ai:**
 
 1. In claude.ai, go to **Settings → Connectors → Add custom connector**.
 2. Enter `https://$ZOTEUS_DOMAIN/mcp` as the MCP URL.
 3. Click **Connect** — claude.ai runs Dynamic Client Registration automatically.
 4. The consent page appears. Enter the passcode (the value of `ZOTEUS_OAUTH_PASSCODE`).
 5. After consent, the Zoteus tools appear in your conversation.
+
+**ChatGPT** (web app on a paid plan, with **Settings → Security and login → Developer mode**
+switched on):
+
+1. **Plugins → Create app**. Name `Zoteus`, Connection **Server URL**, MCP Server URL
+   `https://$ZOTEUS_DOMAIN/mcp`, Authentication **OAuth**. Tick the acknowledgement and click
+   **Create**; leave Advanced OAuth settings empty, ChatGPT runs Dynamic Client Registration
+   on its own.
+2. Click **Sign in with Zoteus** and enter the passcode on the consent page (or sign in at
+   zotero.org in `zotero` mode).
+3. If the plugin's **Actions** section says "No app actions available yet", click **Refresh**
+   under **Information**; the tools then load.
+4. In a chat, click **+** in the composer and pick Zoteus.
+
+Details, including how ChatGPT decides which writes to confirm:
+[`remote-oauth.md`](./remote-oauth.md#connect-from-chatgpt).
 
 For **Claude Code CLI**:
 
@@ -230,7 +248,7 @@ no re-auth and a tool read returns real data.
 # Step 2: Redeploy (simulate a routine update).
 docker compose pull && docker compose up -d
 
-# Step 3: Back in claude.ai, send a new message using the Zoteus connector.
+# Step 3: Back in claude.ai or ChatGPT, send a new message using the Zoteus connector.
 # Expected: NO re-auth prompt; tools respond with your Zotero data.
 
 # Step 4: Confirm no secrets appear in logs.
@@ -451,7 +469,7 @@ Note: Fly is paid (the free allowance was retired). Always-on requires at least 
 
 Both provide free-tier Node.js deployments. **Caveats:**
 
-- **Free tiers sleep after inactivity** — claude.ai connections time out during spin-up.
+- **Free tiers sleep after inactivity.** claude.ai and ChatGPT connections time out during spin-up.
 - **No persistent disk on free tier** — the encrypted file store is lost on each
   restart, forcing all users to re-auth. Use only if you accept the re-auth on each
   cold start or if you pay for a persistent disk add-on.

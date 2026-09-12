@@ -80,14 +80,14 @@ Any variable *not* in that list is out of reach of the bundle: use a manual inst
 (Option B in [`getting-started.md`](./getting-started.md)) or a self-hosted run, both of
 which take the full environment.
 
-## Remote OAuth (claude.ai web connector)
+## Remote OAuth (claude.ai or ChatGPT connector)
 
-Turn the Streamable HTTP `/mcp` endpoint into an OAuth 2.1 + PKCE protected resource so it can be added as a claude.ai custom connector. See [`remote-oauth.md`](./remote-oauth.md) for the full walkthrough.
+Turn the Streamable HTTP `/mcp` endpoint into an OAuth 2.1 + PKCE protected resource so it can be added as a claude.ai custom connector or as a ChatGPT app. See [`remote-oauth.md`](./remote-oauth.md) for the full walkthrough.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `ZOTEUS_OAUTH_ENABLED` | `false` | Enable the built-in OAuth 2.1 authorization server + bearer-auth on `/mcp`. |
-| `ZOTEUS_PUBLIC_URL` | — | Public HTTPS origin claude.ai reaches (OAuth issuer), e.g. `https://zoteus.example.com`. Required when enabled; must be HTTPS in production. |
+| `ZOTEUS_PUBLIC_URL` | — | Public HTTPS origin claude.ai or ChatGPT reaches (OAuth issuer), e.g. `https://zoteus.example.com`. Required when enabled; must be HTTPS in production. |
 | `ZOTEUS_OAUTH_PASSCODE` | — | Operator passcode gating consent (≥ 12 chars; `openssl rand -base64 24`). Required when enabled. |
 | `ZOTEUS_OAUTH_ACCESS_TTL` | `3600` | Access-token lifetime (seconds). |
 | `ZOTEUS_OAUTH_REFRESH_TTL` | `2592000` | Refresh-token lifetime (seconds). |

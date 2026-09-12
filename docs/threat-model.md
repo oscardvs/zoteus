@@ -79,7 +79,7 @@ Pick the one that matches how you run it.
 `ZOTEUS_READ_ONLY=true`. Every mutating tool disappears from the tool list, so no amount of
 instruction-shaped text in the library can reach a write. This is the recommended posture
 for anything reachable by someone other than you: a tunnelled HTTP endpoint, a claude.ai
-custom connector, the container image (whose `Dockerfile` already says so). The remaining
+or ChatGPT connector, the container image (whose `Dockerfile` already says so). The remaining
 exposure is that a model can be steered in what it *reports* to you, which is a
 confidentiality and accuracy problem rather than an integrity one.
 
