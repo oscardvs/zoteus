@@ -165,6 +165,14 @@ All notable changes to Zoteus are documented here. The format is based on
   the same file by "the PDF", and the page-span parser to `pdf-pages.ts` so both read the
   same syntax.
 
+### Fixed
+- **ChatGPT connections no longer expire on day 31.** ChatGPT registers a confidential
+  client through Dynamic Client Registration and presents its client secret on every token
+  refresh. The SDK's default secret lifetime is 30 days, shorter than the refresh token, so
+  every ChatGPT user would have been sent back through the subscription key and the Zotero
+  sign-in on day 31. Secrets issued by `/register` now carry no expiry. claude.ai registers a
+  public client and is unaffected; client records are still capped and swept by the store.
+
 ## [1.18.1] - 2026-09-10
 
 ### Added
