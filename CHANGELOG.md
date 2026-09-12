@@ -14,6 +14,84 @@ All notable changes to Zoteus are documented here. The format is based on
   pending or has failed. An existing desktop item no longer counts as a synced update
   merely because its key is present. If the baseline fails, the conservative override
   lasts until a later write replaces the witness or the process ends.
+- **`top: true` returned items that have a parent, so "only top-level items" was not true
+  of either API (#79).** Reported against 1.18.0 for `zotero_search_items` with
+  `itemType: "attachment", top: true`: six of the first ten results had a `parentItem`,
+  the same six every time, which left counting standalone attachments impossible without
+  verifying every key one at a time. Measured on 2026-09-12 against a 1302-item library
+  held by both a Zotero 10 desktop and the cloud, and the two APIs turn out to be wrong in
+  two different ways. The desktop local API drops the top-level restriction the moment an
+  `itemType` filter is present: `/items/top?itemType=attachment` answered `Total-Results:
+  363` with every item of the first page carrying a `parentItem`, byte for byte the same
+  answer as `/items?itemType=attachment`. `itemType=annotation` settles what that is,
+  since an annotation is never top-level and `/items/top` reported all 543 of them
+  regardless. The cloud Web API keeps its promise about `parentItem` and breaks the other
+  one: it maps every matching child up to its top-level parent, so the same request came
+  back as 263 preprints, books and conference papers, not one of them an attachment. The
+  true answer for that library is zero standalone attachments, and that is now what both
+  backends give.
+
+  Zoteus no longer asks either API to apply `top` alongside an `itemType` filter, and works
+  it out instead: the keys matching the filter, the library's top-level keys, and the
+  intersection of the two, which is the exact result set in the caller's own `sort` order.
+  `totalResults` is that set's size, not the inflated count the API reports, so the number
+  the tool prints and the pages it hands out come from one and the same list and paging
+  stays coherent (walking a 66-item result two pages at a time returns the same 66 keys in
+  the same order as one call for all of them). Only the page the caller asked for is read
+  as items, by key, which is what keeps this affordable: a whole key set costs a fraction
+  of the same items as JSON, 7 ms against 4.4 s for that library's 363 attachments, because
+  the desktop resolves a storage path per attachment. Both APIs are correct about `top`
+  when no `itemType` is in play, so that path is untouched, and the plain top-level listings
+  the search index and `zotero_tag_audit` page through behave exactly as before. Two
+  numbers that were quietly wrong are now right as a side effect: `itemType: "-attachment"`
+  with `top: true` reported 396 items where the library has 320 top-level items, and
+  `itemType: "annotation"` with `top: true` reported 543 where the answer is none.
+- **The attachment map survives a slow or failing request, and no longer asks Zotero for a
+  deep offset at all (#78).** The map that attaches extracted body text to the item it
+  belongs to used to be built by paging `itemType=attachment` through the whole library, a
+  hundred rows at a time, and a single page that took longer than the per-request budget
+  ended the entire map. On the reporting library (10,733 items, 8,957 attachments with
+  extracted text) that happened reproducibly at the same offsets, at 1,414 and then 1,696 of
+  8,957, so roughly four fifths of the library's body text was never mapped and, before
+  1.18.0, a census-wide full-text cursor was stamped over the gap. Zotero 10.0.2 removed the
+  concurrency latency amplification behind it, and the aborts continued: with nothing else
+  touching the API, one deep page near the tail still occasionally exceeds the budget on its
+  own, which is what a deep offset costs when the app has to walk the library to reach it.
+
+  Two changes, and both were what the reporter asked for. A batch is now retried before it
+  is given up on: three attempts with a short backoff, and if it still does not answer, the
+  map records the keys it could not resolve and **carries on with the next batch** rather
+  than stopping. And the map is now driven by the `/fulltext?since=0` census it already
+  fetches, resolved in `itemKey=` batches of at most 50 (the cap both Zotero APIs enforce),
+  so no request depends on an offset and nothing pages the attachment listing. Those batches
+  keep the `itemType=attachment` filter the annotation lookups learned the hard way: the
+  desktop API answers a keyed lookup with the named items AND every descendant they have, so
+  without it a batch of fifty annotated attachments comes back as thousands of annotation
+  rows and the attachments fall off the end of the page. Rows are also folded in once, which
+  the page crawl could not guarantee: Zotero lists attachments newest-modified first, so an
+  attachment edited mid-crawl could be served on two pages and have its body text
+  concatenated under its item twice.
+
+  The honest trade: on a 9,000-attachment library this is about 180 keyed requests where the
+  crawl was 90 pages, so it is more requests, not fewer. The claim being tested is that a
+  small keyed lookup, answered out of Zotero's own index, survives where a `start=8000` page
+  does not, and that one batch failing now costs one batch instead of the whole map. On the
+  opposite library shape, a few hundred extracted attachments inside a large library, it is
+  a clear win in both directions: eight requests instead of a walk of the entire attachment
+  listing.
+
+  The guarantee from 1.18.0 is unchanged and is what decides `incomplete`: a full-text
+  cursor is never stamped over a map that does not cover the library. The map is incomplete
+  if, and only if, some batch of keys never got an answer at all after its retries, or
+  nothing at all resolved. An answer that simply does not name a key it was given is Zotero
+  saying it does not serve that attachment in this library view (a trashed attachment, on the
+  desktop API), which is exactly what the old crawl concluded when it walked the whole
+  listing and the key never appeared in it; treating that as incomplete would freeze the
+  cursor forever on any library holding one. A map that resolves nothing while Zotero says
+  the library has extracted text is the one answer never taken at face value: it refuses
+  every read, so an update keeps the body passages it already holds. The 500-page ceiling,
+  the deep-offset pagination and the "Zotero stopped serving the listing at N of M" case are
+  all gone with the crawl that produced them.
 
 ## [1.19.0] - 2026-09-12
 

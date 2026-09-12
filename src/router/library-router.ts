@@ -13,6 +13,15 @@ import type { LocalApiClient, SyncObjectType } from '../api/local-client.js';
 import type { VersionBackend } from '../features/search/backend.js';
 import { PendingCloudWrites, type PendingWrite } from './pending-writes.js';
 
+/**
+ * Keys per `?itemKey=` request. Both APIs cap that list at 50, so a full page of 100
+ * results is two requests rather than one refusal.
+ */
+const ITEM_KEY_BATCH = 50;
+
+/** The page size a caller that named no `limit` gets, matching zotero_search_items. */
+const DEFAULT_PAGE = 25;
+
 export interface LibraryRouterOptions {
   config: ZoteusConfig;
   capabilities: Capabilities;
@@ -227,8 +236,88 @@ export class LibraryRouter {
   async searchItems(query: ItemQuery & ReadOpts = {}): Promise<ListResult> {
     const { library, backend, ...q } = query;
     const lib = library ?? this.defaultLibrary();
+    // `top` combined with an `itemType` filter is the one shape neither API answers the
+    // way the tool promises, so Zoteus works it out itself (#79).
+    if (q.top && q.itemType) return this.topLevelItemsOfType(lib, backend, q);
     if (await this.route(lib, backend)) return this.local!.listItems(q, lib);
     return this.web.listItems(lib, q);
+  }
+
+  /**
+   * `top: true` together with an `itemType` filter, resolved by Zoteus rather than by the
+   * API, because neither API answers that combination the way `top` is documented
+   * ("Only top-level items"). Measured on 2026-09-12 against a 1302-item library held by
+   * both a Zotero 10 desktop and the cloud, asking for `itemType=attachment, top=true`:
+   *
+   *   - the desktop local API DROPS the top-level restriction as soon as an `itemType`
+   *     filter is present. `/items/top?itemType=attachment` answered Total-Results 363
+   *     with all ten items of the first page carrying a `parentItem`, byte for byte the
+   *     same answer as `/items?itemType=attachment`. `itemType=annotation` settles it:
+   *     an annotation is never top-level, yet `/items/top` reported all 543 of them.
+   *     This is what #79 reported.
+   *   - the cloud Web API keeps its promise about `parentItem` but breaks the other one:
+   *     it maps each matching child UP to its top-level parent, so the same request came
+   *     back as 263 preprints, books and conference papers, not one of them an
+   *     attachment. No `parentItem` anywhere, and no item of the requested type either.
+   *
+   * The true answer for that library is zero standalone attachments, which is what this
+   * method returns on both backends.
+   *
+   * Both APIs are correct about `top` with no `itemType` in play (`/items/top` alone gave
+   * 320 of 1302, none with a `parentItem`; `/items/top?itemKey=<child>` answers with
+   * nothing), so the restriction is only ever taken away from them for this one shape,
+   * and the ordinary `top` listing that the search index and zotero_tag_audit page
+   * through is left exactly as it was.
+   *
+   * `totalResults` is EXACT, not an estimate and not the API's inflated count: the whole
+   * key set is intersected before anything is sliced, so the number the tool reports and
+   * the pages it hands out come from one and the same list. That is affordable only
+   * because keys are cheap (see `listItemKeys`); reading every candidate item instead
+   * would have cost seconds per search on attachments alone.
+   */
+  private async topLevelItemsOfType(
+    lib: LibraryRef,
+    backend: VersionBackend | undefined,
+    q: ItemQuery,
+  ): Promise<ListResult> {
+    const useLocal = await this.route(lib, backend);
+    const keysOf = (query: ItemQuery) =>
+      useLocal ? this.local!.listItemKeys(query, lib) : this.web.listItemKeys(lib, query);
+    const itemsOf = (query: ItemQuery) =>
+      useLocal ? this.local!.listItems(query, lib) : this.web.listItems(lib, query);
+
+    const { top: _top, limit, start, ...filters } = q;
+    // The second read is deliberately filter-free apart from `includeTrashed`: it is the
+    // library's top-level key set, the fact the APIs get right, and the filters are
+    // already accounted for by the first read. Giving it the `itemType` back would walk
+    // straight into the bug this method exists to route around.
+    const [matching, topLevel] = await Promise.all([
+      keysOf({ ...filters, top: false }),
+      keysOf({ top: true, includeTrashed: filters.includeTrashed }),
+    ]);
+    const isTopLevel = new Set(topLevel.keys);
+    const hits = matching.keys.filter((key) => isTopLevel.has(key));
+
+    const from = start ?? 0;
+    const wanted = hits.slice(from, from + (limit ?? DEFAULT_PAGE));
+    const fetched = new Map<string, any>();
+    for (let i = 0; i < wanted.length; i += ITEM_KEY_BATCH) {
+      const batch = wanted.slice(i, i + ITEM_KEY_BATCH);
+      // `top: true` matters on the desktop, whose `?itemKey=` on plain /items answers with
+      // the named items AND every descendant they have (77 items for three keys, measured);
+      // on /items/top it is exactly the keys asked for. Every key here is top-level by
+      // construction, so nothing the caller should see is filtered out by asking that way.
+      const page = await itemsOf({ itemKey: batch.join(','), top: true, limit: batch.length });
+      for (const item of page.data) if (item?.key) fetched.set(item.key, item);
+    }
+
+    return {
+      // Back in the order the keys came in, which is the caller's `sort`: neither API
+      // promises to honour the order of an `itemKey` list.
+      data: wanted.map((key) => fetched.get(key)).filter(Boolean),
+      totalResults: hits.length,
+      lastModifiedVersion: matching.lastModifiedVersion,
+    };
   }
 
   async getItem(

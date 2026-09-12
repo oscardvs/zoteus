@@ -99,4 +99,37 @@ describe('WebApiClient', () => {
     const schema = await makeClient(fetchImpl).getSchema();
     expect(schema.version).toBe(39);
   });
+
+  // #79, the cloud half: same key sets, same guarantee.
+  describe('listItemKeys', () => {
+    it('reads /items with format=keys and splits the plain-text body', async () => {
+      const fetchImpl = vi.fn(async (url: string) => {
+        expect(url).toContain('/users/19552201/items?');
+        expect(url).not.toContain('/items/top');
+        expect(url).toContain('format=keys');
+        expect(url).toContain('itemType=attachment');
+        return new Response('AAAAAAAA\nBBBBBBBB', {
+          status: 200,
+          headers: { 'Total-Results': '2', 'Last-Modified-Version': '3476' },
+        });
+      });
+      const res = await makeClient(fetchImpl).listItemKeys(
+        { type: 'user', id: 19552201 },
+        { itemType: 'attachment' },
+      );
+      expect(res.keys).toEqual(['AAAAAAAA', 'BBBBBBBB']);
+      expect(res.totalResults).toBe(2);
+      expect(res.lastModifiedVersion).toBe(3476);
+    });
+
+    it('reads /items/top for the top-level key set', async () => {
+      const fetchImpl = vi.fn(async (url: string) => {
+        expect(url).toContain('/users/19552201/items/top?');
+        expect(url).toContain('format=keys');
+        return new Response('AAAAAAAA', { status: 200, headers: { 'Total-Results': '1' } });
+      });
+      const res = await makeClient(fetchImpl).listItemKeys({ type: 'user', id: 19552201 }, { top: true });
+      expect(res.keys).toEqual(['AAAAAAAA']);
+    });
+  });
 });
