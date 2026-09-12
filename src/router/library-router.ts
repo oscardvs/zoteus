@@ -160,9 +160,9 @@ export class LibraryRouter {
       .objectVersion(type, key, lib)
       .then((before) => this.pending.setBaseline(slot, write, before))
       .catch(() => {
-        // Without a baseline the write clears as soon as the desktop has the key at all.
-        // That is exact for a create and weak for an update, which is the right way round:
-        // it is the create whose absence sends an agent round the loop again.
+        // Keep the cloud override when no baseline could be established. Presence alone
+        // cannot distinguish a synced write from an existing item with stale fields.
+        // A later write may replace this witness; otherwise it lasts for this process.
       });
   }
 
@@ -193,6 +193,11 @@ export class LibraryRouter {
    */
   private async desktopHasCaughtUp(library: LibraryRef, write: PendingWrite): Promise<boolean> {
     if (!this.local) return false;
+    // The baseline request starts asynchronously after the write. Until it resolves,
+    // undefined is unknown, not "the item was absent". An existing item may still hold
+    // the old fields even when a second probe can already answer. Deletions need no
+    // baseline because absence itself witnesses them.
+    if (!write.removed && write.before === undefined) return false;
     let now: number | null;
     try {
       now = await this.local.objectVersion(write.type, write.key, library);
@@ -203,10 +208,10 @@ export class LibraryRouter {
     }
     if (write.removed) return now === null;
     if (now === null) return false;
-    // No baseline, or none to have: presence is the whole signal for a created object.
-    if (write.before === undefined || write.before === null) return true;
+    // A measured absence, unlike an unknown baseline, makes presence meaningful.
+    if (write.before === null) return true;
     // It already had the object, so only its own version moving proves the write landed.
-    return now > write.before;
+    return write.before !== undefined && now > write.before;
   }
 
   /** Item keys and versions (`?format=versions`), routed like every other read. */

@@ -14,8 +14,10 @@ export interface PendingWrite {
   /** The write REMOVED the object, so catching up means the desktop no longer has it. */
   removed: boolean;
   /**
-   * The desktop's own version for that object immediately BEFORE the write: a number when
-   * it already had it, null when it did not, undefined when it could not be asked.
+   * The desktop's own version sampled by the baseline probe when the cloud write is
+   * reported: a number when it already had it, null when it did not, undefined while the
+   * probe is pending or if it failed. An unknown baseline must not release the cloud
+   * override merely because an object with that key exists.
    *
    * This is what separates "the desktop has an object with that key" from "the desktop has
    * THIS write". A create needs only the first (the key was absent and now is not), but an

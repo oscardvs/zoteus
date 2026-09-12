@@ -10,6 +10,10 @@ All notable changes to Zoteus are documented here. The format is based on
 - An older read's desktop catch-up check no longer clears the pending marker for a newer
   cloud write in the same library. Baseline probes also belong to the exact write that
   started them, so two writes to the same key cannot inherit one another's baseline.
+- Reads after a cloud update stay on the cloud while the desktop baseline probe is still
+  pending or has failed. An existing desktop item no longer counts as a synced update
+  merely because its key is present. If the baseline fails, the conservative override
+  lasts until a later write replaces the witness or the process ends.
 
 ## [1.19.0] - 2026-09-12
 
