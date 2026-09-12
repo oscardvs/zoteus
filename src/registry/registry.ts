@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { ZodRawShape } from 'zod';
+import type { ZodRawShape, ZodTypeAny } from 'zod';
 import type { ZoteusConfig } from '../config.js';
 import type { Capabilities } from '../router/capabilities.js';
 import type { LocalApiStatus } from '../router/local-status.js';
@@ -150,7 +150,15 @@ export interface ToolDefinition<R extends AnyToolHandlerResult = ToolHandlerResu
   title: string;
   description: string;
   inputSchema: ZodRawShape;
-  outputSchema?: ZodRawShape;
+  /**
+   * JSON Schema for the `structuredContent` this tool returns, advertised as `outputSchema`
+   * on tools/list. A full Zod object rather than a raw shape, because most of these are
+   * `.passthrough()`: the JSON mirror is an open contract (a handler may add a `notice`, and
+   * Zotero's own records carry whatever the item type carries), and a closed schema would
+   * advertise a promise the mirror does not make. The SDK validates every non-error result
+   * against this, so a field that is not always present must be optional here.
+   */
+  outputSchema?: ZodTypeAny;
   annotations?: ToolAnnotations;
   deferLoading?: boolean;
   handler: (args: any, ctx: ToolContext) => Promise<R>;
