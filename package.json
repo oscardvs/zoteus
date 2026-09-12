@@ -1,7 +1,7 @@
 {
   "name": "@oscardvs/zoteus",
-  "version": "1.18.0",
-  "description": "MCP server that gives Claude, ChatGPT and other MCP clients access to a Zotero library: search, citations, adding items, safe writes, semantic search, and PDF passages.",
+  "version": "1.19.0",
+  "description": "MCP server that gives Claude, ChatGPT and other MCP clients access to a Zotero library: search, citations, adding items, safe writes, semantic search, PDF passages and page images.",
   "keywords": [
     "zotero",
     "mcp",

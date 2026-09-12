@@ -4,7 +4,7 @@
   "description": "MCP server for Zotero: search, citations, safe writes, semantic search, and PDF passages.",
   "title": "Zoteus",
   "websiteUrl": "https://zoteus.com",
-  "version": "1.18.0",
+  "version": "1.19.0",
   "repository": {
     "url": "https://github.com/oscardvs/zoteus",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "@oscardvs/zoteus",
-      "version": "1.18.0",
+      "version": "1.19.0",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
