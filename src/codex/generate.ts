@@ -1,6 +1,6 @@
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ToolDefinition } from '../registry/registry.js';
+import type { AnyToolDefinition } from '../registry/registry.js';
 
 const RESERVED = new Set([
   'import', 'export', 'default', 'function', 'class', 'return', 'new', 'delete', 'void', 'in', 'do', 'if',
@@ -16,7 +16,7 @@ function sanitize(desc: string): string {
   return desc.replace(/\s+/g, ' ').replace(/\*\//g, '* /').trim().slice(0, 600);
 }
 
-function wrapperSource(def: ToolDefinition): string {
+function wrapperSource(def: AnyToolDefinition): string {
   const fn = camelName(def.name);
   const params = Object.keys(def.inputSchema ?? {});
   const paramLine = params.length ? `\n * Params: ${params.join(', ')}.` : '\n * Takes no parameters.';
@@ -54,7 +54,7 @@ export async function callMCPTool(name: string, input: unknown): Promise<any> {
 }
 `;
 
-function readme(defs: ToolDefinition[]): string {
+function readme(defs: AnyToolDefinition[]): string {
   const rows = defs
     .map((d) => `| \`${camelName(d.name)}()\` | \`${d.name}\` | ${d.title} |`)
     .join('\n');
@@ -96,7 +96,7 @@ ${rows}
 }
 
 /** Generate the code-execution wrapper tree under `outDir`. */
-export async function generateCodex(defs: ToolDefinition[], outDir: string): Promise<void> {
+export async function generateCodex(defs: AnyToolDefinition[], outDir: string): Promise<void> {
   await mkdir(join(outDir, 'zotero'), { recursive: true });
   await writeFile(join(outDir, 'runtime.ts'), RUNTIME);
   const names: string[] = [];

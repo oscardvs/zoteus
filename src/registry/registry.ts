@@ -94,14 +94,49 @@ export function resolveContext(source: ToolContextSource): Promise<ToolContext> 
   return typeof source === 'function' ? source() : Promise.resolve(source);
 }
 
-export interface ToolHandlerResult {
-  content: Array<{ type: 'text'; text: string }>;
+/** A text block, which is what every result carries: a summary line and a JSON mirror. */
+export interface TextContent {
+  type: 'text';
+  text: string;
+}
+
+/**
+ * An image block: base64 bytes plus their MIME type, the shape MCP clients hand to the
+ * model as a picture. Only `zotero_pdf_images` produces these; everything between a handler
+ * and the wire (registerAllTools, the strict-args parse, the transports) passes `content`
+ * through as it is, so an image block reaches the client exactly as the handler built it.
+ */
+export interface ImageContent {
+  type: 'image';
+  data: string;
+  mimeType: string;
+}
+
+export type ToolContent = TextContent | ImageContent;
+
+interface ToolResultEnvelope {
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
   // The SDK's CallToolResult is an open object; this index signature makes
   // ToolHandlerResult structurally assignable to it.
   [key: string]: unknown;
 }
+
+/** What every tool returns: a summary line and a JSON mirror, both text. */
+export interface ToolHandlerResult extends ToolResultEnvelope {
+  content: TextContent[];
+}
+
+/**
+ * The same envelope for a tool that may put pictures between its text blocks. Kept as a
+ * second type rather than a wider `ToolHandlerResult` so the thirty tools that only ever
+ * return text keep saying so, and so does everything that reads them.
+ */
+export interface ImageToolHandlerResult extends ToolResultEnvelope {
+  content: ToolContent[];
+}
+
+export type AnyToolHandlerResult = ToolHandlerResult | ImageToolHandlerResult;
 
 export interface ToolAnnotations {
   readOnlyHint?: boolean;
@@ -110,7 +145,7 @@ export interface ToolAnnotations {
   openWorldHint?: boolean;
 }
 
-export interface ToolDefinition {
+export interface ToolDefinition<R extends AnyToolHandlerResult = ToolHandlerResult> {
   name: string;
   title: string;
   description: string;
@@ -118,8 +153,11 @@ export interface ToolDefinition {
   outputSchema?: ZodRawShape;
   annotations?: ToolAnnotations;
   deferLoading?: boolean;
-  handler: (args: any, ctx: ToolContext) => Promise<ToolHandlerResult>;
+  handler: (args: any, ctx: ToolContext) => Promise<R>;
 }
+
+/** A tool of either result shape: what the registry, the catalog and the codex take. */
+export type AnyToolDefinition = ToolDefinition<AnyToolHandlerResult>;
 
 /**
  * Build a successful result. The data is mirrored into a text content block (as
@@ -409,7 +447,7 @@ interface ToolCallExtra {
  */
 function observe(
   ctx: ToolContext | undefined,
-  def: ToolDefinition,
+  def: AnyToolDefinition,
   args: unknown,
   extra: ToolCallExtra | undefined,
   started: number,
@@ -442,7 +480,7 @@ function observe(
 
 export function registerAllTools(
   server: McpServer,
-  defs: ToolDefinition[],
+  defs: AnyToolDefinition[],
   source: ToolContextSource,
 ): void {
   for (const def of defs) {

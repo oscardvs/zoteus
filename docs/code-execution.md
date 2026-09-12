@@ -5,7 +5,7 @@ Zoteus implements the pattern from Anthropic's [Code execution with MCP](https:/
 ## Two pieces
 
 ### 1. `search_tools` — progressive disclosure
-Rather than presenting all 30 tools up front, an agent can call `search_tools` (the only non-namespaced tool) to discover the right `zotero_*` tools for a task by keyword, at `names` or `descriptions` detail. This keeps the working context small.
+Rather than presenting all 31 tools up front, an agent can call `search_tools` (the only non-namespaced tool) to discover the right `zotero_*` tools for a task by keyword, at `names` or `descriptions` detail. This keeps the working context small.
 
 ### 2. Generated TypeScript wrappers (`/codex`)
 `npm run gen:codex` generates, from the single tool registry, one typed wrapper per tool under [`codex/zotero/`](../codex/zotero), plus `codex/runtime.ts` and a barrel `codex/zotero/mod.ts`. Each wrapper is a thin function that forwards to the MCP tool:

@@ -4,6 +4,65 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`zotero_pdf_images`: PDF pages and figures as images the model can look at.** Every PDF
+  feature returned extracted text, and text is exactly what a figure, a table, an equation
+  and a scanned page lose: a figure arrived as its caption, a table as its numbers run
+  together, an equation as a few stray glyphs, and a scan with no text layer as "extraction
+  yielded nothing". A prospective customer asked whether the assistant could examine
+  figures, tables, equations and scanned pages, and until now the honest answer was no.
+  `mode:"pages"` renders whole pages and returns them as MCP `image` content blocks between
+  the summary line and the JSON mirror (the strict-args registry and the transports pass
+  image blocks through untouched; `ToolHandlerResult.content` is widened to say so). The
+  default resolution fits the long edge to 1568 px, which is as much as the model is shown
+  anyway; measured on a letter page (1212x1568, 143 dpi, a 196 KB JPEG rendered in about
+  250 ms) it keeps 9-point body text and inline maths legible, and `dpi` up to 300 and
+  `format` jpeg or png override it. `mode:"figures"` walks each page's operator list for
+  image XObjects, inline images and stencil masks, tracking the transform the way pdfjs's
+  own canvas does, decodes each to opaque RGBA (a translucent figure is flattened onto
+  white rather than black), skips icons and rules under 32 px, folds an image repeated
+  across pages into one, and reports each with its pixel size, its box on the page in
+  points from the top left, and whether it covers the page (a scan). Measured against the
+  test library: page 3 of "Attention Is All You Need" gives back its architecture figure as
+  the 1520x2239 image it is embedded as, with a 2000 px preview inline and the full file on
+  disk, and page 4 its two 445x884 and 835x1282 figures with their positions. On a local
+  install figures are saved under `<data dir>/pdf-images/<attachment key>/`; a shared
+  server refuses `save`, since the files would sit on the operator's disk. Vector figures
+  are named for what they are, lines in the content stream that only rendering shows, and
+  so is text scanned letter by letter: a 2006 conference paper in the test library paints
+  4389 stencil masks on its first page, one per glyph, with no text layer at all, and
+  figures mode now reports that instead of returning the alphabet, while pages mode renders
+  the page legibly.
+
+  The caps are part of the feature, because the hosted tier runs on a 1 GB machine and the
+  images travel as base64 inside JSON: 4 pages a call (8 at most, with the notice naming
+  the next span), 16 figures (40 at most), a 3508 px long edge, an image pixel limit pdfjs
+  enforces while decoding (16 megapixels on a shared server, 40 locally), one job at a time
+  per process, files above 20 MB not parsed, and about 5 MB of inline image data per
+  response, beyond which pages and figures are still rendered (and saved when asked) but
+  not returned inline, with a notice saying which and how to ask for them. A
+  password-protected PDF is refused with a message that says so; one whose encryption only
+  carries an owner password opens normally; a truncated file is called a broken PDF; an
+  EPUB is told it has no pages; a missing canvas package is named with its one-line fix.
+
+  No new dependency ships. pdfjs-dist draws under Node through its own optional dependency
+  `@napi-rs/canvas`, which a plain `npm install` brings in with it and which the desktop
+  bundles already carry for every OS and CPU they name. What did need building was a
+  canvas pool. Measured here, `@napi-rs/canvas` 0.1.100 does not return a dropped canvas's
+  memory to the operating system (`width = 0`, a forced GC and idle event-loop turns all
+  leave RSS where it was), pdfjs allocates two or three scratch canvases per stencil mask,
+  and rendering that 4389-mask page once took the process from 180 MB to 690 MB and twice
+  to 1 GB. Canvases are now pooled by exact size through pdfjs's public `CanvasFactory`
+  option and reset with a same-size width write (the binding's `context.reset()` leaves a
+  clip set outside a `save` in place); four such pages render in 344 MB of process peak
+  over stdio instead of 797 MB, a four-page batch of an ordinary paper in 294 MB, and the
+  pool is bounded at 16 megapixels and 8192 canvases. The attachment resolver that
+  `zotero_get_fulltext` used moved to `features/attachments/resolve.ts` so both tools mean
+  the same file by "the PDF", and the page-span parser to `pdf-pages.ts` so both read the
+  same syntax.
+
 ## [1.18.1] - 2026-09-10
 
 ### Added

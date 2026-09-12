@@ -27,6 +27,9 @@
  * a worse failure than the degraded one it is trying to prevent.
  */
 
+import { createRequire } from 'node:module';
+import { dirname, join, sep } from 'node:path';
+
 /** Why the last load failed, so callers can say it instead of guessing. */
 let loadError: string | null = null;
 let cached: Promise<unknown | null> | null = null;
@@ -54,6 +57,66 @@ export async function loadPdfjs(): Promise<any | null> {
     }
   })();
   return cached as Promise<any | null>;
+}
+
+/**
+ * Where pdfjs finds the data files it ships beside its code, for the calls that draw.
+ *
+ * Text extraction never needed these: it reads the glyph mapping out of the fonts embedded
+ * in the file. Rendering does. A PDF that uses one of the standard 14 fonts without
+ * embedding it (older LaTeX output, most scanned-and-OCRed books) needs pdfjs's own copy of
+ * that font or the text draws as nothing; a JPEG 2000 or JBIG2 image needs the decoders
+ * pdfjs 5 ships as wasm; a CJK font needs its CMap. pdfjs 5 reads all of them off disk under
+ * Node when told the directories, and it insists on a trailing separator.
+ *
+ * Resolved from the module the loader imports, not from `pdfjs-dist/package.json`: that is
+ * the one path known to be reachable through the package's exports map, and the bundle
+ * keeps the same layout as an npm install. `undefined` when pdfjs is not installed, in which
+ * case the caller has already failed for a better reason.
+ */
+export function pdfjsAssetUrls():
+  | { standardFontDataUrl: string; cMapUrl: string; cMapPacked: true; wasmUrl: string; iccUrl: string }
+  | undefined {
+  try {
+    const entry = createRequire(import.meta.url).resolve('pdfjs-dist/legacy/build/pdf.mjs');
+    // <pkg>/legacy/build/pdf.mjs -> <pkg>
+    const root = join(dirname(entry), '..', '..');
+    const dir = (name: string): string => `${join(root, name)}${sep}`;
+    return {
+      standardFontDataUrl: dir('standard_fonts'),
+      cMapUrl: dir('cmaps'),
+      cMapPacked: true,
+      wasmUrl: dir('wasm'),
+      iccUrl: dir('iccs'),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+let canvasCached: { mod: any | null; error: string | null } | null = null;
+
+/**
+ * The canvas pdfjs draws through under Node (`@napi-rs/canvas`), or null when it is not
+ * installed. Resolved from pdfjs's own location rather than from Zoteus, so the copy Zoteus
+ * hands pdfjs is the one pdfjs would have loaded itself: it is pdfjs's optional dependency,
+ * not ours, and two copies of a native module in one process is a bug waiting to happen.
+ */
+export function loadCanvas(): any | null {
+  canvasCached ??= (() => {
+    try {
+      const entry = createRequire(import.meta.url).resolve('pdfjs-dist/legacy/build/pdf.mjs');
+      return { mod: createRequire(entry)('@napi-rs/canvas'), error: null };
+    } catch (e) {
+      return { mod: null, error: e instanceof Error ? e.message : String(e) };
+    }
+  })();
+  return canvasCached.mod;
+}
+
+/** Why `loadCanvas()` returned null, or null when it has not. */
+export function canvasLoadError(): string | null {
+  return canvasCached?.error ?? null;
 }
 
 /**

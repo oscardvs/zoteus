@@ -24,7 +24,7 @@ import {
   registerAllTools,
   type ToolContext,
   type ToolContextSource,
-  type ToolDefinition,
+  type AnyToolDefinition,
 } from './registry/registry.js';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
@@ -67,7 +67,7 @@ export interface Telemetry {
  * Tools exposed for this config: read-only mode hides mutating tools (plus zotero_index,
  * which only touches local index files). Mirrors the M10 selection.
  */
-function selectActiveTools(config: ZoteusConfig): ToolDefinition[] {
+function selectActiveTools(config: ZoteusConfig): AnyToolDefinition[] {
   return config.readOnly
     ? tools.filter((t) => t.annotations?.readOnlyHint === true || t.name === 'zotero_index')
     : tools;

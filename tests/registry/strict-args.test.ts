@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { registerAllTools, type ToolContext, type ToolDefinition } from '../../src/registry/registry.js';
+import { registerAllTools, type AnyToolDefinition, type ToolContext, type ToolDefinition } from '../../src/registry/registry.js';
 import { closedArgumentSchema } from '../../src/registry/strict-args.js';
 import { tools } from '../../src/tools/index.js';
 
@@ -258,7 +258,7 @@ describe('every registered tool', () => {
   });
 });
 
-async function connect(defs: ToolDefinition[], ctx: ToolContext) {
+async function connect(defs: AnyToolDefinition[], ctx: ToolContext) {
   const server = new McpServer({ name: 't', version: '0.0.0' }, { capabilities: { tools: {} } });
   registerAllTools(server, defs, ctx);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
@@ -268,10 +268,10 @@ async function connect(defs: ToolDefinition[], ctx: ToolContext) {
 }
 
 describe('through the MCP SDK', () => {
-  it('advertises every documented argument and closes all thirty tools', async () => {
+  it('advertises every documented argument and closes all thirty-one tools', async () => {
     const client = await connect(tools, {} as ToolContext);
     const { tools: listed } = await client.listTools();
-    expect(listed.length).toBe(30);
+    expect(listed.length).toBe(31);
     for (const t of listed) {
       const def = tools.find((d) => d.name === t.name);
       const declared = Object.keys(def!.inputSchema);

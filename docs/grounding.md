@@ -1,6 +1,6 @@
 # Full-text grounding, tag audit, and BBT export
 
-Zoteus adds tools for research grounding: retrieve PDF passages with page locators, audit tag hygiene against a controlled vocabulary, and export with Better BibTeX formatting.
+Zoteus adds tools for research grounding: retrieve PDF passages with page locators, look at PDF pages and figures as images, audit tag hygiene against a controlled vocabulary, and export with Better BibTeX formatting.
 
 ## `zotero_get_fulltext` — retrieve PDF text for grounding
 
@@ -77,7 +77,7 @@ Reading the outline first and then asking for the pages it names is the cheap wa
 - The response is served exactly like indexed text: `query`, `page_range` and document modes all work, and `fulltextSource` plus `fileSource` tell a caller that this text was extracted locally rather than read out of Zotero's index.
 - The fallback is on by default; pass `fallback: false` to opt out (the tool then returns an actionable "not indexed" error).
 - Same OOM guard as `precise_pages`: attachments larger than 20 MB are not parsed; the error tells you to open the file once in Zotero to index it.
-- Scanned/image-only PDFs yield no text: the error explains that extraction found nothing.
+- Scanned/image-only PDFs yield no text: the error explains that extraction found nothing. [`zotero_pdf_images`](#zotero_pdf_images-see-pages-figures-and-scans-as-images) shows such a page as a picture instead.
 
 This is what makes "summarise the paper I just added" work. It covers libraries where many PDFs were never indexed, and grounding no longer waits for Zotero to re-process anything.
 
@@ -104,6 +104,78 @@ The same text feeds the opt-in full-text pass of the semantic index, so a passag
 ### Read-only mode
 
 `zotero_get_fulltext` is annotated `readOnlyHint: true` and remains available under `ZOTEUS_READ_ONLY=true`.
+
+---
+
+## `zotero_pdf_images`: see pages, figures and scans as images
+
+Everything above returns text, and text is what a figure, a table, an equation and a scanned page all lose: a figure arrives as its caption, a table as its numbers run together, an equation as a few stray glyphs, and a scan with no text layer as nothing. `zotero_pdf_images` returns pictures instead, as MCP `image` content blocks the model can look at, followed by the usual summary and JSON.
+
+It takes the same `item_key` as `zotero_get_fulltext` (a parent item, whose PDF attachment is resolved the same way, or an attachment key), reads the file from the same three sources (desktop app, local storage folder, cloud), and has two modes:
+
+### `mode: "pages"`: render whole pages
+
+```jsonc
+{ "item_key": "ABCD1234", "mode": "pages", "pages": "3-4" }
+```
+
+- `pages` is a 1-based span, `"3"` or `"3-7"` (default `"1"`).
+- The default resolution fits the long edge of the page to about 1568 px (roughly 142 dpi on a letter page, 1212x1568), which keeps body text and inline maths legible and is as much as the model is shown anyway. `dpi` (36 to 300) overrides it; nothing renders longer than 3508 px on its long edge (A4 at 300 dpi).
+- `format` is `"jpeg"` (default, quality 80, about 200 KB for a text page) or `"png"` (sharper line art, larger).
+- Each page comes back as an image block, and `structuredContent.pages` lists `page`, `width`, `height`, `dpi`, `mimeType`, `bytes`, `inline` and, with `save: true`, `path`.
+
+### `mode: "figures"`: extract the embedded images
+
+```jsonc
+{ "item_key": "ABCD1234", "mode": "figures", "pages": "1-8" }
+```
+
+The tool walks each page's content for the raster images it draws (image XObjects, inline images and stencil masks), the way `pdfimages` does, and returns each one at its native pixel size:
+
+```jsonc
+{
+  "page": 3, "index": 1, "width": 1520, "height": 2239, "mimeType": "image/jpeg", "bytes": 148213,
+  "source": "xobject", "bbox": { "x": 108.5, "y": 70.2, "width": 395, "height": 582 },
+  "coversPage": false, "inline": true, "path": "/home/me/.local/share/zoteus/pdf-images/ABCD1234/page-003-image-001.jpg"
+}
+```
+
+- `bbox` is where the image is drawn on the page, in PDF points with the origin at the top left, so it can be matched against the text around it.
+- `coversPage: true` marks an image drawn over most of the page: a scanned page rather than a figure on one. When every requested page is such an image, the notice says the PDF is a scan and that `zotero_get_fulltext` will have no text for it unless Zotero has OCRed the file.
+- Images under `min_size` px on a side (default 32: icons, rules, bullets) are skipped, an image repeated across pages is returned once, and a translucent figure is flattened onto white rather than black. Without `format`, images up to 2 megapixels are PNG and larger ones JPEG; an image longer than 2000 px is sent inline as a 2000 px preview while the saved file keeps its native size.
+- **Vector figures do not appear here.** A plot from matplotlib, TikZ or a vector PDF export is lines and text in the content stream, not an image; the notice says which requested pages embed no raster image, and `mode: "pages"` is how to see them.
+- **Text scanned letter by letter is not a figure either.** Some older papers (a 2006 conference paper in the test library paints 4390 stencil masks on its first page, each one glyph) carry no text layer and no page image, only thousands of small bitmaps. A page painting 200 or more stencil masks is reported as `bitmapTextPages` with the count, its masks are left out of the figures, and the notice points at `mode: "pages"`, which renders such a page legibly.
+
+### Saving files
+
+On a local install, figures are saved by default (pages on request with `save: true`) under `<Zoteus data dir>/pdf-images/<attachment key>/`, as `page-003.jpg` and `page-003-image-001.png`, and the paths come back in the result. The names are deterministic, so a repeat call overwrites the same files. On a shared server (any OAuth deployment) `save` is refused, because a file written there sits on the operator's disk, not the caller's; the images still arrive inline. Pass `inline: false` to get metadata and paths only.
+
+### Caps
+
+Rendering is the most expensive thing the server does per call, the hosted tier runs on a 1 GB machine, and the images travel as base64 inside JSON. So:
+
+| Cap | Value | Why |
+|---|---|---|
+| Pages per call | `max_pages`, default 4, at most 8 | A section of a paper, not a book; a longer span is cut and the notice says which `pages` to ask for next. |
+| Figures per call | `max_images`, default 16, at most 40 | Bounds the decoding and encoding work. |
+| Long edge | 3508 px | A4 at 300 dpi; one canvas is about 35 MB at that size. |
+| Image pixels pdfjs will decode | 16 megapixels on a shared server, 40 locally | pdfjs decodes every image on a page to raw pixels before anything is drawn; a 600 dpi letter scan is 34 megapixels and still opens on a laptop. A page whose only image is above the limit renders blank, and figures mode reports it as holding neither text nor an image. |
+| Inline image data per response | about 5 MB of base64 | Four default-resolution JPEG pages are about 1 MB. Beyond the budget, pages or figures are still rendered (and saved when asked) but not returned inline, and the notice names them and the remedy: fewer pages, a lower `dpi`, `format: "jpeg"`, or `save`. |
+| File size | 20 MB | The same cap as `zotero_get_fulltext`, for the same reason. |
+| Concurrency | one job at a time per process | Two concurrent peaks on the small machine would be an out-of-memory kill for everyone on it. |
+| Scratch canvases | pooled by size, at most 16 megapixels and 8192 canvases | pdfjs allocates two or three scratch canvases per stencil mask and drops them, and the Node canvas binding does not return a dropped canvas's memory to the operating system (measured: one render of the 4390-mask page cost 500 MB that never came back). Pooled through pdfjs's public `CanvasFactory` option, four such pages render in about 300 MB total instead of 750 MB and stay there. |
+
+### Errors it explains
+
+A PDF that needs a password to open is refused with a message that says so (one whose encryption only restricts printing or copying opens normally). A broken or truncated file is reported as not a readable PDF. An EPUB has no pages to draw and is pointed at `zotero_get_fulltext`. Pages beyond the end of the document are named, and a call that asks only for those is an error. When the canvas package that pdfjs draws through is missing, the error names it (`npm install @napi-rs/canvas`) instead of surfacing a stack trace.
+
+### What it needs
+
+Nothing new. pdfjs-dist, the optional dependency that already gives `zotero_get_fulltext` its exact pages, draws through `@napi-rs/canvas`, its own optional dependency, which a plain `npm install` brings in with it; the Claude Desktop bundles carry its native binary for every OS and CPU they name (see [Distribution](./distribution.md)). An install made with `--omit=optional` has neither, and both tools say so.
+
+### Read-only mode
+
+`zotero_pdf_images` is annotated `readOnlyHint: true` and remains available under `ZOTEUS_READ_ONLY=true`. It writes nothing to the library; the only thing it writes anywhere is the image files under the Zoteus data directory, and only when asked.
 
 ---
 
@@ -199,6 +271,7 @@ Under `ZOTEUS_READ_ONLY=true`, the following tools remain available:
 | Tool | Purpose |
 |---|---|
 | `zotero_get_fulltext` | Retrieve PDF passages |
+| `zotero_pdf_images` | Render PDF pages and extract figures as images |
 | `zotero_tag_audit` | Audit tag vocabulary |
 | `zotero_list_tags` | List tags with usage/auto flag |
 | `zotero_list_collections` | List collections |

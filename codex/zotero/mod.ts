@@ -13,6 +13,7 @@ export { groups } from './groups.js';
 export { exportTool } from './exportTool.js';
 export { fulltext } from './fulltext.js';
 export { getFulltext } from './getFulltext.js';
+export { pdfImages } from './pdfImages.js';
 export { sync } from './sync.js';
 export { attachment } from './attachment.js';
 export { annotate } from './annotate.js';

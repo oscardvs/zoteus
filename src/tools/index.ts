@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '../registry/registry.js';
+import type { AnyToolDefinition } from '../registry/registry.js';
 import whoami from './whoami.js';
 import searchItems from './search-items.js';
 import getItem from './get-item.js';
@@ -14,6 +14,7 @@ import groups from './groups.js';
 import exportTool from './export.js';
 import fulltext from './fulltext.js';
 import getFulltext from './get-fulltext.js';
+import pdfImages from './pdf-images.js';
 import sync from './sync.js';
 import attachment from './attachment.js';
 import annotate from './annotate.js';
@@ -30,7 +31,7 @@ import listTags from './list-tags.js';
 import listCollections from './list-collections.js';
 import tagAudit from './tag-audit.js';
 
-export const tools: ToolDefinition[] = [
+export const tools: AnyToolDefinition[] = [
   // Read
   whoami,
   searchItems,
@@ -49,6 +50,7 @@ export const tools: ToolDefinition[] = [
   exportTool,
   fulltext,
   getFulltext,
+  pdfImages,
   sync,
   attachment,
   annotate,

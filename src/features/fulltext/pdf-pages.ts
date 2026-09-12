@@ -111,6 +111,20 @@ async function destinationPage(doc: any, dest: unknown): Promise<number | undefi
   return undefined;
 }
 
+/**
+ * A 1-based page span as callers write it: "3" or "3-7" (an en dash is accepted too, since
+ * that is what a copied citation carries). Undefined when the text is not one, or the span
+ * runs backwards. Shared by every tool that addresses PDF pages, so they all read the same
+ * syntax.
+ */
+export function parsePageRange(range: string): { from: number; to: number } | undefined {
+  const m = range.match(/^\s*(\d+)\s*(?:[-–]\s*(\d+))?\s*$/);
+  if (!m) return undefined;
+  const from = Number(m[1]);
+  const to = m[2] ? Number(m[2]) : from;
+  return from > 0 && to >= from ? { from, to } : undefined;
+}
+
 /** Join extracted page texts into one document text (pages separated by a blank line). */
 export function pdfPagesToText(pages: string[]): string {
   return pages.join('\n\n');
