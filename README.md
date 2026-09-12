@@ -96,7 +96,7 @@ Full table in [`docs/configuration.md`](./docs/configuration.md). To run a share
 
 ## Documentation
 
-**[zoteus.com/docs](https://zoteus.com/docs)** · [Connect Claude to Zotero](https://zoteus.com/docs/connect-claude-to-zotero/) · [Group libraries for review teams](https://zoteus.com/docs/group-libraries-for-review-teams/) · [Zoteus and zotero-mcp, side by side](https://zoteus.com/docs/zoteus-and-zotero-mcp/)
+**[zoteus.com/docs](https://zoteus.com/docs)** · [Connect Claude to Zotero](https://zoteus.com/docs/connect-claude-to-zotero/) · [Connect ChatGPT to Zotero](https://zoteus.com/docs/connect-chatgpt-to-zotero/) · [Group libraries for review teams](https://zoteus.com/docs/group-libraries-for-review-teams/) · [Zoteus and zotero-mcp, side by side](https://zoteus.com/docs/zoteus-and-zotero-mcp/)
 
 In this repository: [Getting started](./docs/getting-started.md) · [Configuration](./docs/configuration.md) · [Import & resolver](./docs/resolver.md) · [Architecture](./docs/architecture.md) · [Safe writes](./docs/writing.md) · [Threat model](./docs/threat-model.md) · [Citations](./docs/citations.md) · [Semantic search](./docs/semantic-search.md) · [Scholarly context](./docs/scholar.md) · [Code execution](./docs/code-execution.md) · [Deployment](./docs/deployment.md) · [Uninstall](./docs/uninstall.md)
 
