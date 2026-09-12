@@ -146,6 +146,26 @@ function attachment(key: string, parent?: string) {
   return { key, data: { key, itemType: 'attachment', contentType: 'application/pdf', parentItem: parent } };
 }
 
+/**
+ * A saved web page, which is what Zotero stores for a `webpage` item: `imported_url` rather
+ * than `imported_file`, and `text/html` rather than a PDF. Zotero extracts its text into the
+ * same full-text index a PDF's goes into and serves it from the same `/fulltext` endpoint, so
+ * nothing downstream of the census may treat it differently (#78).
+ */
+function htmlSnapshot(key: string, parent?: string) {
+  return {
+    key,
+    data: {
+      key,
+      itemType: 'attachment',
+      contentType: 'text/html',
+      linkMode: 'imported_url',
+      filename: 'index.html',
+      parentItem: parent,
+    },
+  };
+}
+
 describe('createFulltextSource', () => {
   it('maps attachments to their parent and fetches only those that have text', async () => {
     const { ctx, getFullText } = makeCtx({
@@ -164,6 +184,26 @@ describe('createFulltextSource', () => {
     // Never fetched: the un-extracted attachment costs no request at all.
     expect(getFullText).toHaveBeenCalledTimes(1);
     expect(getFullText).not.toHaveBeenCalledWith('ATT3', expect.anything());
+  });
+
+  it('serves an HTML snapshot exactly as it serves a PDF', async () => {
+    // Nothing between Zotero's census and the indexed passage may narrow by content type,
+    // link mode or file extension: an `imported_url` `text/html` snapshot is text Zotero
+    // extracted, and the map, the read and the cap treat it as such (#78).
+    const { ctx, getFullText } = makeCtx({
+      attachments: [htmlSnapshot('SNAP1', 'PAGE1'), attachment('ATT1', 'ITEM1')],
+      withText: { SNAP1: 12, ATT1: 13 },
+      fulltext: { SNAP1: { content: 'the snapshot body' }, ATT1: { content: 'the pdf body' } },
+    });
+    const src = await createFulltextSource(ctx, undefined);
+
+    expect(src.attachments).toBe(2);
+    expect([...src.itemKeys].sort()).toEqual(['ITEM1', 'PAGE1']);
+    expect(await src.textFor('PAGE1')).toBe('the snapshot body');
+    expect(getFullText).toHaveBeenCalledWith('SNAP1', expect.anything());
+    // And the reverse direction, which is what an update resolves its delta through: the
+    // snapshot's key comes back as the page it hangs off, not dropped as an unknown item.
+    expect([...src.itemsFor(['SNAP1'])]).toEqual(['PAGE1']);
   });
 
   it('treats a top-level attachment as its own item', async () => {
@@ -300,6 +340,43 @@ describe('startIndexBuild with full text', () => {
 
     const hits = await ctx.search.query('eleven percent throughput', { limit: 1 });
     expect(hits[0]!.itemKey).toBe('K1');
+    expect(hits[0]!.source).toBe('fulltext');
+  });
+
+  it('indexes a saved web page\'s body onto the webpage item that owns it', async () => {
+    // The shape reported against #78: a `webpage` item whose ONLY child is an `imported_url`
+    // `text/html` snapshot, so nothing but the snapshot can put body text on it. Zotero has
+    // the text, and the build has to carry it all the way to a passage attributed to the
+    // parent, or the page is findable by its title alone.
+    const SNAPSHOT_BODY =
+      'The scheduler picks the best moment for a card to come up for review again. '.repeat(12);
+    const { ctx } = makeCtx({
+      attachments: [htmlSnapshot('SNAP1', 'PAGE1')],
+      withText: { SNAP1: 7 },
+      fulltext: { SNAP1: { content: SNAPSHOT_BODY } },
+      config: { ZOTEUS_INDEX_FULLTEXT: 'true' },
+    });
+    const items = [
+      { key: 'PAGE1', data: { itemType: 'webpage', title: 'The Mnemosyne Project', abstractNote: '' } },
+      { key: 'K9', data: { itemType: 'journalArticle', title: 'Unrelated paper' } },
+    ];
+    const listAttachments = ctx.router.searchItems;
+    ctx.router.searchItems = vi.fn(async (q: any) =>
+      q.top ? { data: items.slice(q.start ?? 0), totalResults: items.length, lastModifiedVersion: 1 } : listAttachments(q),
+    );
+
+    startIndexBuild(ctx);
+    await finished(ctx.search);
+
+    const s = ctx.search.buildStatus();
+    expect(s.state).toBe('done');
+    expect(s.fulltextItems).toBe(1);
+    expect(s.fulltextPassages).toBeGreaterThan(0);
+
+    // A phrase that exists only inside the snapshot finds the page, as body text and not as
+    // a title match: `source` is what separates the two.
+    const hits = await ctx.search.query('best moment card come up review', { limit: 1 });
+    expect(hits[0]!.itemKey).toBe('PAGE1');
     expect(hits[0]!.source).toBe('fulltext');
   });
 
