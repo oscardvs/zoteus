@@ -1,5 +1,5 @@
-import { attachmentIdentity, provenance } from './common-output.js';
 import { z } from 'zod';
+import { attachmentIdentity, provenance } from './common-output.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type {
