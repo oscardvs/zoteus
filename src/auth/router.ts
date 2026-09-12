@@ -135,6 +135,13 @@ export async function buildOAuth(
           resourceServerUrl,
           scopesSupported: ['zoteus'],
           resourceName: 'Zoteus Zotero MCP server',
+          // Dynamically registered client secrets never expire. The SDK default is 30 days,
+          // which is fine for a public client (claude.ai registers with auth method `none`)
+          // but a confidential client such as ChatGPT authenticates every token refresh with
+          // its secret, so an expiring secret would force every ChatGPT user through the
+          // subscription-key and Zotero sign-in again on day 31. Client records are still
+          // capped and swept by the store (MAX_CLIENTS, FIFO).
+          clientRegistrationOptions: { clientSecretExpirySeconds: 0 },
         }),
       );
     },

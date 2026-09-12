@@ -228,3 +228,54 @@ describe('OAuth 2.1 auth-code + PKCE flow', () => {
     expect((await fetch(mismatchUrl)).status).toBe(400);
   }, 30_000);
 });
+
+describe('Dynamic Client Registration: confidential clients', () => {
+  it('registers a confidential client (as ChatGPT does) with a usable secret, and a public client with none', async () => {
+    const port = await getFreePort();
+    const base = `http://127.0.0.1:${port}`;
+    const config = loadConfig({
+      ZOTERO_API_KEY: 'k',
+      ZOTEUS_OAUTH_ENABLED: 'true',
+      ZOTEUS_PUBLIC_URL: base,
+      ZOTEUS_OAUTH_PASSCODE: 'open-sesame-1234',
+    } as unknown as NodeJS.ProcessEnv);
+    const oauth = (await buildOAuth(config))!;
+    httpServer = await startHttp(() => pingServer(), {
+      port,
+      host: '127.0.0.1',
+      oauth,
+      enableDnsRebindingProtection: true,
+      allowedHosts: oauth.allowedHosts,
+    });
+
+    // ChatGPT presents its client secret on every token refresh, so the secret has to outlive
+    // the refresh token (see the clientRegistrationOptions comment in src/auth/router.ts).
+    const confidential = await json(
+      await fetch(`${base}/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          redirect_uris: ['https://chatgpt.com/connector/oauth/abc123'],
+          token_endpoint_auth_method: 'client_secret_post',
+          client_name: 'ChatGPT',
+        }),
+      }),
+    );
+    expect(confidential.client_secret).toBeTruthy();
+    expect(confidential.client_secret_expires_at).toBe(0);
+
+    // claude.ai registers a public client: no secret is issued at all.
+    const publicClient = await json(
+      await fetch(`${base}/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          redirect_uris: ['https://claude.ai/api/mcp/auth_callback'],
+          token_endpoint_auth_method: 'none',
+          client_name: 'Claude',
+        }),
+      }),
+    );
+    expect(publicClient.client_secret).toBeUndefined();
+  }, 30_000);
+});
