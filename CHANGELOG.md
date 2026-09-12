@@ -7,6 +7,19 @@ All notable changes to Zoteus are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **ChatGPT is a supported client, documented and verified against the hosted connector.**
+  Tested on 2026-09-12 from a ChatGPT Plus account in the web app: `zotero_whoami`, keyword
+  and semantic search, full item records, PDF outlines with page numbers and exact page
+  ranges read from Zotero cloud storage, APA bibliographies, and adding and removing tags all
+  worked, with ChatGPT asking before the writes it rates as risky and never before a read.
+  ChatGPT connects to remote MCP servers only, so the `npx` and `.mcpb` installs do not apply
+  there; the two paths are the hosted connector at `mcp.zoteus.com` and a self-hosted OAuth
+  remote, which serves ChatGPT unchanged (it registers a confidential client through Dynamic
+  Client Registration and uses a per-connector `chatgpt.com` redirect URI, so there is
+  nothing to allowlist). The README, `getting-started.md`, `remote-oauth.md`,
+  `configuration.md` and `deployment.md` now carry the ChatGPT steps: Developer mode on a
+  paid plan, Plugins, Create app, OAuth, and the Refresh click that makes the tool list
+  appear the first time.
 - **`zotero_pdf_images`: PDF pages and figures as images the model can look at.** Every PDF
   feature returned extracted text, and text is exactly what a figure, a table, an equation
   and a scanned page lose: a figure arrived as its caption, a table as its numbers run
