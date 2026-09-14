@@ -1,5 +1,7 @@
 # Hybrid semantic search
 
+For setup, coverage and common symptoms, start with the [search readiness guide](./search-readiness.md). This file retains the detailed technical and operations reference.
+
 M6 adds local-first hybrid retrieval: BM25 keyword scoring fused with vector similarity (Reciprocal Rank Fusion), with results that cite the matching item and a snippet.
 
 ## Tools

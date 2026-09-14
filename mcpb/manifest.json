@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "zoteus",
   "display_name": "Zoteus: Zotero MCP",
-  "version": "1.20.0",
+  "version": "1.20.1",
   "description": "MCP server that gives Claude, ChatGPT and other MCP clients access to a Zotero library: search, citations, adding items, safe writes, semantic search, PDF passages and page images.",
   "long_description": "Zoteus gives Claude, ChatGPT and other MCP clients complete, safe access to your Zotero library via the Web API v3 and the desktop local API: items, collections, tags, attachments, full-text, sync, groups, add-by-DOI/ISBN/PMID/arXiv, CSL bibliography formatting, hybrid semantic search, and an OpenAlex/Crossref scholarly graph.",
   "author": {
@@ -63,7 +63,7 @@
     "embeddings": {
       "type": "string",
       "title": "Semantic-search embeddings",
-      "description": "Embedding provider for semantic search: local (default, on-device model) | openai | gemini | off (keyword-only index: fastest to build, useful on slow machines).",
+      "description": "Search by meaning needs an active embedding provider. local (default setting) requires a separate @huggingface/transformers install and Local embeddings path below; the bundle does not include it. openai or gemini needs an API key and may incur separate costs. off keeps keyword-only ranking. Check zotero_index status after setup.",
       "default": "local",
       "required": false
     },
@@ -96,7 +96,7 @@
     "index_fulltext": {
       "type": "boolean",
       "title": "Index PDF full text",
-      "description": "Also index the body text Zotero extracted from your PDFs, so semantic search can match a claim buried inside a paper and not just its title and abstract. Off by default because it is expensive: roughly 9x the passages, index size and embedding time. You can also turn it on for a single build with zotero_index fulltext:true. This build used to kill the extension partway through when run inside the Claude app (issue #37); it was the on-device embedding model asking for one block of memory bigger than the app will hand out, and Zoteus now embeds fewer passages per call in here, so the build runs to completion. It is a little slower in the app than in a terminal, and produces exactly the same index.",
+      "description": "Include available PDF body text extracted by Zotero in indexed search. Off by default; increases build time, storage and possible embedding API costs. Default coverage caps: 5,000 items and 40,000 body-text characters per item. Missing files and scans without extracted text are not made searchable by this setting. You can also request zotero_index fulltext:true. Check coverage and warnings in status after building.",
       "default": false,
       "required": false
     },

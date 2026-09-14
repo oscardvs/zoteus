@@ -1,12 +1,12 @@
 # Zoteus Privacy Policy
 
-_Last updated: 2026-09-04_
+_Last updated: 2026-09-14_
 
 Zoteus is an open-source MCP server (MIT license) that runs **locally on your machine**, whether installed as a Claude desktop extension, via `npx`, or as a self-hosted service. This policy describes what data **the software** handles and where it goes. It does not cover the optional paid hosted connector at `mcp.zoteus.com`, which the project operates as a service and which has its own policy at [zoteus.com/privacy](https://zoteus.com/privacy).
 
 ## What Zoteus collects
 
-**Nothing.** Zoteus has no telemetry, no analytics and no accounts, and the software you install never sends anything to a server operated by the project. The developers of Zoteus never receive your data. All processing happens on your device, except for the network requests listed below, which go directly from your machine to the named service.
+The default installation does not send usage analytics to the project. Optional operator-controlled usage logging is described below. The connector processes data on the machine or server where it runs, and returns tool results to your chosen AI client. Retrieved passages, notes and metadata may therefore be sent to that client's cloud AI service under its own terms. Local embedding computation does not make a cloud AI conversation local.
 
 ## Network requests Zoteus makes
 
@@ -15,7 +15,7 @@ Zoteus only contacts external services as needed to do what you ask of it:
 - **Zotero (`api.zotero.org`, zotero.org)**: your library data (items, collections, tags, attachments, full text) is read and written using the Zotero API key you configure. Requests go directly to Zotero and are governed by the [Zotero privacy policy](https://www.zotero.org/support/privacy).
 - **Zotero desktop app (`127.0.0.1`)**: when the Zotero app is running, reads and writes can go to it over the local loopback interface. This traffic never leaves your machine.
 - **Scholarly-graph providers** (only when you use the `zotero_scholar` tool): search terms, DOIs, and similar identifiers are sent to the configured providers (OpenAlex by default; optionally Crossref or Semantic Scholar). If you set `ZOTEUS_CONTACT_EMAIL`, it is included in those requests as a contact address (Crossref's `mailto=` polite-pool parameter, and the User-Agent header on OpenAlex requests). If you set `ZOTEUS_OPENALEX_API_KEY`, it is sent to OpenAlex as an Authorization header on those requests and nowhere else.
-- **Embedding providers** (only if you explicitly select them): semantic search uses an **on-device model by default**, so no library text leaves your machine. If you set the embeddings option to `openai` or `gemini`, the text being indexed or searched (item titles, abstracts, notes, and full-text excerpts) is sent to that provider using your own API key, under that provider's privacy policy. Set embeddings to `local` or `off` to avoid this entirely.
+- **Embedding providers** (only if you explicitly select them): the default setting is `local`, which requires installing the optional embedding dependency. When active, embedding computation runs on the connector host; this is separate from sending retrieved results to your AI client. If you set the embeddings option to `openai` or `gemini`, the text being indexed or searched (item titles, abstracts, notes, and full-text excerpts) is sent to that provider using your own API key, under that provider's privacy policy. Set embeddings to `local` or `off` to avoid this entirely.
 - **Import resolvers** (only when you import by identifier or URL): the identifier or URL you provide is sent to the relevant public resolver (for example doi.org or arXiv), or to a translation server you host yourself.
 - **Update check (`api.github.com`), off unless you turn it on**: setting `ZOTEUS_UPDATE_CHECK=true` makes Zoteus fetch the latest release tag from GitHub, at most once per day, to tell you when a newer version exists. The request is unauthenticated and contains no personal data or library content, only the standard HTTP metadata any web request carries. It is off by default so that a default install makes no network request you did not ask for.
 
@@ -27,7 +27,7 @@ Zoteus only contacts external services as needed to do what you ask of it:
 
 ## Third-party sharing
 
-Zoteus does not share, sell, or transmit your data to anyone. The only parties that see any data are the services listed above, contacted directly from your machine at your instruction.
+Zoteus does not sell library data. Tool results go to the chosen AI client/service, and the external services listed above receive the data needed for the features you use. The operator of a self-hosted remote also controls its storage and logs.
 
 ## Data retention
 

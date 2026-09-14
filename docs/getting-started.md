@@ -3,7 +3,7 @@
 Zoteus connects Claude or ChatGPT to your Zotero library. Once it is set up, you can ask
 either one to find a paper you saved three years ago, quote the right passage from its PDF,
 build a bibliography in the style your journal wants, or file a new reference by its DOI. The
-assistant works from the references you actually have, so the citations are real.
+assistant can retrieve real references, but you must still check passages and the conclusions drawn from them.
 
 There is no code to write and nothing to program. This page takes you from nothing to a
 working setup. Read the short checklist, pick one of the two ways to install, and follow it
@@ -27,6 +27,12 @@ that in [Do you need a Zotero API key?](#do-you-need-a-zotero-api-key)
 
 ---
 
+## Search readiness and first success
+
+The core extension provides direct keyword lookup and PDF reading. Search by meaning requires an active embedding provider; the local provider needs a separate dependency install. PDF-body indexing is opt-in, with defaults of 5,000 items and 40,000 body-text characters per item. These limits affect indexed search, not direct reading of later pages from an available PDF.
+
+Follow [search readiness](./search-readiness.md) to configure embeddings and check coverage. After connecting, [find a known paper and verify one passage](./first-research-task.md) before asking for a broad synthesis. Hosted users should check [PDF availability](./missing-pdfs.md) and [prerequisites before paying](https://zoteus.com/pricing/#before-you-pay).
+
 ## Two ways to use Zoteus
 
 Pick one. You can change your mind later.
@@ -41,8 +47,7 @@ Pick one. You can change your mind later.
 | Updates | You install them yourself, see [Keeping it up to date](#keeping-the-extension-up-to-date) | Kept up to date for you |
 
 **Choose the extension** if you use the Claude app on a computer where Zotero is also
-installed. This is the setup Zoteus is built around: your library never leaves your machine,
-your PDFs are readable in full, and it costs nothing.
+installed. The connector reads local files, while retrieved passages and notes are returned to your chosen AI service. Local embeddings do not make a cloud AI conversation local. The software costs nothing.
 
 **Choose the hosted connector** if you work in claude.ai in a browser or on a phone, if you
 use ChatGPT (which can only reach Zoteus this way), or if you would rather not install or
@@ -58,14 +63,14 @@ you have not synced to Zotero's servers is not visible to it.
 Go to the [latest release page](https://github.com/oscardvs/zoteus/releases/latest) and look
 for the **Assets** list near the bottom. Click the file for your computer to download it:
 **`zoteus-macos.mcpb`** on a Mac, **`zoteus-windows.mcpb`** on Windows, **`zoteus-linux.mcpb`**
-on Linux. The file is between 32 and 57 MB, and it holds everything Zoteus needs on that
-system, so there is nothing else to fetch. There is one file per system because the part of
+on Linux. The file is about 34 to 60 MB for v1.20.0, and includes the core connector and PDF support for that
+system. Search by meaning needs an additional embedding setup, described below. There is one file per system because the part of
 Zoteus that reads PDF pages is compiled code that differs between them; a bundle built for
 another system installs but cannot read pages, so pick the one that matches.
 
 ![The Zoteus release page on GitHub, with the bundle in the Assets list](./images/github-release-download.png)
 
-(The screenshot is from an older release, which shipped a single `zoteus.mcpb`.)
+Release download page captured 14 September 2026 for v1.20.0 in a desktop browser on Linux. The assets cover macOS, Windows and Linux; authenticated installation was not repeated on every platform.
 
 An `.mcpb` file is an extension for the Claude app, in the same way a `.docx` is a document
 for Word. Your browser may warn that the file type is unusual. It comes from the project's
@@ -86,11 +91,8 @@ recognized), install it by hand instead:
 Either way, when it has worked, the Extensions screen lists **Zoteus** under *Installed on
 your computer*, with a **Configure** button beside it:
 
-![The Extensions screen in Claude's settings, showing Zoteus installed with a Configure button](./images/claude-desktop-extensions.png)
+Use the **Extensions** panel to confirm that Zoteus appears with a **Configure** button. Interface labels can vary by Claude version.
 
-<!-- TODO(screenshot): the install confirmation dialog that appears after double-clicking
-     the bundle ("what this extension can do", with the Add button). Needs a desktop
-     screenshot tool driving the Claude app; it cannot be captured from a web browser. -->
 
 ### Step 3: let Claude see the Zotero app on your computer
 
@@ -165,10 +167,6 @@ Zotero's servers instead of through the app on your computer.
 Treat the key like a password. Anyone holding it can read the library it was made for. You
 can delete it from the same Zotero page at any time.
 
-<!-- TODO(screenshot): https://www.zotero.org/settings/keys with the "Create new private key"
-     form. Cannot be captured automatically: the page returns "Access denied" when signed
-     out, and a signed-in capture would expose the account's real keys and email. Needs a
-     human with a throwaway Zotero account, cropped to the form. -->
 
 ---
 
@@ -324,9 +322,6 @@ The remaining fields tune how the text is turned into something searchable. Full
 are in [Desktop extension settings](./configuration.md#desktop-extension-settings-mcpb) and
 [semantic-search.md](./semantic-search.md).
 
-<!-- TODO(screenshot): the Zoteus settings pane reached by clicking Configure, showing the
-     Zotero API Key field at the top. Needs a desktop screenshot tool driving the Claude
-     app, and the key field must be empty or blanked before capture. -->
 
 ---
 
@@ -400,7 +395,8 @@ described in [Way 2](#way-2-connect-to-the-hosted-zoteus).
    separated from the other entries by a comma. Do not paste over what is there.
 
    The `"env"` line is only for an API key. If you do not have one, and Zotero is running on
-   the same computer, delete that whole line and keep the rest.
+   the same computer, delete that whole line and remove the comma after the `"args"` array.
+   Keep existing client entries when merging this configuration.
 
 4. Save the file and restart the app.
 
@@ -418,4 +414,4 @@ claude mcp add --transport stdio zoteus -- npx -y @oscardvs/zoteus
 - [Semantic search](./semantic-search.md), how search by meaning works and what it costs
 - [Safe writes](./writing.md), what happens when Claude changes your library
 - [Citations](./citations.md), bibliography styles
-- [Privacy](../PRIVACY.md), what leaves your computer, which is very little
+- [Privacy](../PRIVACY.md), what leaves your computer, including the chosen AI service
