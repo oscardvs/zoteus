@@ -5,6 +5,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { registerAllTools, type AnyToolDefinition, type ToolContext, type ToolDefinition } from '../../src/registry/registry.js';
 import { closedArgumentSchema } from '../../src/registry/strict-args.js';
+import { dropToolSchemaDialects } from '../../src/registry/schema-dialect.js';
 import { tools } from '../../src/tools/index.js';
 
 /** A value the field would accept, so a whole-tool parse fails on nothing but strictness. */
@@ -309,6 +310,10 @@ describe('through the MCP SDK', () => {
     const refClient = new Client({ name: 'ref', version: '0.0.0' });
     await Promise.all([reference.connect(st), refClient.connect(ct)]);
     const { tools: refListed } = await refClient.listTools();
+    // The reference is registered straight on the SDK, so it still carries the JSON Schema
+    // dialect line that registerAllTools now drops on the way out (#83). That one line is
+    // not what this test pins, so both sides are read without it.
+    dropToolSchemaDialects({ result: { tools: refListed } });
     for (const t of listed) {
       const ref = refListed.find((r) => r.name === `${t.name}__plain`);
       expect(JSON.stringify(t.inputSchema), t.name).toBe(JSON.stringify(ref!.inputSchema));

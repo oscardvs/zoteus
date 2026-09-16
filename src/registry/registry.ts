@@ -20,6 +20,7 @@ import type { RateLimitedFetcher } from '../api/http.js';
 import type { UpdateChecker } from '../lib/update-check.js';
 import { ZoteroApiError } from '../api/errors.js';
 import { closedArgumentSchema } from './strict-args.js';
+import { stripSchemaDialect } from './schema-dialect.js';
 
 export interface ToolContext {
   config: ZoteusConfig;
@@ -543,6 +544,9 @@ export function registerAllTools(
       },
     );
   }
+  // Last, so it covers every tool just registered: what the SDK generates for the wire
+  // declares a JSON Schema dialect that some clients cannot resolve. See ./schema-dialect.ts.
+  stripSchemaDialect(server);
 }
 
 /**
