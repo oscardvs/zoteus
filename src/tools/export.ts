@@ -129,7 +129,7 @@ const exportTool: ToolDefinition = {
       degradedToBuiltIn: z.boolean().optional().describe("True when better-biblatex was asked for and Zotero's built-in biblatex answered."),
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const lib = optionalLibrary(args) ?? ctx.router.defaultLibrary();
     // A collection key this library does not have would otherwise be exported as the whole

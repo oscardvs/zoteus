@@ -114,7 +114,7 @@ const getFulltext: ToolDefinition = {
       provenance,
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const library: LibraryRef | undefined = optionalLibrary(args);
     const resolved = await resolveAttachment(ctx, args.item_key, library);

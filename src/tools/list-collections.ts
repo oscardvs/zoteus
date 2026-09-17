@@ -20,7 +20,7 @@ const listCollections: ToolDefinition = {
         .describe('The collections in the library. Use a key to scope zotero_search_items or zotero_tag_audit.'),
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const library = optionalLibrary(args);
     const r = await ctx.router.listCollections({ top: args.top, library });

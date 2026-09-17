@@ -67,7 +67,7 @@ const scholar: ToolDefinition = {
       })
       .passthrough();
   })(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const limit = args.limit ?? 20;
     // An empty DOI is not a question anyone can answer, and asking it anyway produced a

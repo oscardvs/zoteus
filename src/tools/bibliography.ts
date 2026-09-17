@@ -42,7 +42,7 @@ const bibliography: ToolDefinition = {
       note: z.string().optional().describe('Present when fewer entries rendered than keys were asked for, and why that happens.'),
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const lib = optionalLibrary(args) ?? ctx.router.defaultLibrary();
     const style = args.style ? ctx.styles.resolveId(args.style) : undefined;

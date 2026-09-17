@@ -29,7 +29,7 @@ const listTags: ToolDefinition = {
       totalResults: z.number().optional().describe('Tags matching in total, not just this page.'),
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const lib = optionalLibrary(args) ?? ctx.router.defaultLibrary();
     const r = await ctx.router.listTags({ library: lib, q: args.q, limit: args.limit ?? 100 });

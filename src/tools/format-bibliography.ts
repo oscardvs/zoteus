@@ -29,7 +29,7 @@ const formatBib: ToolDefinition = {
       bibliography: z.string().describe('Those entries joined: the ready-to-use bibliography, in the requested format.'),
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     let cslItems: any[] | undefined = args.items;
     if (!cslItems?.length) {

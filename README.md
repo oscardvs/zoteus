@@ -2,9 +2,9 @@
 
 # Zoteus
 
-**Your whole Zotero library, inside Claude and ChatGPT.**
+**A Zotero MCP server. Your whole library, inside Claude and ChatGPT.**
 
-An MCP server that gives Claude Desktop, claude.ai, ChatGPT, Claude Code, Cursor and any other MCP client access to a [Zotero](https://www.zotero.org) library: search by keyword or by meaning, passages from your PDFs with page numbers, citations in any CSL style, adding items, and safe writes.
+Zoteus gives Claude Desktop, claude.ai, ChatGPT, Claude Code, Cursor and any other MCP client access to a [Zotero](https://www.zotero.org) library: search by keyword or by meaning, passages from your PDFs with page numbers, citations in any CSL style, adding items, and safe writes.
 
 [![npm](https://img.shields.io/npm/v/@oscardvs/zoteus.svg?color=2ea44f)](https://www.npmjs.com/package/@oscardvs/zoteus)
 [![npm downloads](https://img.shields.io/npm/dm/@oscardvs/zoteus.svg)](https://www.npmjs.com/package/@oscardvs/zoteus)
@@ -55,7 +55,7 @@ Zoteus exposes research tools, namespaced `zotero_*`, that search the library by
 - **Ground claims in the PDF.** `zotero_get_fulltext` returns the relevant passage with character offsets, the nearest heading, and a page locator. When Zotero has not indexed the PDF or EPUB, it extracts the text on the fly, from the running desktop app or from Zotero's own storage folder, so a file added a minute ago is readable immediately. It also returns a PDF's table of contents (`outline:true`) and any page range on demand, so working through a 400-page book costs a few small calls rather than one that returns the whole book.
 - **Look at the page.** `zotero_pdf_images` renders any page of a PDF to an image the model can see, so a figure, a table, an equation, or a scanned page with no text layer is no longer out of reach, and extracts the figures embedded in a page to files, like `pdfimages`, each with its position on the page. It draws through the same pdfjs that reads the text, so it needs nothing that is not already installed.
 - **Follow the literature.** `zotero_scholar` looks up a paper's references, citing works, and related works through OpenAlex, with Crossref as a fallback, and can flag which of them are already in your library.
-- **Agent support.** 31 tools with structured outputs, MCP Resources and Prompts, and a generated tool tree for the [code-execution-with-MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern.
+- **Agent support.** 34 tools with structured outputs, MCP Resources and Prompts, and a generated tool tree for the [code-execution-with-MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern.
 
 ## How it works
 
@@ -82,7 +82,7 @@ Zoteus detects a running Zotero desktop app and talks to it directly: the key-fr
 | `ZOTERO_API_KEY` | none | Cloud auth (sync, groups, writes without the desktop app; optional otherwise) |
 | `ZOTEUS_LOCAL` | `auto` | `auto\|on\|off`: use the Zotero desktop app (reads + personal-library writes) |
 | `ZOTEUS_LOCAL_API_KEY` | none | Pre-provision the Zotero 10+ desktop write key (else granted once, in-app) |
-| `ZOTEUS_EMBEDDINGS` | `local` | `local\|openai\|gemini\|off` for semantic search |
+| `ZOTEUS_EMBEDDINGS` | `local` | `local\|ollama\|openai\|gemini\|off` for semantic search |
 | `ZOTEUS_EMBEDDING_MODEL` | provider default | The model that provider embeds with, `local` included: `Xenova/multilingual-e5-small` for a German or otherwise multilingual library, `Xenova/all-MiniLM-L6-v2` by default |
 | `ZOTEUS_EMBEDDING_DTYPE` | `fp32` | Weight precision of the on-device model: `q8` downloads `Xenova/multilingual-e5-small` at 129 MB instead of 465 MB. Above `fp32` it joins the embedder identity, so changing it needs one rebuild |
 | `ZOTEUS_EMBED_BATCH_SIZE` | `32` | Passages per embedding call. Lower it if an API provider rejects a whole request (OpenAI answers `400` above 300K tokens per request) |
@@ -110,7 +110,7 @@ Zoteus writes everything it derives (the search index, the on-device model weigh
 
 ## Privacy
 
-Zoteus runs locally, collects nothing, and has no telemetry. Your library data flows only between your machine and the services you configure (Zotero, and optionally scholarly-graph or embedding providers), directly and under your own keys. Full policy: [`PRIVACY.md`](./PRIVACY.md).
+Zoteus runs on your machine or the server you configure. Usage logging is off by default. Tool results go to your chosen AI client, and enabled features contact Zotero and the scholarly, PDF, or embedding services they require. Full policy: [`PRIVACY.md`](./PRIVACY.md).
 
 ## Contributing
 

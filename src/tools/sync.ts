@@ -63,7 +63,7 @@ const sync: ToolDefinition = {
         .describe('What was asked for and could not be answered, instead of an empty result.'),
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const lib = optionalLibrary(args) ?? ctx.router.defaultLibrary();
     const since = args.since ?? 0;
