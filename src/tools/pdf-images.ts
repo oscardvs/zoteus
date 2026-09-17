@@ -242,7 +242,7 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
       provenance,
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const library: LibraryRef | undefined = optionalLibrary(args);
     const mode: 'pages' | 'figures' = args.mode;

@@ -59,7 +59,7 @@ const whoami: ToolDefinition = {
         .describe('citeproc-js attribution (CPAL Exhibit B): phrase, copyright, licence and URL.'),
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (_args, ctx) => {
     // The diagnostic tool answers from a probe taken now, not from one cached behind a
     // TTL: this is the tool someone calls precisely because they have just started Zotero

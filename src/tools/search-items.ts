@@ -96,7 +96,7 @@ const searchItems: ToolDefinition = {
       provenance,
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const detailed = args.response_format === 'detailed';
     const library = optionalLibrary(args);

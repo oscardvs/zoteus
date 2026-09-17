@@ -65,7 +65,7 @@ const semanticSearch: ToolDefinition = {
       provenance,
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     if (ctx.search.isEmpty) {
       // A build is already on its way (started here or via zotero_index): report progress.

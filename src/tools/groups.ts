@@ -76,7 +76,7 @@ const groups: ToolDefinition = {
       note: z.string().optional().describe('What a desktop-served row does and does not say; present only when one is listed.'),
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (_args, ctx): Promise<ToolHandlerResult> => {
     const me = ctx.router.whoami();
     const held = await locallyHeldGroups(ctx);

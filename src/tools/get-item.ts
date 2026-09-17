@@ -32,7 +32,7 @@ const getItem: ToolDefinition = {
       provenance,
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const library = optionalLibrary(args);
     // Both were accepted and neither was forwarded, so every style rendered the same (#58).

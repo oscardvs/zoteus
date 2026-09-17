@@ -246,7 +246,7 @@ const tagAudit: ToolDefinition = {
       })
       .passthrough();
   })(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     let vocab: Vocabulary;
     if (args.vocabulary && args.vocabulary_path) return err('Provide only one of `vocabulary` or `vocabulary_path`.');

@@ -27,7 +27,7 @@ const searchTools: ToolDefinition = {
       count: z.number().describe('How many matched.'),
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   handler: async (args, ctx) => {
     const catalog = ctx.toolCatalog ?? [];
     const q = (args.query ?? '').toLowerCase().trim();

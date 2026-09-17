@@ -19,7 +19,7 @@ const schemaTool: ToolDefinition = {
       creatorTypes: z.array(z.string()).optional().describe('Valid creator types for it, primary first.'),
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const schema = await ctx.schema.getSchema();
     if (!args.item_type) {

@@ -44,3 +44,28 @@ describe('read-only mode tool set', () => {
     }
   });
 });
+
+/**
+ * OpenAI's plugin review rejects a submission when any tool leaves one of the three
+ * hints undeclared: "Every MCP tool must set readOnlyHint, openWorldHint,
+ * destructiveHint to true or false." Eighteen read-only tools declared only two of
+ * them and the scan failed. Inferring the third from readOnlyHint is not enough,
+ * because the reviewer reads what the tool actually sends.
+ */
+describe('tool annotations', () => {
+  it('declares readOnlyHint, openWorldHint and destructiveHint on every tool', () => {
+    const undeclared = tools.flatMap((t) =>
+      (['readOnlyHint', 'openWorldHint', 'destructiveHint'] as const)
+        .filter((hint) => typeof t.annotations?.[hint] !== 'boolean')
+        .map((hint) => `${t.name} is missing ${hint}`),
+    );
+    expect(undeclared).toEqual([]);
+  });
+
+  it('never marks a read-only tool destructive', () => {
+    const contradictory = tools
+      .filter((t) => t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint === true)
+      .map((t) => t.name);
+    expect(contradictory).toEqual([]);
+  });
+});

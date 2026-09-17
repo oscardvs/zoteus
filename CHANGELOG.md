@@ -4,6 +4,25 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.3] - 2026-09-17
+
+### Fixed
+- **Eighteen tools left `destructiveHint` undeclared, which fails an MCP tool scan that
+  requires all three behaviour hints.** Every read-only tool shipped
+  `{ readOnlyHint: true, openWorldHint: true }` and said nothing about whether it
+  destroys anything, so a client or directory that insists each tool "must set
+  readOnlyHint, openWorldHint, destructiveHint to true or false" rejected the server
+  outright rather than reading the omission as a no. The affected tools were
+  `zotero_whoami`, `zotero_search_items`, `zotero_get_item`, `zotero_schema`,
+  `zotero_groups`, `zotero_export`, `zotero_get_fulltext`, `zotero_pdf_images`,
+  `zotero_sync`, `zotero_styles`, `zotero_format_bibliography`, `zotero_bibliography`,
+  `zotero_semantic_search`, `zotero_scholar`, `search_tools`, `zotero_list_tags`,
+  `zotero_list_collections` and `zotero_tag_audit`. All of them now declare
+  `destructiveHint: false` explicitly. Nothing about their behaviour changes: they were
+  already non-destructive, and the write tools that genuinely are destructive already
+  said so. A test now asserts that every tool declares all three hints, and that no
+  read-only tool is marked destructive, so a new tool cannot reintroduce the gap.
+
 ## [1.20.2] - 2026-09-16
 
 ### Fixed

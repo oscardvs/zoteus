@@ -24,7 +24,7 @@ const styles: ToolDefinition = {
       available: z.boolean().optional().describe('Whether that style could actually be fetched.'),
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     if (args.action === 'list') {
       return ok(
