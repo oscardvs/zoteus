@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import type { LocalGroup } from '../api/local-client.js';
+import type { KeyInfo } from '../api/web-client.js';
 import type { ToolContext, ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
-import { ensureLocalApi, ok } from '../registry/registry.js';
+import { ensureLocalApi, missingWriteAccess, ok } from '../registry/registry.js';
+import { canonicalLibraryToken } from '../features/search/backend.js';
 
 /**
  * What a caller has to know about a row that came from the desktop rather than the cloud.
@@ -14,7 +16,8 @@ const LOCAL_NOTE =
   'absent from the group. Their `numItems` is the desktop\'s own count of every row in the ' +
   'group library, child attachments, notes and trashed items included, so it is not the ' +
   'same figure the cloud reports. Reading such a group needs no cloud key; writing to any ' +
-  'group still does.';
+  'group still does. They carry no `canWrite`: write permission is a property of the cloud ' +
+  'API key, and the desktop reports none.';
 
 /**
  * Group libraries the running desktop app holds, or [] when there is no desktop to ask.
@@ -50,11 +53,102 @@ function localEntry(g: LocalGroup) {
   };
 }
 
+/**
+ * Whether this key may write to a group, decided locally from the key's own access map,
+ * exactly as a write would decide it a moment before sending the request.
+ *
+ * Silent when the key reported no access map at all: `missingWriteAccess` treats that as
+ * evidence it does not have rather than a refusal, and reporting `canWrite: true` there
+ * would turn "unknown" into a promise. A lab discovering from a failed write that it
+ * cannot write to its shared library is the case this exists to remove; inventing the
+ * opposite answer would only move the surprise.
+ */
+function writeVerdict(me: KeyInfo, id: number): { canWrite?: boolean; writeBlockedReason?: string } {
+  const access = me.access;
+  if (!access || typeof access !== 'object' || Object.keys(access).length === 0) return {};
+  const why = missingWriteAccess(me, { type: 'group', id });
+  return why ? { canWrite: false, writeBlockedReason: why } : { canWrite: true };
+}
+
+/**
+ * The library this context's search index holds, as the index itself stamps it, or
+ * undefined when it records none (nothing built yet, or an index older than the stamp).
+ * Read through the public status only: what the store keeps underneath is not this tool's
+ * business.
+ */
+function indexedLibrary(ctx: ToolContext): string | undefined {
+  // An index that cannot report itself must not cost the group list: the ids are what a
+  // caller came for, and `indexed` is a convenience beside them.
+  try {
+    return ctx.search?.buildStatus?.().library;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `{ indexed }` for one group, or nothing at all when no stamp says which library is held. */
+function indexedField(stamp: string | undefined, id: number): { indexed?: boolean } {
+  if (stamp === undefined) return {};
+  return { indexed: stamp === canonicalLibraryToken({ type: 'group', id }) };
+}
+
+/**
+ * How to answer `indexed` for each of these groups, decided once for the whole call.
+ *
+ * From the registry wherever there is one, because the registry is what owns per-library
+ * index files now: `zotero_index action:"build" library_type:"group" library_id:N` gives
+ * that group an index file of its OWN beside the default library's, and
+ * `zotero_semantic_search libraries:["group:N"]` answers from it. Reading the primary
+ * index's stamp instead reported every such group as un-indexed, which is the answer the
+ * lab checklist reads right after building one, and the schema turned that into the claim
+ * that the group is not searchable by meaning.
+ *
+ * `exists()` and not `list()`: it never opens (and so never creates) a store, so asking
+ * about ten groups costs a couple of stat calls each and cannot leave a file behind.
+ * Falls back to the primary index's stamp where there is no registry, which is every
+ * hand-built test context and the single-index deployments.
+ */
+async function indexedVerdict(ctx: ToolContext, ids: number[]): Promise<(id: number) => { indexed?: boolean }> {
+  const registry = ctx.indexes;
+  if (registry) {
+    try {
+      const known = new Set<number>();
+      // A row whose id the API did not give us has no token to ask about, and asking with
+      // one would refuse the whole list into the stamp fallback.
+      for (const id of new Set(ids.filter((n) => Number.isSafeInteger(n) && n > 0))) {
+        if (await registry.exists(canonicalLibraryToken({ type: 'group', id }))) known.add(id);
+      }
+      return (id) => ({ indexed: known.has(id) });
+    } catch {
+      // An index store that cannot be read must not cost the group list: the ids are what
+      // a caller came for. Fall back to the stamp, exactly as the no-registry case does.
+    }
+  }
+  const stamp = indexedLibrary(ctx);
+  return (id) => indexedField(stamp, id);
+}
+
+/** "N of M writable", said only where the key actually answered the question. */
+function writableSentence(rows: Array<{ canWrite?: boolean }>): string {
+  const known = rows.filter((r) => r.canWrite !== undefined);
+  if (!known.length) return '';
+  const writable = known.filter((r) => r.canWrite).length;
+  if (writable === known.length) return ` This API key can write to all ${writable} of them.`;
+  return ` This API key can write to ${writable} of ${known.length} of them; each row it cannot write says why in \`writeBlockedReason\`.`;
+}
+
+/** The read-only deployment caveat, which outranks anything the key is allowed to do. */
+function readOnlySentence(ctx: ToolContext): string {
+  return ctx.config?.readOnly
+    ? ' This server runs in read-only mode (ZOTEUS_READ_ONLY), so no tool here writes to any library, whatever `canWrite` says about the key.'
+    : '';
+}
+
 const groups: ToolDefinition = {
   name: 'zotero_groups',
   title: 'List Zotero groups',
   description:
-    'List the group libraries this server can reach, with each group\'s id and name. Use a returned group id with the `library_id`/`library_type:"group"` parameters of other tools to operate on that group library; `library_type` alone does not address a group. With a cloud API key each group the key can access is listed with its type, item count, description and edit permissions. Without a key the list falls back to the group libraries a running Zotero 10+ desktop app holds, which are exactly the groups still readable, key-free, from that app: those rows carry id, name, description and the desktop\'s own item count, and no type or edit permissions, because the desktop does not store them. Where both are available every row says which it came from, in `source`: "cloud", "local", or "both" for a group the key can see and the desktop also holds. Writing to a group always goes through the cloud, even when the Zotero desktop app holds that group, and needs a key with write access to it; `libraryEditing` says whether the group itself lets ordinary members edit its library.',
+    'List the group libraries this server can reach, with each group\'s id and name. Use a returned group id with the `library_id`/`library_type:"group"` parameters of other tools to operate on that group library; `library_type` alone does not address a group. With a cloud API key each group the key can access is listed with its type, item count, description and edit permissions, plus `canWrite`: whether this key may write to that group, decided from the key\'s own access map without sending a write, and `writeBlockedReason` naming the remedy when it may not. Without a key the list falls back to the group libraries a running Zotero 10+ desktop app holds, which are exactly the groups still readable, key-free, from that app: those rows carry id, name, description and the desktop\'s own item count, and no type, edit permissions or `canWrite`, because the desktop does not store them. Where both are available every row says which it came from, in `source`: "cloud", "local", or "both" for a group the key can see and the desktop also holds. Rows also carry `indexed`: whether this data directory holds a search index for that group, which is what makes it searchable by meaning. Each library gets its own index file, so several rows can be true, and a false row becomes true after zotero_index action:"build" library_type:"group" library_id:<id>. Writing to a group always goes through the cloud, even when the Zotero desktop app holds that group, and needs a key with write access to it; `libraryEditing` says whether the group itself lets ordinary members edit its library.',
   inputSchema: {},
   outputSchema: z
     .object({
@@ -69,6 +163,22 @@ const groups: ToolDefinition = {
               description: z.string().optional().describe('Group description.'),
               libraryEditing: z.string().optional().describe('Who may edit the group library, e.g. "members" or "admins"; absent on a desktop-only row.'),
               source: z.string().optional().describe('Where the row came from: "cloud", "local", or "both".'),
+              canWrite: z
+                .boolean()
+                .optional()
+                .describe(
+                  'Whether the configured cloud API key is allowed to write to this group, from the key\'s own access map. Absent on a desktop-only row, and absent when the key reported no access map at all, which means unknown rather than no. A group can separately be configured so only admins may edit its library (see `libraryEditing`), which no key setting overrides, so true is the key\'s permission and not a guarantee the group accepts the write.',
+                ),
+              writeBlockedReason: z
+                .string()
+                .optional()
+                .describe('Why this key cannot write to this group, and what to change; present only when canWrite is false.'),
+              indexed: z
+                .boolean()
+                .optional()
+                .describe(
+                  'Whether this data directory holds a search index for this group library, which is what zotero_semantic_search needs to search it by meaning. Each library gets its own index file, so several rows can be true. A false row is still searchable by keyword through the Zotero API, and becomes searchable by meaning after zotero_index action:"build" library_type:"group" library_id:<id> (action:"libraries" lists the ones that exist). Absent only where the answer is unknown: no per-library index registry and an index that records no library.',
+                ),
             })
             .passthrough(),
         )
@@ -102,23 +212,44 @@ const groups: ToolDefinition = {
           isError: true,
         };
       }
+      const localVerdict = await indexedVerdict(ctx, held.map((g) => g.id));
       return ok(
-        { groups: held.map(localEntry), note: LOCAL_NOTE },
+        { groups: held.map((g) => ({ ...localEntry(g), ...localVerdict(g.id) })), note: LOCAL_NOTE },
         `${held.length} group(s) held by the Zotero desktop app, which serves them with no cloud key. Reading them works; writing to a group still needs a key with write access to it.`,
       );
     }
 
     const r = await ctx.web.listGroups(me.userID);
-    const groupList = r.data.map((g: any) => ({
-      id: g.id ?? g.data?.id,
-      name: g.data?.name,
-      type: g.data?.type,
-      numItems: g.meta?.numItems,
-      description: g.data?.description,
-      libraryEditing: g.data?.libraryEditing,
-    }));
+    // Asked once for every group this answer will carry, cloud-served and desktop-held
+    // alike, so one pass over the registry serves the whole list.
+    const verdict = await indexedVerdict(ctx, [
+      ...r.data.map((g: any) => Number(g.id ?? g.data?.id)),
+      ...held.map((g) => g.id),
+    ]);
+    // The write verdict is taken here, from the key's own access map, because that is where
+    // a write would take it (registry.requireCloud) a moment before sending the request.
+    // Answering it now is the difference between a lab reading "cannot write, and here is
+    // why" and a lab discovering the same thing from a failed write.
+    const groupList = r.data.map((g: any) => {
+      const id = g.id ?? g.data?.id;
+      return {
+        id,
+        name: g.data?.name,
+        type: g.data?.type,
+        numItems: g.meta?.numItems,
+        description: g.data?.description,
+        libraryEditing: g.data?.libraryEditing,
+        ...writeVerdict(me, Number(id)),
+        ...verdict(Number(id)),
+      };
+    });
     // Nothing local to fold in: the answer is the cloud's, unchanged down to its wording.
-    if (!held.length) return ok({ groups: groupList }, `${groupList.length} accessible group(s).`);
+    if (!held.length) {
+      return ok(
+        { groups: groupList },
+        `${groupList.length} accessible group(s).${writableSentence(groupList)}${readOnlySentence(ctx)}`,
+      );
+    }
 
     // Both sources. One row per group, keyed by id, with the cloud's fields preferred
     // wherever a group appears in both: they are a superset of the desktop's, and a
@@ -128,14 +259,16 @@ const groups: ToolDefinition = {
     const localOnly = held.filter((g) => !cloudIds.has(g.id));
     const merged = [
       ...groupList.map((g: any) => ({ ...g, source: heldIds.has(Number(g.id)) ? 'both' : 'cloud' })),
-      ...localOnly.map(localEntry),
+      ...localOnly.map((g) => ({ ...localEntry(g), ...verdict(g.id) })),
     ];
     return ok(
       { groups: merged, ...(localOnly.length ? { note: LOCAL_NOTE } : {}) },
       `${merged.length} group(s): ${groupList.length} the API key can access` +
         (localOnly.length
           ? `, ${localOnly.length} held only by the Zotero desktop app.`
-          : `, ${heldIds.size} of them also held by the Zotero desktop app.`),
+          : `, ${heldIds.size} of them also held by the Zotero desktop app.`) +
+        writableSentence(groupList) +
+        readOnlySentence(ctx),
     );
   },
 };
