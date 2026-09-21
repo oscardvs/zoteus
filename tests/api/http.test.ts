@@ -106,7 +106,9 @@ describe('RateLimitedFetcher', () => {
   // A single slow upstream response (no 429/Backoff ever seen) must NOT be blamed on
   // rate-limiting — that misattribution misled a caller into "retry sequentially / avoid
   // parallel batches", which is meaningless for one expensive request (e.g. full-text
-  // qmode=everything). The message should point at the expensive query instead.
+  // qmode=everything). The message should point at the expensive query instead. The URL is
+  // a Zotero one because that is what the sentence under test is about: a request to a third
+  // party gets the third party's name instead, which the tests below cover.
   it('blames a slow single response on the query, not rate-limiting', async () => {
     const fetchImpl = vi.fn(
       (_url: string, init?: RequestInit) =>
@@ -120,7 +122,7 @@ describe('RateLimitedFetcher', () => {
     );
     const f = new RateLimitedFetcher({ fetchImpl });
     const err = await f
-      .fetch('https://example.test/x', undefined, { deadlineMs: 60 })
+      .fetch('https://api.zotero.org/users/1/items', undefined, { deadlineMs: 60 })
       .then(() => null)
       .catch((e) => e as Error);
     expect(err).toBeTruthy();
@@ -128,13 +130,59 @@ describe('RateLimitedFetcher', () => {
     expect(err!.message).not.toMatch(/rate-limit|parallel batches/i);
   }, 2000);
 
+  /*
+   * `Backoff` is a Zotero header, but this fetcher is shared: the open-access download and
+   * the `url` argument of zotero_attach_file both send requests through it to hosts nobody
+   * here vouches for, chosen by a provider's answer and by whatever Location that host
+   * returns. While the back-off state was one process-wide number, a repository answering
+   * `Backoff: 3600` stalled every subsequent Zotero request for an hour, and the error told
+   * the user Zotero had rate-limited them and to stop batching. Both halves were false.
+   */
+  it('keeps one host\'s Backoff away from every other host', async () => {
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.includes('repo.example')
+        ? jsonResponse(200, 'pdf bytes', { backoff: '3600' })
+        : jsonResponse(200, { ok: true }),
+    );
+    const f = new RateLimitedFetcher({ fetchImpl, maxConcurrency: 4 });
+    await f.fetch('https://repo.example/paper.pdf');
+    const res = await f.fetch('https://api.zotero.org/users/1/items', undefined, { deadlineMs: 200 });
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('still waits out a Backoff for the origin that asked for one', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { ok: true }, { backoff: '3600' }));
+    const f = new RateLimitedFetcher({ fetchImpl, maxConcurrency: 4 });
+    await f.fetch('https://api.zotero.org/users/1/items');
+    await expect(
+      f.fetch('https://api.zotero.org/users/1/collections', undefined, { deadlineMs: 200 }),
+    ).rejects.toThrow(/rate-limited/i);
+    // The second request never left: the back-off is honoured, not merely reported.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('names the host that stalled instead of blaming Zotero for a third party', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, 'pdf bytes', { backoff: '3600' }));
+    const f = new RateLimitedFetcher({ fetchImpl, maxConcurrency: 4 });
+    await f.fetch('https://repo.example/paper.pdf');
+    const err = await f
+      .fetch('https://repo.example/other.pdf', undefined, { deadlineMs: 200 })
+      .then(() => null)
+      .catch((e) => e as Error);
+    expect(err).toBeTruthy();
+    expect(err!.message).toContain('https://repo.example');
+    expect(err!.message).toMatch(/not Zotero/);
+    expect(err!.message).not.toMatch(/Zotero rate-limited|parallel batches/);
+  });
+
   // When Zotero actually rate-limits (429/503/Backoff) and back-off would exceed the
   // budget, the error SHOULD say so and give the sequential-retry guidance.
   it('attributes a 429-driven budget overrun to rate-limiting', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(429, 'slow', {}));
     const f = new RateLimitedFetcher({ fetchImpl, maxConcurrency: 4 });
     const err = await f
-      .fetch('https://example.test/x', undefined, { deadlineMs: 100, maxRetries: 1 })
+      .fetch('https://api.zotero.org/users/1/items', undefined, { deadlineMs: 100, maxRetries: 1 })
       .then(() => null)
       .catch((e) => e as Error);
     expect(err).toBeTruthy();
