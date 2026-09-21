@@ -105,5 +105,9 @@ survives a sync and is visible to the desktop client.
 - It does not update the search index. A merged-away item stays in `zotero_semantic_search`
   results until the next `zotero_index action:"update"`.
 - Tags and collections are read, unioned and written back whole, because PATCH replaces an
-  array rather than merging it. A tag added by the desktop app between the read and the
-  write is lost.
+  array rather than merging it. That is safe against anything that has reached the server:
+  a tag added and synced between the read and the write bumps the master's version, the
+  PATCH is refused (412), and the plan is rebuilt against the record as it then is, tag
+  included (`replanned:true`). What it cannot see is an edit the desktop app has made but
+  not yet synced: the cloud copy is written without it, and the next sync has to reconcile
+  the two. Run `zotero_sync` before merging on a machine where Zotero is open.
