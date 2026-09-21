@@ -3,7 +3,7 @@ import { loadConfig } from './config.js';
 import {
   buildContext,
   buildServer,
-  createServer,
+  createServerFrom,
   createDeferredServer,
   toolSelectionNotice,
   ContextCache,
@@ -18,6 +18,8 @@ import { createMetrics } from './lib/metrics.js';
 import { makeReadiness, storeCheck, zoteroPingCheck } from './lib/health.js';
 import { installShutdownHandlers } from './lib/lifecycle.js';
 import { openUsage } from './lib/usage/index.js';
+import { cliCommand, runCli } from './cli/index.js';
+import { processIo } from './cli/io.js';
 import type { ToolContext } from './registry/registry.js';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
@@ -35,6 +37,20 @@ const VERSION: string = createRequire(import.meta.url)('../package.json').versio
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 async function main(): Promise<void> {
+  // FIRST, before anything else in this function. Everything below starts a server: it
+  // loads config, opens usage.sqlite in the data directory and reads the transport flags,
+  // and a command that ran after any of that would have taken a write handle on a file a
+  // running server may be using and could still have been turned into an HTTP server by a
+  // stray `--http`. `cliCommand` claims exactly three first arguments (`--version`,
+  // `--help`, `index`) and returns undefined for everything else, including an
+  // unrecognised flag, so every existing install keeps the behaviour it has today. See
+  // src/cli/index.ts for why the rule is an allowlist.
+  const argv = process.argv.slice(2);
+  if (cliCommand(argv) !== undefined) {
+    process.exitCode = await runCli(argv, processIo, { version: VERSION });
+    return;
+  }
+
   const config = loadConfig(process.env);
   const logger = createLogger(config.logLevel, config.logFormat, { file: config.logFile });
   // Held by loadConfig rather than printed there: it runs before this logger exists, and a
@@ -98,7 +114,8 @@ async function main(): Promise<void> {
       | { drainSessions: (ms: number) => Promise<void>; activeSessions: () => number }
       | undefined;
     const httpServer: Server = await startHttp(
-      async (authInfo) => createServer(await cache.resolve(authInfo)),
+      // Resolved per call, not per session: see ContextCache in src/server.ts.
+      async (authInfo) => createServerFrom(config, () => cache.resolve(authInfo)),
       {
         port,
         host,
