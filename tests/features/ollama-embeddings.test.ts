@@ -428,6 +428,35 @@ describe('a model that is not pulled', () => {
     expect(message).not.toContain('ollama pull');
   });
 
+  it("carries the daemon's own explanation for a fatal status that is not a 404", async () => {
+    // ZOTEUS_EMBEDDING_MODEL=llama3: pulled, so the probe passes, but a generation model
+    // answers /api/embed with a 400 whose body says so. Only the 404 body used to be read;
+    // this one was thrown away behind "Ollama embeddings failed (400)."
+    const calls = ollamaDaemon({
+      models: ['llama3:latest'],
+      embed: () => jsonResponse({ error: '"llama3" does not support embeddings.' }, 400),
+    });
+
+    const message = await new OllamaEmbeddingProvider({ model: 'llama3', logger: silentLogger })
+      .embed(['a'])
+      .catch((e: Error) => e.message);
+
+    // The label sentence is kept, so anything matching on it still does; the reason follows.
+    expect(message).toMatch(/^Ollama embeddings failed \(400\): "llama3" does not support embeddings\. /);
+    expect(message).toContain('ZOTEUS_EMBEDDING_MODEL is "llama3"');
+    expect(message).toContain('keyword (BM25) search still works');
+    // Fatal: one request, no retry ladder climbed to learn what was certain at once.
+    expect(embeds(calls)).toHaveLength(1);
+  });
+
+  it('keeps the generic sentence for a fatal status whose body says nothing', async () => {
+    ollamaDaemon({ embed: () => new Response('', { status: 400 }) });
+    const message = await new OllamaEmbeddingProvider({ logger: silentLogger })
+      .embed(['a'])
+      .catch((e: Error) => e.message);
+    expect(message).toBe('Ollama embeddings failed (400).');
+  });
+
   it('stays quiet when the tags answer is not a model list it can read', async () => {
     // A 500, a different service on the port, or a daemon without the route: none of these
     // is evidence the model is missing, and claiming it would send the user the wrong way.

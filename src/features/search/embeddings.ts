@@ -1397,20 +1397,34 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
    * nothing on the path that works.
    */
   private async explainStatus(res: Response): Promise<string | undefined> {
-    if (res.status !== 404) return undefined;
-    const detail = await ollamaErrorText(res);
-    // Ollama's own answer for an unpulled model names it ("model \"x\" not found, try
-    // pulling it first"); a 404 that says nothing about a model is far likelier to be a
-    // route that does not exist, and telling that user to pull a model would send them the
-    // wrong way entirely.
-    if (detail && !/model/i.test(detail)) {
-      return (
-        `Ollama at ${this.base} has no POST /api/embed endpoint (404: ${detail}). Check that ` +
-        `ZOTEUS_OLLAMA_URL points at an Ollama daemon new enough to serve that route, and not at ` +
-        `another service on that port. Semantic ranking is off; keyword (BM25) search still works.`
-      );
+    if (res.status === 404) {
+      const detail = await ollamaErrorText(res);
+      // Ollama's own answer for an unpulled model names it ("model \"x\" not found, try
+      // pulling it first"); a 404 that says nothing about a model is far likelier to be a
+      // route that does not exist, and telling that user to pull a model would send them
+      // the wrong way entirely.
+      if (detail && !/model/i.test(detail)) {
+        return (
+          `Ollama at ${this.base} has no POST /api/embed endpoint (404: ${detail}). Check that ` +
+          `ZOTEUS_OLLAMA_URL points at an Ollama daemon new enough to serve that route, and not at ` +
+          `another service on that port. Semantic ranking is off; keyword (BM25) search still works.`
+        );
+      }
+      return this.notPulledHint([], detail);
     }
-    return this.notPulledHint([], detail);
+    // A retryable status that ran out of attempts keeps the generic sentence, whose attempt
+    // count and 429 advice are the useful part. Any other status is Ollama refusing the
+    // request outright, and its body says why: ZOTEUS_EMBEDDING_MODEL=llama3 gets a 400
+    // whose body explains that the model does not embed, and "Ollama embeddings failed
+    // (400)." used to discard exactly that sentence.
+    if (retryableEmbedStatus(res.status)) return undefined;
+    const detail = await ollamaErrorText(res);
+    if (!detail) return undefined;
+    return (
+      `Ollama embeddings failed (${res.status}): ${detail.replace(/\.+$/, '')}. ` +
+      `ZOTEUS_EMBEDDING_MODEL is "${this.model}" and ZOTEUS_OLLAMA_URL is "${this.base}". ` +
+      `Semantic ranking is off; keyword (BM25) search still works.`
+    );
   }
 
   /** Cause first, then the one command that fixes it: the label a user sees is sentence one. */
