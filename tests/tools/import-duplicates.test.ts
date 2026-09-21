@@ -61,6 +61,8 @@ describe('zotero_import duplicate check', () => {
     expect(sc.duplicateScan).toMatchObject({ scanned: 1, complete: true });
     // Many clients read only the text blocks, so the report has to survive the JSON mirror.
     expect(JSON.parse(res.content[1].text).duplicates[0].item_key).toBe('LIB1');
+    // And the prose block, which is all a text-only client ever shows.
+    expect(res.content[0].text).toMatch(/1 library item\(s\) already match \(LIB1\); see duplicates\./);
   });
 
   it('matches on the normalised title when no DOI matches', async () => {
@@ -101,6 +103,11 @@ describe('zotero_import duplicate check', () => {
     expect(ctx.web.writeItems).toHaveBeenCalled();
     expect(res.structuredContent.created).toEqual(['NEW1']);
     expect(res.structuredContent.duplicates[0].item_key).toBe('LIB1');
+    // "Imported 1 of 1" alone would read as a clean result to a client that shows only the
+    // prose, so the match and the flag that let the save through ride the summary too.
+    const summary = res.content[0].text;
+    expect(summary).toMatch(/Imported 1 of 1/);
+    expect(summary).toMatch(/1 library item\(s\) already match \(LIB1\); saved anyway because allow_duplicate is set\./);
   });
 
   it('refuses the save when the check itself could not run', async () => {

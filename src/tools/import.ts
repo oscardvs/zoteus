@@ -451,20 +451,53 @@ async function duplicatePreflight(ctx: ToolContext, args: any, payload: any[]): 
  * `ok()` and `writeResult()` both return exactly two blocks, the summary and the JSON mirror
  * of the same object, and many clients read only the text, so the mirror has to be rebuilt
  * rather than left behind.
+ *
+ * Those same clients are why anything that qualifies the count has to ride the SUMMARY and
+ * not only the mirror. "Imported 1 of 1 item(s)" on its own reads as a clean result, and it
+ * is not clean when a library item already matched and the save went ahead on
+ * `allow_duplicate`, when the parser reported a brace that swallowed the entries after it,
+ * when the schema refused some, or when the duplicate check covered half the library. Each
+ * of those gets one sentence here; the detail stays in the fields the sentence names.
+ * `counts.warnings` is the number before {@link capWarnings} shortened the list.
  */
-function withExtraFields(res: ToolHandlerResult, report: Record<string, unknown>): ToolHandlerResult {
+function withExtraFields(
+  res: ToolHandlerResult,
+  report: Record<string, unknown>,
+  counts: { warnings?: number } = {},
+): ToolHandlerResult {
   if (!Object.keys(report).length || !res.structuredContent || res.content.length !== 2) return res;
   const structured = { ...res.structuredContent, ...report };
-  // A duplicate check that stopped at its cap still lets the save through, so its caveat has
-  // to ride the SUMMARY and not only the mirror: "Imported 1 of 1 item(s)" on its own reads
-  // as a clean result, and a "no match" from a crawl that covered half the library is the
-  // one answer this check must never present as clean.
-  const scanNote = (report.duplicateScan as { note?: unknown } | undefined)?.note;
   const first = res.content[0]!;
-  const summary =
-    typeof scanNote === 'string' && scanNote && !first.text.includes(scanNote)
-      ? { type: 'text' as const, text: `${first.text} ${scanNote}` }
-      : first;
+  const notes: string[] = [];
+
+  const duplicates = Array.isArray(report.duplicates) ? (report.duplicates as DuplicateMatch[]) : [];
+  if (duplicates.length) {
+    const keys = [...new Set(duplicates.map((d) => d.item_key))];
+    const listed = keys.slice(0, 10).join(', ') + (keys.length > 10 ? `, and ${keys.length - 10} more` : '');
+    notes.push(
+      `${keys.length} library item(s) already match (${listed})` +
+        (structured.saved === false ? '; see duplicates.' : '; saved anyway because allow_duplicate is set.'),
+    );
+  }
+
+  const warnings = counts.warnings ?? (Array.isArray(report.warnings) ? report.warnings.length : 0);
+  const skipped = Array.isArray(report.skipped) ? report.skipped.length : 0;
+  if (warnings || skipped) {
+    const what = [
+      warnings ? `${warnings} warning(s)` : '',
+      skipped ? `${skipped} ${skipped === 1 ? 'entry' : 'entries'} skipped` : '',
+    ]
+      .filter(Boolean)
+      .join(' and ');
+    const where = [warnings ? 'warnings' : '', skipped ? 'skipped' : ''].filter(Boolean).join(' and ');
+    notes.push(`${what}; see ${where}.`);
+  }
+
+  const scanNote = (report.duplicateScan as { note?: unknown } | undefined)?.note;
+  if (typeof scanNote === 'string' && scanNote) notes.push(scanNote);
+
+  const missing = notes.filter((note) => !first.text.includes(note));
+  const summary = missing.length ? { type: 'text' as const, text: `${first.text} ${missing.join(' ')}` } : first;
   return {
     ...res,
     content: [summary, { type: 'text', text: JSON.stringify(structured, null, 2) }],
@@ -1028,20 +1061,24 @@ async function finishFileImport(
     if (refusal) return refusal;
   }
   const saved = await maybeSave(ctx, args, items, meta.source);
-  return withExtraFields(saved, {
-    format: meta.format,
-    parsed: meta.parsed,
-    ...(meta.mapping ? { mapping: meta.mapping } : {}),
-    ...(meta.warnings.length ? { warnings: capWarnings(meta.warnings) } : {}),
-    ...(meta.skipped.length ? { skipped: meta.skipped } : {}),
-    provenance: LIBRARY_CONTENT_PROVENANCE,
-  });
+  return withExtraFields(
+    saved,
+    {
+      format: meta.format,
+      parsed: meta.parsed,
+      ...(meta.mapping ? { mapping: meta.mapping } : {}),
+      ...(meta.warnings.length ? { warnings: capWarnings(meta.warnings) } : {}),
+      ...(meta.skipped.length ? { skipped: meta.skipped } : {}),
+      provenance: LIBRARY_CONTENT_PROVENANCE,
+    },
+    { warnings: meta.warnings.length },
+  );
 }
 
 async function importFromFile(ctx: ToolContext, args: any): Promise<ToolHandlerResult> {
   const payload = await readBibliographyPayload(ctx, args);
   if ('error' in payload) return err(payload.error);
-  const { text } = payload;
+  const { text, warnings: readWarnings } = payload;
 
   const viaServer = await importViaTranslationServer(ctx, text);
   if (viaServer) {

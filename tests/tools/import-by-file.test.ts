@@ -258,6 +258,33 @@ describe('zotero_import action:"by_file" schema handling', () => {
       { entry: 'odd2026', reason: expect.stringMatching(/Unknown itemType "document"/) },
     ]);
     expect(ctx.web.writeItems.mock.calls[0][1]).toHaveLength(3);
+    // The skip reaches the prose too, or a text-only client sees "Imported 3 of 3" and
+    // never learns a fourth entry existed.
+    expect(res.content[0].text).toMatch(/Imported 3 of 3/);
+    expect(res.content[0].text).toMatch(/\d+ warning\(s\) and 1 entry skipped; see warnings and skipped\./);
+  });
+});
+
+describe('zotero_import action:"by_file" summary', () => {
+  it('tells a text-only client about the entries a runaway brace swallowed, not only the confident count', async () => {
+    const ctx = makeCtx();
+    // Everything on one line, so the parser cannot resynchronise: b and c are gone, and the
+    // only trace of them is a warning that used to live in the JSON mirror alone.
+    const text = '@article{a, title = {Unclosed {brace, @article{b, title={B}} @article{c, title={C}}';
+    const res = await call({ text, save_to_library: true }, ctx);
+
+    expect(res.isError).toBeFalsy();
+    expect(ctx.web.writeItems.mock.calls[0][1]).toHaveLength(1);
+    expect(res.structuredContent.warnings.join(' ')).toMatch(/2 further entries were inside what could not be read and were skipped/);
+    const summary = res.content[0].text;
+    expect(summary).toMatch(/Imported 1 of 1/);
+    expect(summary).toMatch(/\d+ warning\(s\); see warnings\./);
+  });
+
+  it('keeps a clean summary clean', async () => {
+    const res = await call({ text: CSLJSON_FIXTURE, save_to_library: true }, makeCtx());
+    expect(res.content[0].text).toMatch(/Imported 2 of 2/);
+    expect(res.content[0].text).not.toMatch(/warning\(s\)|skipped|already match/);
   });
 });
 
