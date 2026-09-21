@@ -30,6 +30,9 @@ import searchTools from './search-tools.js';
 import listTags from './list-tags.js';
 import listCollections from './list-collections.js';
 import tagAudit from './tag-audit.js';
+import mergeItems from './merge-items.js';
+import evidenceTable from './evidence-table.js';
+import wordDocument from './word-document.js';
 
 export const tools: AnyToolDefinition[] = [
   // Read
@@ -71,4 +74,8 @@ export const tools: AnyToolDefinition[] = [
   listTags,
   listCollections,
   tagAudit,
+  // Library hygiene, evidence workflow and document output (M13)
+  mergeItems,
+  evidenceTable,
+  wordDocument,
 ];

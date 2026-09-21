@@ -29,3 +29,6 @@ export { searchTools } from './searchTools.js';
 export { listTags } from './listTags.js';
 export { listCollections } from './listCollections.js';
 export { tagAudit } from './tagAudit.js';
+export { mergeItems } from './mergeItems.js';
+export { evidenceTable } from './evidenceTable.js';
+export { wordDocument } from './wordDocument.js';

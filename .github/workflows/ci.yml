@@ -27,5 +27,8 @@ jobs:
       - run: npm run typecheck:tests
       - run: npm run lint
       - run: npm run build
+      # The Codex bindings under codex/ are generated from the tool definitions. A tool edit
+      # that forgets `npm run gen:codex` ships stale wrappers; this makes it a red run instead.
+      - run: npm run gen:codex && git diff --exit-code -- codex/
       # Unit + integration tests. The live e2e suite self-skips without ZOTERO_API_KEY.
       - run: npm test

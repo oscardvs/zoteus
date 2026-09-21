@@ -4,6 +4,113 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Several library indexes in one data directory, and search across them.** A data directory
+  now holds one search index file per library instead of one in total: the personal library
+  keeps its existing file and every other library gets a sibling beside it, so indexing a
+  group no longer means a second `ZOTEUS_DATA_DIR` and no longer risks the first library's
+  rows. `zotero_index` gained an action that lists the libraries that have an index here, and
+  its build, update and status actions route to the named library's own file.
+  `zotero_semantic_search` gained a `libraries` argument that searches several at once and
+  labels every hit with the library it came from. Merging is by RANK, not by score: each index
+  scores against its own library's statistics, so scores from two libraries are not one scale,
+  and the answer says so rather than implying a comparability it does not have. Open indexes
+  are bounded by `ZOTEUS_INDEX_MAX_OPEN` (default 4), which bounds memory and file handles,
+  not how many libraries may be indexed.
+- **Open-access PDF discovery and attachment.** `zotero_scholar action:"lookup"` reports an
+  open-access copy when OpenAlex knows one, and `zotero_attach_file` can find and attach it
+  from the item's DOI. The version is recorded and surfaced, because a green open-access
+  author manuscript is not the published record and attaching one as though it were is the
+  failure this was designed against. Bytes are validated before anything is written, so an
+  HTML paywall page cannot be stored as a PDF. `ZOTEUS_OA_FETCH=false` keeps discovery
+  reporting the link it found while refusing to download from an arbitrary host.
+- **Duplicate-aware import and a previewable merge.** `zotero_import` can check the library
+  for an existing copy before saving, matching on normalised DOI, ISBN and title, and says how
+  far it looked when the census stopped at its cap rather than reporting a clean result it did
+  not earn. The new `zotero_merge_items` folds duplicates into a master item: it PREVIEWS BY
+  DEFAULT, fills only fields the master is missing, unions tags, collections and relations,
+  reparents child notes and attachments, and trashes the emptied duplicates (recoverable).
+  The preview reads the same records the write will act on, so the plan that is approved is
+  the plan that runs.
+- **An evidence-table workflow.** A `zotero-evidence-table` prompt walks retrieval (resolve
+  studies, retrieve one passage each, classify coverage from what the tool actually returned)
+  and `zotero_evidence_table` renders the gathered rows as Markdown or CSV deterministically,
+  so a quotation cannot drift from the passage it cites. Coverage counts are computed rather
+  than claimed, and a row that contradicts its own evidence is named in a warning.
+- **Word documents with live Zotero citation fields.** `zotero_word_document` writes a .docx
+  whose citations are Word field codes carrying CSL data, not plain text. See the note under
+  Known limitations: that the fields REFRESH in Word has not been verified by anyone here.
+- **Direct bibliographic import and PDF metadata recovery.** `zotero_import` accepts BibTeX,
+  RIS and CSL-JSON as text or a local file, parsed in-repo so it works offline and on the
+  hosted deployment rather than requiring a translation-server, and can recover an identifier
+  from a local PDF's first pages and resolve it. Nothing is saved unless asked, so an import
+  is a free preview of what would be created. `ZOTEUS_IMPORT_MAX_ENTRIES` (default 200) caps
+  one file.
+- **OCR for scanned PDFs.** `zotero_get_fulltext` detects a PDF with no text layer and says so
+  precisely instead of calling it "scanned or corrupt", and with `ocr:true` reads it through an
+  OCR engine, preserving page locators. The engine is an optional runtime dependency this
+  package does not ship, resolved the way the embedding runtime is: `ZOTEUS_OCR`,
+  `ZOTEUS_OCR_PATH`, `ZOTEUS_OCR_MAX_PAGES` and `ZOTEUS_OCR_LANGS`.
+- **An Ollama embedding provider.** `ZOTEUS_EMBEDDINGS=ollama` embeds through a local Ollama
+  daemon (`ZOTEUS_OLLAMA_URL`), so semantic search needs neither an API key nor a
+  `@huggingface/transformers` install and the text stays on the machine. The default model is
+  `all-minilm`; `nomic-embed-text` expects task prefixes Zoteus does not send and retrieves
+  worse without them, so selecting it is warned about rather than left to fail silently.
+- **Retraction and correction notices.** `zotero_scholar` reports update notices for a DOI from
+  Crossref (which carries the Retraction Watch data) and OpenAlex. It reports RECORDS, never a
+  verdict: there is no "not retracted" answer, a source that did not respond is reported as a
+  coverage gap rather than folded into "nothing found", and a disagreement between the two is
+  surfaced.
+- **Lab visibility.** `zotero_whoami` says whether the caller is on their own tenant context or
+  sharing the operator's, and which library is the default and why. `zotero_groups` says, per
+  group, whether this key can actually write to it and why not when it cannot, and whether that
+  group has a search index.
+- **A command line.** `zoteus --version` and `zoteus --help` print and exit instead of starting
+  a server, and `zoteus index build|status` runs a headless index build, which the docs have
+  long recommended and which had no command. A bare invocation, the HTTP flags and an
+  unrecognised flag all behave exactly as before.
+
+### Fixed
+- **A group-default install could lose its index.** With `ZOTERO_LIBRARY_TYPE=group`, a build
+  crawled the group but stamped the index as the personal library. Naming that same group
+  afterwards was then falsely refused, and an explicit `library_type:"user"` build passed the
+  guard and ERASED the group's rows. The stamp now names the library actually crawled.
+- A per-user context evicted from the cache closed its search index even when a build was
+  running in it, which on a non-default library aborted the build and discarded the checkpoint
+  that lets the next one resume. Eviction now skips a context with any index building, and the
+  shutdown flush cancels running builds and lets them commit before closing.
+- `zotero_attachment` confined a caller-supplied path to the whole data directory, which on a
+  multi-tenant deployment is shared: a caller naming another tenant's path had those bytes
+  copied into their own library. Paths are now confined to the caller's own subtree, as
+  documents already are.
+- A `Backoff` header from any host stalled every subsequent request in the process and reported
+  it as Zotero throttling. Back-off is now tracked per origin, so a repository can only slow
+  down traffic to itself.
+- A bibliographic file over about a megabyte froze the server for tens of minutes in a
+  quadratic format-sniffing regex.
+- One unbalanced brace in a BibTeX file silently discarded every entry after it while still
+  reporting a confident count. Unparseable input is now reported rather than dropped.
+- A DOI containing a fragment character truncated the Crossref batch request and voided the
+  retraction check for the rest of that batch, which then reported clean.
+- An open-access download had no bound on the response body, so a slow host could hang the
+  call indefinitely.
+- `zotero_word_document` wrote into a shared directory readable by other tenants, and the
+  evidence-table CSV did not neutralise spreadsheet formula injection in quotations taken from
+  PDFs.
+
+### Known limitations
+- Nothing here has verified that Microsoft Word with the Zotero plugin actually REFRESHES the
+  citation fields `zotero_word_document` writes. The file is a valid .docx and the field codes
+  are structurally correct and tested as such, but neither Word nor the plugin is present on
+  the machine this was built on. Every user-visible string says so.
+- OCR text is not added to the search index. It is returned with page locators by
+  `zotero_get_fulltext`; making it searchable needs an index schema change that was
+  deliberately not made here.
+- Lab administration covers visibility only. Invitations, seats, licence assignment and a
+  billing owner are not implemented and are not blocked on code.
+
 ## [1.20.3] - 2026-09-17
 
 ### Fixed

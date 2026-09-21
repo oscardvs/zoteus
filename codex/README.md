@@ -1,4 +1,4 @@
-# Zoteus — code-execution wrappers
+# Zoteus : code-execution wrappers
 
 Generated TypeScript wrappers for the Zoteus MCP tools, for use with Anthropic's
 [code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern.
@@ -19,13 +19,13 @@ import { formatBibliography } from './zotero/formatBibliography.js';
 // 1. Bridge the wrappers to your live MCP connection once.
 setMCPCaller((name, input) => myMcpClient.callTool({ name, arguments: input }));
 
-// 2. Compose freely in code — only the small result is logged.
+// 2. Compose freely in code : only the small result is logged.
 const { items } = (await searchItems({ tag: 'to-read', itemType: 'journalArticle', response_format: 'detailed' })).structuredContent;
 const recent = items.filter((i) => Number(i.date?.slice(0, 4)) >= 2024);
 console.log(await formatBibliography({ item_keys: recent.map((i) => i.key), style: 'IEEE' }));
 ```
 
-These files are generated from the tool registry — regenerate with `npm run gen:codex`.
+These files are generated from the tool registry : regenerate with `npm run gen:codex`.
 
 ## Available wrappers
 
@@ -51,7 +51,7 @@ These files are generated from the tool registry — regenerate with `npm run ge
 | `attachment()` | `zotero_attachment` | Zotero attachments (files) |
 | `annotate()` | `zotero_annotate` | Annotate a PDF (highlights, notes) |
 | `attachFile()` | `zotero_attach_file` | Attach a file (PDF, snapshot) to an item |
-| `importTool()` | `zotero_import` | Import items by identifier or URL |
+| `importTool()` | `zotero_import` | Import items by identifier, URL, bibliography file or PDF |
 | `styles()` | `zotero_styles` | Resolve CSL citation styles |
 | `formatBibliography()` | `zotero_format_bibliography` | Format a bibliography (citeproc / any CSL style) |
 | `bibliography()` | `zotero_bibliography` | Server-rendered bibliography (library items) |
@@ -62,3 +62,6 @@ These files are generated from the tool registry — regenerate with `npm run ge
 | `listTags()` | `zotero_list_tags` | List Zotero tags (read-only) |
 | `listCollections()` | `zotero_list_collections` | List Zotero collections (read-only) |
 | `tagAudit()` | `zotero_tag_audit` | Audit tags against a controlled vocabulary |
+| `mergeItems()` | `zotero_merge_items` | Merge duplicate items |
+| `evidenceTable()` | `zotero_evidence_table` | Render an evidence table |
+| `wordDocument()` | `zotero_word_document` | Write a Word document with live Zotero citations |

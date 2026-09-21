@@ -13,7 +13,7 @@ export function camelName(name: string): string {
 }
 
 function sanitize(desc: string): string {
-  return desc.replace(/\s+/g, ' ').replace(/\*\//g, '* /').trim().slice(0, 600);
+  return desc.replace(/\s+/g, ' ').replace(/\*\//g, '* /').replace(/\u2014/g, ':').trim().slice(0, 600).trimEnd();
 }
 
 function wrapperSource(def: AnyToolDefinition): string {
@@ -22,7 +22,7 @@ function wrapperSource(def: AnyToolDefinition): string {
   const paramLine = params.length ? `\n * Params: ${params.join(', ')}.` : '\n * Takes no parameters.';
   return (
     `import { callMCPTool } from '../runtime.js';\n\n` +
-    `/**\n * ${def.title} — ${sanitize(def.description)}${paramLine}\n */\n` +
+    `/**\n * ${def.title} : ${sanitize(def.description)}${paramLine}\n */\n` +
     `export function ${fn}(input: Record<string, unknown> = {}): Promise<any> {\n` +
     `  return callMCPTool('${def.name}', input);\n}\n`
   );
@@ -58,7 +58,7 @@ function readme(defs: AnyToolDefinition[]): string {
   const rows = defs
     .map((d) => `| \`${camelName(d.name)}()\` | \`${d.name}\` | ${d.title} |`)
     .join('\n');
-  return `# Zoteus — code-execution wrappers
+  return `# Zoteus : code-execution wrappers
 
 Generated TypeScript wrappers for the Zoteus MCP tools, for use with Anthropic's
 [code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern.
@@ -79,13 +79,13 @@ import { formatBibliography } from './zotero/formatBibliography.js';
 // 1. Bridge the wrappers to your live MCP connection once.
 setMCPCaller((name, input) => myMcpClient.callTool({ name, arguments: input }));
 
-// 2. Compose freely in code — only the small result is logged.
+// 2. Compose freely in code : only the small result is logged.
 const { items } = (await searchItems({ tag: 'to-read', itemType: 'journalArticle', response_format: 'detailed' })).structuredContent;
 const recent = items.filter((i) => Number(i.date?.slice(0, 4)) >= 2024);
 console.log(await formatBibliography({ item_keys: recent.map((i) => i.key), style: 'IEEE' }));
 \`\`\`
 
-These files are generated from the tool registry — regenerate with \`npm run gen:codex\`.
+These files are generated from the tool registry : regenerate with \`npm run gen:codex\`.
 
 ## Available wrappers
 

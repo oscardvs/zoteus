@@ -269,10 +269,10 @@ async function connect(defs: AnyToolDefinition[], ctx: ToolContext) {
 }
 
 describe('through the MCP SDK', () => {
-  it('advertises every documented argument and closes all thirty-one tools', async () => {
+  it('advertises every documented argument and closes every registered tool', async () => {
     const client = await connect(tools, {} as ToolContext);
     const { tools: listed } = await client.listTools();
-    expect(listed.length).toBe(31);
+    expect(listed.length).toBe(tools.length);
     for (const t of listed) {
       const def = tools.find((d) => d.name === t.name);
       const declared = Object.keys(def!.inputSchema);

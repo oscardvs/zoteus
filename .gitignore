@@ -50,3 +50,8 @@ docs/superpowers/
 
 # Working notes and drafts: local only, never published.
 .claude/drafts/
+
+# Local agent workspaces and desktop task state are not release artifacts.
+.claude/worktrees/
+.claude/launch.json
+.claude/scheduled_tasks.lock
