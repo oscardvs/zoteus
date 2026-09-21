@@ -290,7 +290,10 @@ export async function indexCommand(
   io: CliIo,
   deps: Partial<IndexCommandDeps> = {},
 ): Promise<number> {
-  if (argv[0] === '--help' || argv[0] === '-h') {
+  // Anywhere on the line, not only first: `zoteus index status --help` is how someone asks
+  // what status takes, and answering it with "unknown option: --help" and exit 2 is wrong
+  // twice over. Help wins over everything else on the line, as it does at the top level.
+  if (argv.some((token) => token === '--help' || token === '-h')) {
     io.out(indexUsage());
     return 0;
   }

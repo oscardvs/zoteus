@@ -285,6 +285,24 @@ describe('zoteus index argument handling', () => {
     expect(io.stdout).toContain('It cannot stop, pause or');
   });
 
+  it('prints the same help, and exits 0, when --help or -h follows the action', async () => {
+    // `zoteus index status --help` used to exit 2 with "unknown option: --help": the strict
+    // option parser saw it before the help check did.
+    for (const argv of [
+      ['status', '--help'],
+      ['build', '-h'],
+      ['build', '--limit', '3', '--help'],
+    ]) {
+      const io = captureIo();
+      const makeContext = vi.fn();
+      const code = await indexCommand(argv, io, { makeContext: makeContext as never });
+      expect(code, argv.join(' ')).toBe(0);
+      expect(io.stdout).toContain('usage: zoteus index');
+      expect(io.stderr).toBe('');
+      expect(makeContext).not.toHaveBeenCalled();
+    }
+  });
+
   it('lets status name a library, now that one data directory holds several indexes', () => {
     const parsed = parseIndexArgs(['status', '--library-type', 'group', '--library-id', '4523']);
     expect(parsed.ok).toBe(true);
