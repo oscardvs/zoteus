@@ -21,6 +21,8 @@
  * "this image is the page".
  */
 
+import { describePages } from '../fulltext/pdf-images.js';
+
 /** What the file turned out to be, once it was established that it has no text. */
 export type ScanVerdict =
   /** Pages stored as images in a codec a scanner writes (JPEG, JBIG2, CCITT G4, JPEG 2000). */
@@ -37,6 +39,12 @@ export interface ScanReport {
   pages: number;
   /** 1-based pages carrying at least one non-space character of text. */
   pagesWithText: number[];
+  /**
+   * 1-based pages carrying no text at all: the pages OCR would read. A scan whose cover
+   * page was OCR'd, or that carries a "Scanned by" stamp, has a page or two in the first
+   * list and the rest here, and this is the list a reader acts on.
+   */
+  pagesWithoutText: number[];
   /** True when not one page carries a character of text. */
   noTextLayer: boolean;
   verdict: ScanVerdict;
@@ -175,8 +183,9 @@ function largestImagePixels(bytes: Uint8Array): number {
  */
 export function inspectScan(bytes: Uint8Array, pageTexts: string[]): ScanReport {
   const pagesWithText: number[] = [];
+  const pagesWithoutText: number[] = [];
   pageTexts.forEach((text, i) => {
-    if (text.trim()) pagesWithText.push(i + 1);
+    (text.trim() ? pagesWithText : pagesWithoutText).push(i + 1);
   });
   const imageObjects = countPair(bytes, 'Subtype', 'Image');
   const maskObjects = countAscii(bytes, '/ImageMask');
@@ -189,6 +198,7 @@ export function inspectScan(bytes: Uint8Array, pageTexts: string[]): ScanReport 
   return {
     pages: pageTexts.length,
     pagesWithText,
+    pagesWithoutText,
     noTextLayer: pagesWithText.length === 0,
     verdict,
     imageObjects,
@@ -198,30 +208,68 @@ export function inspectScan(bytes: Uint8Array, pageTexts: string[]): ScanReport 
   };
 }
 
-/** "pages 1, 2 and 5", or "page 3", for a short list of page numbers. */
-function pageList(pages: number[]): string {
-  const head = pages.slice(0, 6).join(', ');
-  const tail = pages.length > 6 ? ` and ${pages.length - 6} more` : '';
-  return `${pages.length === 1 ? 'page' : 'pages'} ${head}${tail}`;
+/** "pages 2, 4-9", or "page 3": a list of pages the way the rest of the tool names them. */
+export function namePages(pages: number[]): string {
+  return `${pages.length === 1 ? 'page' : 'pages'} ${describePages(pages)}`;
+}
+
+/** The same, starting a sentence. */
+export function namePagesCapitalised(pages: number[]): string {
+  const named = namePages(pages);
+  return named.charAt(0).toUpperCase() + named.slice(1);
 }
 
 /**
  * The finding, in one or two sentences: how many pages, how many of them hold text, and
  * what the file stores instead. No remedy here; the caller owns that half, because what
  * can be offered depends on whether an OCR engine is present.
+ *
+ * A file with a text layer on SOME pages gets a different, more careful sentence. The
+ * verdict a no-text file earns ("it is a scan, not a corrupt file") rests on the whole
+ * file holding nothing but images; a file with text on page 1 and JPEGs elsewhere may be
+ * a scan whose cover page was OCR'd, or a text PDF with a picture for a cover and a JPEG
+ * figure on page 4, and the object dictionaries cannot tell those apart. So that sentence
+ * names the pages that lack a text layer, says what the file holds, and claims no more.
  */
 export function describeScan(report: ScanReport): string {
-  const { pages, pagesWithText, imageObjects, maskObjects, codecs } = report;
+  const { pages, pagesWithText, pagesWithoutText, imageObjects, maskObjects, codecs } = report;
   const count = `${pages} page${pages === 1 ? '' : 's'}`;
-  const textPart = pagesWithText.length
-    ? `only ${pageList(pagesWithText)} of ${count} carries any text`
-    : `not one of its ${count} carries a text layer`;
+  const codecNames = codecs.map((c) => CODEC_NAMES[c] ?? c).join(' and ');
+  if (pagesWithText.length) {
+    const lack =
+      `${namePagesCapitalised(pagesWithoutText)} of ${count} ` +
+      `${pagesWithoutText.length === 1 ? 'carries' : 'carry'} no text layer ` +
+      `(only ${namePages(pagesWithText)} ${pagesWithText.length === 1 ? 'does' : 'do'})`;
+    switch (report.verdict) {
+      case 'scanned':
+        return (
+          `${lack}; the file holds ${codecNames} images, which is what a scanner writes, so those pages ` +
+          `may be pictures of text, or blank.`
+        );
+      case 'glyph-bitmaps':
+        return (
+          `${lack}; the file paints text as ${maskObjects} 1-bit bitmap glyph${maskObjects === 1 ? '' : 's'}, ` +
+          `a scan stored letter by letter, so those pages may be text with no text layer at all.`
+        );
+      case 'images':
+        return (
+          `${lack}; the file holds ${imageObjects} embedded image${imageObjects === 1 ? '' : 's'}, so those ` +
+          `pages may be pictures of text, or blank.`
+        );
+      case 'empty':
+      default:
+        return (
+          `${lack}; the file holds no embedded images, so those pages are blank, or their text was ` +
+          `converted to vector outlines, which print-ready PDFs do and which no text extractor can read.`
+        );
+    }
+  }
+  const textPart = `not one of its ${count} carries a text layer`;
   switch (report.verdict) {
     case 'scanned':
       return (
         `This PDF has no text to extract: ${textPart}, and the file stores its pages as ` +
-        `${codecs.map((c) => CODEC_NAMES[c] ?? c).join(' and ')} images, which is what a scanner ` +
-        `produces. It is a scan, not a corrupt file.`
+        `${codecNames} images, which is what a scanner produces. It is a scan, not a corrupt file.`
       );
     case 'glyph-bitmaps':
       return (

@@ -66,11 +66,29 @@ describe('inspectScan', () => {
     expect(describeScan(report)).toContain('embedded image');
   });
 
-  it('names the pages that do carry text when only some of them do', () => {
+  it('names the pages that lack a text layer when only some of them do, and claims no verdict', () => {
     const report = inspectScan(bitmapTextPdf(250), ['', 'a real page', '']);
     expect(report.noTextLayer).toBe(false);
     expect(report.pagesWithText).toEqual([2]);
-    expect(describeScan(report)).toContain('only page 2 of 3 pages carries any text');
+    expect(report.pagesWithoutText).toEqual([1, 3]);
+    const said = describeScan(report);
+    expect(said).toContain('Pages 1, 3 of 3 pages carry no text layer (only page 2 does)');
+    expect(said).toContain('letter by letter');
+    // A file that holds real text on one page is not called "a scan, not a corrupt file":
+    // that verdict rests on the whole file holding nothing but images.
+    expect(said).not.toContain('no text to extract');
+    expect(said).not.toContain('not a corrupt file');
+  });
+
+  it.skipIf(!SCAN)('names the pages without a text layer as spans, in a file that holds JPEGs', () => {
+    const scan = SCAN!;
+    const pdf = scannedPagePdf(scan.jpeg, scan.width, scan.height, { width: 200, height: 200 });
+    const report = inspectScan(pdf, ['cover', '', '', '', 'index']);
+    expect(report.pagesWithoutText).toEqual([2, 3, 4]);
+    const said = describeScan(report);
+    expect(said).toContain('Pages 2-4 of 5 pages carry no text layer (only pages 1, 5 do)');
+    expect(said).toContain('JPEG');
+    expect(said).toContain('pictures of text, or blank');
   });
 });
 

@@ -30,7 +30,13 @@ import {
   LOCAL_IMAGE_PIXEL_LIMIT,
   SHARED_IMAGE_PIXEL_LIMIT,
 } from '../features/fulltext/pdf-images.js';
-import { describeScan, inspectScan, type ScanReport } from '../features/ocr/scan.js';
+import {
+  describeScan,
+  inspectScan,
+  namePages,
+  namePagesCapitalised,
+  type ScanReport,
+} from '../features/ocr/scan.js';
 import { missingOcrHint, OCR_MODULE, resolveOcrModule } from '../features/ocr/engine.js';
 import { ocrPageCap, ocrPdfPages, type OcrPagesResult } from '../features/ocr/ocr-pages.js';
 
@@ -82,9 +88,12 @@ function ocrOffer(ctx: ToolContext, report: ScanReport): string {
   const cfg = ocrConfig(ctx);
   const cap = ocrPageCap(cfg.maxPages);
   const pages = `${cap} page${cap === 1 ? '' : 's'} a call`;
+  // A file with a text layer on some pages: OCR reads the others, and only the others.
+  const partial = report.pagesWithText.length > 0;
   if (cfg.on && resolveOcrModule(cfg.ocrPath)) {
     return (
-      `Zoteus can read it: call again with ocr:true and it renders each page and recognises the text with ` +
+      `Zoteus can read ${partial ? 'the pages that have no text layer' : 'it'}: call again with ocr:true and ` +
+      `it renders each ${partial ? 'of those pages' : 'page'} and recognises the text with ` +
       `${OCR_MODULE} (${pages}; \`page_range\` chooses which, and the result says which pages were read). ` +
       `OCR text is a machine reading of a picture and carries mistakes real text does not. Otherwise, ` +
       `${ENGINE_FREE_REMEDIES}`
@@ -168,11 +177,20 @@ function ocrNotice(
   maxPages: number,
   canWriteBack: boolean,
   scan: { report?: ScanReport; pixelLimit: number },
+  /** Pages that carry a real text layer, when the file is a mixed one; none for a full scan. */
+  textLayer: number[] = [],
 ): string {
+  // Which pages are the publisher's text and which are a machine's reading of a picture is
+  // the one distinction this notice exists to draw, so a mixed file lists both.
+  const only = textLayer.length
+    ? `. ${namePagesCapitalised(textLayer)} ${textLayer.length === 1 ? 'carries' : 'carry'} a text layer and ` +
+      `${textLayer.length === 1 ? 'was' : 'were'} extracted directly from the PDF instead; no page outside ` +
+      `those two lists has any text here.`
+    : `, and only the pages listed have any text at all here.`;
   const parts = [
     ` Pages ${describePages(run.read)} were read by OCR with ${run.engine} in ${(run.ms / 1000).toFixed(1)} s.` +
       ` OCR text is a machine reading of a picture of the page, not the publisher's text: it carries` +
-      ` recognition mistakes, and only the pages listed have any text at all here.`,
+      ` recognition mistakes${only}`,
   ];
   if (run.deferred.length) {
     const next = run.deferred[0]!;
@@ -243,7 +261,8 @@ async function readByOcr(
   bytes: Uint8Array,
   selection: { pages: number[] } | { error: string },
   report: ScanReport,
-): Promise<{ pages: string[]; notice: string } | { error: string }> {
+  textLayer: number[] = [],
+): Promise<{ pages: string[]; read: number[]; notice: string } | { error: string }> {
   if ('error' in selection) return selection;
   const cfg = ocrConfig(ctx);
   if (!cfg.on) return { error: ocrRefusal(ctx) };
@@ -264,15 +283,68 @@ async function readByOcr(
   }
   return {
     pages: run.pages,
-    notice: ocrNotice(run, cfg.maxPages, !ctx.config.readOnly, { report, pixelLimit }),
+    read: run.read,
+    notice: ocrNotice(run, cfg.maxPages, !ctx.config.readOnly, { report, pixelLimit }, textLayer),
   };
+}
+
+/** What reading a PDF whose text layer covers only some of its pages produced. */
+interface MixedReading {
+  /** One string per page: the text layer where a page has one, OCR text where OCR read it, '' elsewhere. */
+  pages: string[];
+  /** Pages OCR read; empty when it did not run, and then `pages` is the text layer alone. */
+  ocrRead: number[];
+  /** Pages that carry a text layer. */
+  textLayer: number[];
+  /** What the file is, and what OCR did or why it did not, as one appendable notice. */
+  notice: string;
+}
+
+/**
+ * A PDF with a text layer on some pages and none on the rest.
+ *
+ * That is what a scan looks like once its cover page was OCR'd, once a "Scanned by"
+ * stamp or a watermark was laid over it, or once a few junk glyphs crept into one page;
+ * and it used to count as a text PDF: `ocr:true` was silently ignored, and the answer
+ * called N mostly-empty pages a direct extraction. Now the pages that lack a text layer
+ * are named, and with `ocr:true` they, and only they, are the pages OCR reads, merged
+ * with the text layer of the rest. The per-call page cap applies to the OCR'd pages alone,
+ * and `page_range` narrows which of them are attempted.
+ *
+ * Without `ocr:true`, or when OCR was asked for and cannot run, the text layer is still
+ * returned: unlike a scan with no text at all, there is something to return, and the
+ * notice says which pages it does not cover and why.
+ */
+async function readMixedScan(
+  ctx: ToolContext,
+  bytes: Uint8Array,
+  extracted: string[],
+  range: { from: number; to: number } | undefined,
+  wantOcr: boolean,
+): Promise<MixedReading> {
+  const report = inspectScan(bytes, extracted);
+  const textLayer = report.pagesWithText;
+  const finding = describeScan(report);
+  const asIs = (notice: string): MixedReading => ({ pages: extracted, ocrRead: [], textLayer, notice });
+  if (!wantOcr) return asIs(` ${finding} ${ocrOffer(ctx, report)}`);
+  const selection = ocrPageSelection(range, extracted.length);
+  if ('error' in selection) return asIs(` ${finding} ${selection.error}`);
+  const candidates = selection.pages.filter((p) => !extracted[p - 1]!.trim());
+  if (!candidates.length) {
+    const span = range ? `every page in page_range ${range.from}-${range.to} carries a text layer` : 'no page lacks a text layer';
+    return asIs(` ${finding} \`ocr:true\` read nothing: ${span}, and OCR reads only the pages that do not.`);
+  }
+  const run = await readByOcr(ctx, bytes, { pages: candidates }, report, textLayer);
+  if ('error' in run) return asIs(` ${finding} ${run.error}`);
+  const pages = extracted.map((text, i) => (text.trim() ? text : (run.pages[i] ?? '')));
+  return { pages, ocrRead: run.read, textLayer, notice: ` ${finding}${run.notice}` };
 }
 
 const getFulltext: ToolDefinition = {
   name: 'zotero_get_fulltext',
   title: 'Get attachment full text / passages / outline (read-only)',
   description:
-    "Retrieve an item's PDF or EPUB text for grounding. Pass a parent `item_key` (its best PDF/EPUB attachment is resolved automatically) or an attachment key. With `query`, returns the top relevant passages with locators (char offsets, nearest section, and a page); with `page_range` (e.g. \"3-7\"), returns just those pages, re-extracted from the PDF so the span is exact; with `outline:true`, returns the PDF's table of contents with page numbers (the cheapest way to decide which pages to read next); with none of them, returns a truncated head. Text comes from Zotero's full-text index when available; when the attachment is NOT indexed yet, the file itself is read and parsed on the fly (`fallback`, on by default; set `fallback:false` to disable), so a PDF added minutes ago still returns text (marked fulltextSource:\"pdf\" or \"epub\", with fileSource saying where the bytes came from). The file is read from the running Zotero desktop app, else straight out of the local Zotero storage folder, else downloaded from Zotero cloud storage. Page numbers are exact whenever the PDF was parsed, and otherwise an estimate (pageApprox) unless `precise_pages:true`. Read-only; the indexed text is served by the running Zotero desktop app when there is one, otherwise by the cloud Web API. Use this to cite a claim with a page after finding an item via zotero_search_items / zotero_semantic_search. A PDF with no text layer is reported as what it is, with its page count and what would read it, instead of failing vaguely; `ocr:true` reads a few of its pages by rendering them and recognising the text, but only where the operator enabled OCR and installed the engine, and that text is a machine reading of a picture, never saved and never indexed. Text is all this returns: for a figure, a table, an equation or a scanned page with no text layer, zotero_pdf_images renders the page (or extracts the embedded figures) as images you can look at.",
+    "Retrieve an item's PDF or EPUB text for grounding. Pass a parent `item_key` (its best PDF/EPUB attachment is resolved automatically) or an attachment key. With `query`, returns the top relevant passages with locators (char offsets, nearest section, and a page); with `page_range` (e.g. \"3-7\"), returns just those pages, re-extracted from the PDF so the span is exact; with `outline:true`, returns the PDF's table of contents with page numbers (the cheapest way to decide which pages to read next); with none of them, returns a truncated head. Text comes from Zotero's full-text index when available; when the attachment is NOT indexed yet, the file itself is read and parsed on the fly (`fallback`, on by default; set `fallback:false` to disable), so a PDF added minutes ago still returns text (marked fulltextSource:\"pdf\" or \"epub\", with fileSource saying where the bytes came from). The file is read from the running Zotero desktop app, else straight out of the local Zotero storage folder, else downloaded from Zotero cloud storage. Page numbers are exact whenever the PDF was parsed, and otherwise an estimate (pageApprox) unless `precise_pages:true`. Read-only; the indexed text is served by the running Zotero desktop app when there is one, otherwise by the cloud Web API. Use this to cite a claim with a page after finding an item via zotero_search_items / zotero_semantic_search. A PDF with no text layer is reported as what it is, with its page count and what would read it, instead of failing vaguely, and one whose text layer covers only some pages says which pages lack one; `ocr:true` reads the pages that have no text layer by rendering them and recognising the text (a few a call), but only where the operator enabled OCR and installed the engine, and that text is a machine reading of a picture, never saved and never indexed. Text is all this returns: for a figure, a table, an equation or a scanned page with no text layer, zotero_pdf_images renders the page (or extracts the embedded figures) as images you can look at.",
   inputSchema: {
     item_key: z.string().describe('Parent item key or attachment key.'),
     query: z.string().optional().describe('Return top passages relevant to this query.'),
@@ -305,7 +377,7 @@ const getFulltext: ToolDefinition = {
       .boolean()
       .optional()
       .describe(
-        'For a scanned PDF with no text layer: render its pages and read them by OCR (default false). Only works when this Zoteus was started with OCR enabled and the engine installed; the answer says exactly what to do when it was not. Reads a few pages a call (`page_range` chooses which), and the text it returns is a machine reading of a picture, so it carries mistakes and is not saved or indexed anywhere.',
+        'For a scanned PDF with no text layer, or one whose text layer covers only some pages: render the pages that have no text layer and read them by OCR (default false); pages that have a text layer are never OCR\'d. Only works when this Zoteus was started with OCR enabled and the engine installed; the answer says exactly what to do when it was not. Reads a few pages a call (`page_range` chooses which), and the text it returns is a machine reading of a picture, so it carries mistakes and is not saved or indexed anywhere.',
       ),
     ...libraryArgs,
   },
@@ -313,7 +385,18 @@ const getFulltext: ToolDefinition = {
     .object({
       ...attachmentIdentity,
       mode: z.string().describe('Which reading this is: "passages", "page_range", "document" or "outline".'),
-      fulltextSource: z.string().optional().describe('Where the text came from: Zotero\'s index, or the file itself.'),
+      fulltextSource: z
+        .string()
+        .optional()
+        .describe(
+          'Where the text came from: "zotero" (its index), "pdf" or "epub" (the file itself), "ocr" (every page read by OCR), or "pdf+ocr" (a text layer on some pages, OCR on the rest; `ocrPages` says which).',
+        ),
+      ocrPages: z
+        .array(z.number())
+        .optional()
+        .describe(
+          'Pages OCR read, when `ocr:true` ran: their text is a machine reading of a rendered picture, never the publisher\'s. Every other page with text carries a real text layer.',
+        ),
       fileSource: z.string().optional().describe('Where the file was read from: the desktop app, local Zotero storage, or cloud storage.'),
       pageSource: z.string().optional().describe('How page numbers were arrived at: "exact" from re-extraction, or an estimate.'),
       totalChars: z.number().optional().describe('Characters the document holds.'),
@@ -448,11 +531,16 @@ const getFulltext: ToolDefinition = {
      * the page has to be searched for instead.
      */
     let pagesAreContent = false;
-    let fulltextSource: 'zotero' | 'pdf' | 'epub' | 'ocr' = 'zotero';
+    /** `pdf+ocr` is a text layer on some pages and OCR on the rest, which `ocrPages` lists. */
+    let fulltextSource: 'zotero' | 'pdf' | 'epub' | 'ocr' | 'pdf+ocr' = 'zotero';
     let fileSource: AttachmentByteSource | undefined;
     let sourceNotice = '';
     /** What an OCR pass read, and what it did not; empty when none ran. */
     let ocrRunNotice = '';
+    /** Pages OCR read, when it ran; the only pages whose text is a machine reading of a picture. */
+    let ocrPages: number[] | undefined;
+    /** Pages with a real text layer in a `pdf+ocr` reading; every page, otherwise. */
+    let textLayerPages: number[] | undefined;
     const askedRange = args.page_range ? parsePageRange(args.page_range) : undefined;
 
     if (indexed) {
@@ -483,12 +571,28 @@ const getFulltext: ToolDefinition = {
       }
       const kind = detectKind(file.bytes, resolved.contentType, resolved.filename);
       const extracted = kind === 'epub' ? null : await extractPdfPages(file.bytes);
-      if (extracted && extracted.some((p) => p.trim())) {
+      const someText = Boolean(extracted?.some((p) => p.trim()));
+      const someEmpty = Boolean(extracted?.some((p) => !p.trim()));
+      if (extracted && someText && !someEmpty) {
         pages = extracted;
         content = pdfPagesToText(extracted);
         totalPages = extracted.length;
         pagesAreContent = true;
         fulltextSource = 'pdf';
+      } else if (extracted && someText) {
+        // A text layer on some pages and none on the rest. This used to be the branch
+        // above, with `ocr:true` ignored and the empty pages presented as extracted.
+        const mixed = await readMixedScan(ctx, file.bytes, extracted, askedRange, Boolean(args.ocr));
+        pages = mixed.pages;
+        content = pdfPagesToText(mixed.pages);
+        totalPages = mixed.pages.length;
+        pagesAreContent = true;
+        fulltextSource = mixed.ocrRead.length ? 'pdf+ocr' : 'pdf';
+        if (mixed.ocrRead.length) {
+          ocrPages = mixed.ocrRead;
+          textLayerPages = mixed.textLayer;
+        }
+        ocrRunNotice = mixed.notice;
       } else if (extracted) {
         // The PDF opened and holds no text. That is a scan, a file whose text was drawn as
         // outlines, or an empty one, and those have different remedies; saying "scanned or
@@ -502,6 +606,7 @@ const getFulltext: ToolDefinition = {
         totalPages = run.pages.length;
         pagesAreContent = true;
         fulltextSource = 'ocr';
+        ocrPages = run.read;
         ocrRunNotice = run.notice;
       } else {
         // Not a readable PDF: an EPUB is a zip of XHTML, which Zoteus unpacks itself.
@@ -520,7 +625,9 @@ const getFulltext: ToolDefinition = {
       const how =
         fulltextSource === 'ocr'
           ? 'read off the PDF by OCR'
-          : `extracted directly from the ${fulltextSource === 'epub' ? 'EPUB' : 'PDF'}`;
+          : fulltextSource === 'pdf+ocr'
+            ? 'extracted directly from the PDF where a page has a text layer and read off the page by OCR where it has none'
+            : `extracted directly from the ${fulltextSource === 'epub' ? 'EPUB' : 'PDF'}`;
       sourceNotice =
         ` Zotero had no indexed full text for this attachment; the text was ${how}` +
         (file.source ? ` (read from ${SOURCE_LABEL[file.source]})` : '') +
@@ -576,6 +683,7 @@ const getFulltext: ToolDefinition = {
             totalPages = run.pages.length;
             pagesAreContent = true;
             fulltextSource = 'ocr';
+            ocrPages = run.read;
             ocrRunNotice = run.notice;
             sourceNotice =
               ` Zotero's indexed text for this attachment held no readable text, so the PDF was read off the ` +
@@ -583,6 +691,32 @@ const getFulltext: ToolDefinition = {
               (file.source ? ` (read from ${SOURCE_LABEL[file.source]})` : '') +
               `.` +
               run.notice;
+          }
+        } else if (pages && pages.some((p) => !p.trim())) {
+          // A text layer on some pages and none on the rest: Zotero's index, which comes
+          // from the text layer, cannot cover the others. Without `ocr:true` the exact pages
+          // stand and the notice names the pages they cannot locate anything on; with it,
+          // the text comes with the pages, for the same reason as above.
+          const mixed = await readMixedScan(ctx, file.bytes, pages, askedRange, Boolean(args.ocr));
+          if (mixed.ocrRead.length) {
+            pages = mixed.pages;
+            content = pdfPagesToText(mixed.pages);
+            totalChars = content.length;
+            totalPages = mixed.pages.length;
+            pagesAreContent = true;
+            fulltextSource = 'pdf+ocr';
+            ocrPages = mixed.ocrRead;
+            textLayerPages = mixed.textLayer;
+            ocrRunNotice = mixed.notice;
+            sourceNotice =
+              ` Zotero's indexed text for this attachment comes from its text layer, which some pages lack, ` +
+              `so the text was re-read from the PDF: extracted directly where a page has a text layer and read ` +
+              `off the page by OCR where it has none` +
+              (file.source ? ` (read from ${SOURCE_LABEL[file.source]})` : '') +
+              `.` +
+              mixed.notice;
+          } else {
+            sourceNotice = mixed.notice;
           }
         }
         if (pages) fileSource = file.source;
@@ -608,6 +742,7 @@ const getFulltext: ToolDefinition = {
       totalPages,
       indexedChars: indexed ? ft.indexedChars : undefined,
       indexedPages: indexed ? ft.indexedPages : undefined,
+      ocrPages,
     };
     if (exact && fileSource) base.fileSource = fileSource;
 
@@ -729,7 +864,10 @@ const getFulltext: ToolDefinition = {
         ? 'from the Zotero full-text index'
         : fulltextSource === 'ocr'
           ? "read off the page by OCR, not the publisher's text"
-          : `extracted from the ${fulltextSource === 'epub' ? 'EPUB' : 'PDF'} directly`;
+          : fulltextSource === 'pdf+ocr'
+            ? `${namePages(textLayerPages ?? [])} extracted from the PDF directly, ${namePages(ocrPages ?? [])} ` +
+              "read off the page by OCR, not the publisher's text"
+            : `extracted from the ${fulltextSource === 'epub' ? 'EPUB' : 'PDF'} directly`;
     return okLibraryContent(
       { ...base, mode: 'document', pageSource, text, truncated, omittedChars: truncated ? content.length - maxChars : 0, notice },
       `Full text of ${args.item_key}: ${content.length} chars${truncated ? `, returned first ${maxChars}` : ''} ` +

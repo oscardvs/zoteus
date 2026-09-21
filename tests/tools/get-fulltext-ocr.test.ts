@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import getFulltext from '../../src/tools/get-fulltext.js';
 import { renderPdfPages } from '../../src/features/fulltext/pdf-images.js';
 import { textPagePdf } from '../fixtures/pdf.js';
-import { scannedBookPdf } from '../fixtures/scanned-book.js';
+import { mixedBookPdf, scannedBookPdf } from '../fixtures/scanned-book.js';
 import type { OcrEngine, OcrPageImage } from '../../src/features/ocr/engine.js';
 
 /**
@@ -81,6 +81,10 @@ const SCANS = await (async (): Promise<{
   forty: Uint8Array;
   /** A scan whose image dictionary declares more pixels than a shared server will decode. */
   overDecodeLimit: Uint8Array;
+  /** Five pages, a text layer on 1 and 3 only: a scan whose cover and one stamp were OCR'd. */
+  mixed: Uint8Array;
+  /** Twelve pages, a text layer on page 1 only: more empty pages than one call may OCR. */
+  mixedLong: Uint8Array;
 } | null> => {
   const rendered = await renderPdfPages(textPagePdf(), { pages: [1], dpi: 72, format: 'jpeg' });
   if ('error' in rendered) return null;
@@ -92,6 +96,8 @@ const SCANS = await (async (): Promise<{
     // 5100 x 6600 is a 600 dpi US Letter page: 33.7 megapixels, twice what the shared
     // decode ceiling allows. pdfjs drops such an image and paints the page white.
     overDecodeLimit: scannedBookPdf(page.bytes, 5100, 6600, 1),
+    mixed: mixedBookPdf(page.bytes, page.width, page.height, 5, [1, 3]),
+    mixedLong: mixedBookPdf(page.bytes, page.width, page.height, 12, [1]),
   };
 })();
 
@@ -390,6 +396,142 @@ describeRendered('a page_range that lies past the end of the document', () => {
     );
     expect(res.isError).toBeUndefined();
     expect(h.seen.map((i) => i.page)).toEqual([2, 3]);
+  });
+});
+
+/**
+ * A text layer on some pages and none on the rest: a scan whose cover page was OCR'd, a
+ * "Scanned by" stamp, a watermark. "Does any page have text" said yes, so the file counted
+ * as a text PDF: `ocr:true` was silently ignored and N mostly-empty pages were presented
+ * as "extracted directly from the PDF".
+ */
+describeRendered('a PDF whose text layer covers only some of its pages', () => {
+  it('without ocr:true, returns the text layer and names the pages it does not cover', async () => {
+    const res = await getFulltext.handler({ item_key: 'PARENT01', max_chars: 2000 }, ctx({}, SCANS!.mixed));
+    expect(res.isError).toBeUndefined();
+    const sc = res.structuredContent as any;
+    expect(sc.fulltextSource).toBe('pdf');
+    expect(sc.totalPages).toBe(5);
+    expect(sc.text).toContain('Text layer of page 1');
+    expect(sc.text).toContain('Text layer of page 3');
+    expect(sc.ocrPages).toBeUndefined();
+    // The pages a locator can never point at, and what would read them.
+    expect(sc.notice).toContain('Pages 2, 4-5 of 5 pages carry no text layer (only pages 1, 3 do)');
+    expect(sc.notice).toContain('ocr:true');
+    expect(sc.notice).toContain('JPEG');
+    // It is not presented as a complete extraction, in the sentence a reader sees first.
+    expect(textOf(res).split('\n')[0]).toContain('carry no text layer');
+    expect(h.seen).toHaveLength(0);
+  });
+
+  it('with ocr:true, reads only the pages without a text layer and merges them with it', async () => {
+    const res = await getFulltext.handler({ item_key: 'PARENT01', ocr: true, max_chars: 20000 }, ctx({}, SCANS!.mixed));
+    expect(res.isError).toBeUndefined();
+    const sc = res.structuredContent as any;
+    expect(sc.fulltextSource).toBe('pdf+ocr');
+    expect(sc.totalPages).toBe(5);
+    // Pages 1 and 3 have a text layer and were never rendered or recognised.
+    expect(h.seen.map((i) => i.page)).toEqual([2, 4, 5]);
+    expect(sc.ocrPages).toEqual([2, 4, 5]);
+    // Both sources, in page order, in one document.
+    expect(sc.text).toContain('Text layer of page 1');
+    expect(sc.text).toContain('thylakoid');
+    expect(sc.text).toContain('Text layer of page 3');
+    expect(sc.text).toContain('cytoskeleton');
+    expect(sc.text).toContain('lysosome');
+    // Which pages are the publisher's text and which are a machine's reading of a picture.
+    expect(sc.notice).toContain('Pages 2, 4-5 were read by OCR with fake-ocr (eng)');
+    expect(sc.notice).toContain('Pages 1, 3 carry a text layer and were extracted directly from the PDF');
+    expect(sc.notice).toContain('machine reading of a picture');
+    const summary = textOf(res).split('\n')[0]!;
+    expect(summary).toContain('pages 1, 3 extracted from the PDF directly');
+    expect(summary).toContain('pages 2, 4-5 read off the page by OCR');
+    expect(summary).not.toContain('extracted from the PDF directly)');
+  });
+
+  it('reports an exact page for a passage found on an OCR page', async () => {
+    const res = await getFulltext.handler({ item_key: 'PARENT01', query: 'cytoskeleton', ocr: true }, ctx({}, SCANS!.mixed));
+    const sc = res.structuredContent as any;
+    expect(sc.fulltextSource).toBe('pdf+ocr');
+    expect(sc.pageSource).toBe('exact');
+    expect(sc.passages[0].page).toBe(4);
+    expect(sc.passages[0].pageApprox).toBeUndefined();
+  });
+
+  it('narrows OCR to the pages inside page_range that lack a text layer', async () => {
+    const res = await getFulltext.handler({ item_key: 'PARENT01', page_range: '3-4', ocr: true }, ctx({}, SCANS!.mixed));
+    const sc = res.structuredContent as any;
+    expect(sc.mode).toBe('page_range');
+    expect(sc.pageSource).toBe('exact');
+    // Page 3 has a text layer: it is sliced out of the extraction, never OCR'd.
+    expect(h.seen.map((i) => i.page)).toEqual([4]);
+    expect(sc.text.startsWith('Text layer of page 3')).toBe(true);
+    expect(sc.text).toContain('cytoskeleton');
+    expect(sc.text).not.toContain('thylakoid');
+  });
+
+  it('applies the per-call page cap to the OCR pages alone', async () => {
+    const res = await getFulltext.handler({ item_key: 'PARENT01', ocr: true, max_chars: 600 }, ctx({}, SCANS!.mixedLong));
+    const sc = res.structuredContent as any;
+    expect(sc.fulltextSource).toBe('pdf+ocr');
+    expect(sc.totalPages).toBe(12);
+    // Eight pages a call, counted over the pages that need OCR: page 1 does not use one up.
+    expect(h.seen.map((i) => i.page)).toEqual([2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(sc.ocrPages).toEqual([2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(sc.notice).toContain('Pages 10-12 were not read');
+    expect(sc.notice).toContain('page_range:"10-12"');
+  });
+
+  it('still returns the text layer, and says why, when ocr:true is asked for and OCR is off', async () => {
+    const res = await getFulltext.handler(
+      { item_key: 'PARENT01', ocr: true },
+      ctx({ config: { dataDir: DATA, ocr: 'off', ocrMaxPages: 8, ocrLangs: 'eng' } }, SCANS!.mixed),
+    );
+    // Unlike a scan with no text at all, there is something to return, so this is not an
+    // error; but "ocr:true was ignored" is exactly what the notice must not let happen.
+    expect(res.isError).toBeUndefined();
+    const sc = res.structuredContent as any;
+    expect(sc.fulltextSource).toBe('pdf');
+    expect(sc.text).toContain('Text layer of page 1');
+    expect(sc.notice).toContain('Pages 2, 4-5 of 5 pages carry no text layer');
+    expect(sc.notice).toContain('`ocr:true` was asked for, and OCR is off');
+    expect(sc.notice).toContain('ZOTEUS_OCR=auto');
+    expect(h.seen).toHaveLength(0);
+  });
+
+  it('reads nothing, and says so, when every page in page_range has a text layer', async () => {
+    const res = await getFulltext.handler({ item_key: 'PARENT01', page_range: '1', ocr: true }, ctx({}, SCANS!.mixed));
+    const sc = res.structuredContent as any;
+    expect(sc.text).toBe('Text layer of page 1');
+    expect(sc.notice).toContain('`ocr:true` read nothing: every page in page_range 1-1 carries a text layer');
+    expect(h.seen).toHaveLength(0);
+  });
+
+  describe('when Zotero indexed the text layer', () => {
+    const indexed = { content: 'Text layer of page 1 Text layer of page 3', indexedChars: 41, totalChars: 41, indexedPages: 5, totalPages: 5 };
+    const indexedCtx = (pdf: Uint8Array) =>
+      ctx({ web: { getFullText: vi.fn(async () => indexed), downloadFileBytes: vi.fn(async () => ({ bytes: pdf, contentType: 'application/pdf' })) } });
+
+    it('is re-read, text layer plus OCR, when ocr:true is passed', async () => {
+      const res = await getFulltext.handler({ item_key: 'PARENT01', query: 'cytoskeleton', ocr: true }, indexedCtx(SCANS!.mixed));
+      const sc = res.structuredContent as any;
+      expect(sc.fulltextSource).toBe('pdf+ocr');
+      expect(sc.pageSource).toBe('exact');
+      expect(sc.ocrPages).toEqual([2, 4, 5]);
+      expect(sc.passages[0].page).toBe(4);
+      expect(sc.notice).toContain('comes from its text layer, which some pages lack');
+      expect(sc.notice).toContain('Pages 2, 4-5 were read by OCR');
+    });
+
+    it('names the pages the index cannot cover when exact pages are asked for without OCR', async () => {
+      const res = await getFulltext.handler({ item_key: 'PARENT01', page_range: '1-2' }, indexedCtx(SCANS!.mixed));
+      const sc = res.structuredContent as any;
+      expect(sc.fulltextSource).toBe('zotero');
+      expect(sc.pageSource).toBe('exact');
+      expect(sc.notice).toContain('Pages 2, 4-5 of 5 pages carry no text layer (only pages 1, 3 do)');
+      expect(sc.notice).toContain('ocr:true');
+      expect(h.seen).toHaveLength(0);
+    });
   });
 });
 
