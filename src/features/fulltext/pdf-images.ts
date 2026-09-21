@@ -77,8 +77,18 @@ export const BITMAP_TEXT_MASKS = 200;
 /** How long to wait for pdfjs to hand over one decoded image before giving up on it. */
 const OBJECT_WAIT_MS = 20_000;
 
-/** Why a document could not be drawn from, so the caller can say which. */
-export type PdfImageErrorKind = 'unavailable' | 'too-large' | 'password' | 'invalid' | 'canvas';
+/**
+ * Why a document could not be drawn from, so the caller can say which. `setup` is a fault in
+ * how Zoteus configured pdfjs, raised before the file was parsed, so it says nothing about
+ * the file.
+ */
+export type PdfImageErrorKind =
+  | 'unavailable'
+  | 'too-large'
+  | 'password'
+  | 'invalid'
+  | 'canvas'
+  | 'setup';
 export interface PdfImageError {
   kind: PdfImageErrorKind;
   message: string;
@@ -303,6 +313,17 @@ function classifyOpenError(e: unknown): PdfImageError {
       kind: 'password',
       message:
         'the PDF is protected by a password that is needed to open it, and Zoteus has no way to ask for one',
+    };
+  }
+  // pdfjs validates the asset directories it is handed before it parses a byte of the file,
+  // so this is a fault in Zoteus, not in the file (#84 was a trailing backslash on Windows),
+  // and blaming the file would send the user after a fix that does not exist.
+  if (/Invalid factory url/i.test(message)) {
+    return {
+      kind: 'setup',
+      message:
+        `pdfjs rejected the asset directories Zoteus configured it with (${message}), ` +
+        `a fault in Zoteus on this machine that was raised before the file was parsed`,
     };
   }
   return { kind: 'invalid', message: `the file is not a readable PDF (${message})` };

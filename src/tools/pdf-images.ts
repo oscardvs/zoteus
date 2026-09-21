@@ -94,6 +94,10 @@ function documentError(key: string, e: PdfImageError, maxMb: number): ToolHandle
       return err(`The PDF for attachment ${key} could not be drawn: ${e.message}.`);
     case 'canvas':
       return err(`The PDF for attachment ${key} could not be drawn: ${e.message}`);
+    case 'setup':
+      return err(
+        `The PDF for attachment ${key} could not be drawn: ${e.message}. Please report this at https://github.com/oscardvs/zoteus/issues with your operating system and Zoteus version.`,
+      );
     default:
       return err(
         `The PDF for attachment ${key} could not be drawn: ${e.message}. If the file opens in Zotero, please report this with the file's producer (zotero_get_fulltext may still return its text).`,

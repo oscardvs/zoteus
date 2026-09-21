@@ -59,6 +59,43 @@ export async function loadPdfjs(): Promise<any | null> {
   return cached as Promise<any | null>;
 }
 
+/** What `getDocument` is told about where pdfjs's data files live. */
+export interface PdfjsAssetUrls {
+  standardFontDataUrl: string;
+  cMapUrl: string;
+  cMapPacked: true;
+  wasmUrl: string;
+  iccUrl: string;
+}
+
+/** The `node:path` operations the URL arithmetic needs, so a test can pass `path.win32` on Linux. */
+export interface PathOps {
+  join(...parts: string[]): string;
+  dirname(p: string): string;
+  sep: string;
+}
+
+/**
+ * The asset URLs for the pdfjs whose `legacy/build/pdf.mjs` is at `entry`, computed with the
+ * given `path` implementation. Pure: `pdfjsAssetUrls()` below passes `node:path`, and the
+ * Windows arithmetic is checked on every platform by passing `path.win32`.
+ */
+export function pdfjsAssetUrlsFrom(entry: string, path: PathOps): PdfjsAssetUrls {
+  // <pkg>/legacy/build/pdf.mjs -> <pkg>
+  const root = path.join(path.dirname(entry), '..', '..');
+  // Forward slashes throughout and a trailing "/", whatever `path.sep` is: pdfjs accepts the
+  // string only if it ends with "/" (see pdfjsAssetUrls below), and Node's fs reads a
+  // forward-slash path on Windows as readily as a backslash one.
+  const dir = (name: string): string => `${path.join(root, name).split(path.sep).join('/')}/`;
+  return {
+    standardFontDataUrl: dir('standard_fonts'),
+    cMapUrl: dir('cmaps'),
+    cMapPacked: true,
+    wasmUrl: dir('wasm'),
+    iccUrl: dir('iccs'),
+  };
+}
+
 /**
  * Where pdfjs finds the data files it ships beside its code, for the calls that draw.
  *
@@ -67,28 +104,23 @@ export async function loadPdfjs(): Promise<any | null> {
  * embedding it (older LaTeX output, most scanned-and-OCRed books) needs pdfjs's own copy of
  * that font or the text draws as nothing; a JPEG 2000 or JBIG2 image needs the decoders
  * pdfjs 5 ships as wasm; a CJK font needs its CMap. pdfjs 5 reads all of them off disk under
- * Node when told the directories, and it insists on a trailing separator.
+ * Node when told the directories, and it accepts a directory only if the string ends with a
+ * forward slash: `getDocument` checks each one with `endsWith("/")` before a byte of the file
+ * is parsed, and throws `Invalid factory url: "..." must include trailing slash.` otherwise.
+ * Built with `path.sep`, these ended in a backslash on Windows, so every zotero_pdf_images
+ * call there failed inside `getDocument` with that message (#84). pdfjs then reads
+ * `url + filename` with `fs.promises.readFile`, and Node's fs on Windows accepts forward
+ * slashes, so a forward-slash directory ending in `/` is right on every platform.
  *
  * Resolved from the module the loader imports, not from `pdfjs-dist/package.json`: that is
  * the one path known to be reachable through the package's exports map, and the bundle
  * keeps the same layout as an npm install. `undefined` when pdfjs is not installed, in which
  * case the caller has already failed for a better reason.
  */
-export function pdfjsAssetUrls():
-  | { standardFontDataUrl: string; cMapUrl: string; cMapPacked: true; wasmUrl: string; iccUrl: string }
-  | undefined {
+export function pdfjsAssetUrls(): PdfjsAssetUrls | undefined {
   try {
     const entry = createRequire(import.meta.url).resolve('pdfjs-dist/legacy/build/pdf.mjs');
-    // <pkg>/legacy/build/pdf.mjs -> <pkg>
-    const root = join(dirname(entry), '..', '..');
-    const dir = (name: string): string => `${join(root, name)}${sep}`;
-    return {
-      standardFontDataUrl: dir('standard_fonts'),
-      cMapUrl: dir('cmaps'),
-      cMapPacked: true,
-      wasmUrl: dir('wasm'),
-      iccUrl: dir('iccs'),
-    };
+    return pdfjsAssetUrlsFrom(entry, { join, dirname, sep });
   } catch {
     return undefined;
   }
