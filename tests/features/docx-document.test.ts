@@ -84,6 +84,16 @@ function pPrChildren(xml: string): string[][] {
   });
 }
 
+/** Whether `unzip` is on PATH here; the test that needs it is skipped out loud otherwise. */
+const UNZIP = (() => {
+  try {
+    execFileSync('unzip', ['-v'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 describe('the package is a valid .docx', () => {
   it('orders the children of every w:pPr the way the schema sequence requires', () => {
     const zip = readZip(
@@ -155,6 +165,64 @@ describe('the package is a valid .docx', () => {
       const file = join(dir, 'probe.docx');
       writeFileSync(file, docWithOneField());
       expect(execFileSync('unzip', ['-t', file], { encoding: 'utf8' })).toContain('No errors detected');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!UNZIP)('still passes unzip -t when the title and a citation carry XML-hostile text', () => {
+    // Everything an XML serialiser can get wrong at once: the five predefined entities, a
+    // CDATA terminator, both quote styles, and an astral character that is two UTF-16 code
+    // units. The repo's own readZip validates the archive too, but only unzip is a reader
+    // this code did not write.
+    const title = `Ships & Shoes < "Sealing" 'Wax' > ]]> ${ASTRAL}`;
+    const citation = citationFieldCode({
+      citationID: 'hOsTiLe1',
+      properties: { formattedCitation: `(${title}, 2026)`, plainCitation: `(${title}, 2026)`, noteIndex: 0 },
+      citationItems: [
+        {
+          id: 'ABCD1234',
+          uris: ['http://zotero.org/users/19552201/items/ABCD1234'],
+          itemData: { id: 'ABCD1234', title },
+          locator: '12',
+          label: 'page',
+        },
+      ],
+      schema: 'https://github.com/citation-style-language/schema/raw/master/csl-citation.json',
+    });
+    const bytes = buildDocx({
+      title,
+      blocks: [
+        { kind: 'paragraph', style: 'Title', pieces: [{ type: 'text', text: title }] },
+        {
+          kind: 'paragraph',
+          pieces: [
+            { type: 'text', text: 'As shown ' },
+            { type: 'field', instruction: citation, text: `(${title}, 2026)` },
+            { type: 'text', text: '.' },
+          ],
+        },
+      ],
+      prefs: documentPrefsXml({ styleId: 'http://www.zotero.org/styles/apa', locale: 'en-US', hasBibliography: false, sessionId: 'sEsSiOn1' }),
+      now: new Date('2026-09-14T12:00:00Z'),
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'zoteus-docx-hostile-'));
+    try {
+      const file = join(dir, 'hostile.docx');
+      writeFileSync(file, bytes);
+      // execFileSync throws on a non-zero exit, so reaching the assertion is exit 0.
+      expect(execFileSync('unzip', ['-t', file], { encoding: 'utf8' })).toContain('No errors detected');
+      // And the characters went in escaped, never raw, in both parts that carry them: the
+      // text rules are `&`, `<` and `>`, quotes are legal in element content, and the
+      // astral character is two code units that must arrive as one.
+      const escaped = `Ships &amp; Shoes &lt; "Sealing" 'Wax' &gt; ]]&gt; ${ASTRAL}`;
+      const zip = readZip(bytes)!;
+      const document = zip.text('word/document.xml')!;
+      const core = zip.text('docProps/core.xml')!;
+      expect(document).toContain(`<w:t xml:space="preserve">${escaped}</w:t>`);
+      expect(document).not.toContain('Ships & Shoes <');
+      expect(document).not.toContain(']]>');
+      expect(core).toContain(`<dc:title>${escaped}</dc:title>`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
