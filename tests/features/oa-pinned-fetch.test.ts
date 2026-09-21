@@ -4,14 +4,19 @@ import { PassThrough } from 'node:stream';
 import { request } from 'node:https';
 import type { RequestOptions } from 'node:https';
 import { RateLimitedFetcher } from '../../src/api/http.js';
-import { fetchOaPdf, setOaHostLookup } from '../../src/features/oa/fetch.js';
+import { OaFetchError, fetchOaPdf, setOaHostLookup } from '../../src/features/oa/fetch.js';
 import { pinnedHttpsFetch } from '../../src/features/oa/pinned-fetch.js';
 
 vi.mock('node:https', () => ({ request: vi.fn() }));
 
 const PDF = Buffer.from('%PDF-1.7\nfixture');
 
-function transport(replies: Array<{ status?: number; headers?: string[]; body?: Buffer; stall?: boolean }>) {
+/**
+ * One scripted answer per connection attempt. `refuse` names a socket or TLS error code
+ * the attempt fails with before any response, the way a dead address or a bad certificate
+ * does; the others describe the response the attempt gets.
+ */
+function transport(replies: Array<{ status?: number; headers?: string[]; body?: Buffer; stall?: boolean; refuse?: string }>) {
   const calls: RequestOptions[] = [];
   vi.mocked(request).mockImplementation(((opts: RequestOptions, callback: (res: unknown) => void) => {
     calls.push(opts);
@@ -22,6 +27,11 @@ function transport(replies: Array<{ status?: number; headers?: string[]; body?: 
     });
     const req = Object.assign(new EventEmitter(), {
       end: () => {
+        if (reply.refuse) {
+          // Node reports connection failures asynchronously; so does this.
+          process.nextTick(() => req.emit('error', Object.assign(new Error(`connect ${reply.refuse}`), { code: reply.refuse })));
+          return;
+        }
         callback(res);
         if (!reply.stall) res.end(reply.body ?? PDF);
       },
@@ -97,6 +107,37 @@ describe('OA connections pin validated addresses', () => {
   });
 });
 
+describe('OA connections try every vetted address before giving up', () => {
+  /**
+   * A dual-stack host whose lookup lists an AAAA first on a v4-only box, or one dead A
+   * record among the several a repository publishes (zenodo.org has six): the first address
+   * refusing is a reason to try the next one the guard already validated, not to fail.
+   */
+  it('moves to the next address when the first refuses the connection', async () => {
+    setOaHostLookup(async () => ['2606:2800:220:1:248:1893:25c8:1946', '93.184.216.34']);
+    const { ctx, calls } = transport([{ refuse: 'ENETUNREACH' }, {}]);
+    const result = await fetchOaPdf(ctx, 'https://repo.example/paper.pdf');
+    expect(Buffer.from(result.bytes)).toEqual(PDF);
+    expect(calls.map((call) => call.hostname)).toEqual(['2606:2800:220:1:248:1893:25c8:1946', '93.184.216.34']);
+    // Each attempt still authenticates the original host, not the address.
+    expect(calls.map((call) => call.servername)).toEqual(['repo.example', 'repo.example']);
+  });
+
+  it('wraps the last failure in the promised sentence once every address has been tried', async () => {
+    setOaHostLookup(async () => ['93.184.216.34', '93.184.216.35']);
+    const { ctx, calls } = transport([{ refuse: 'ENETUNREACH' }, { refuse: 'CERT_HAS_EXPIRED' }]);
+    const err = await fetchOaPdf(ctx, 'https://repo.example/paper.pdf').then(() => null, (e: unknown) => e);
+    // The tool catches OaFetchError and prints its message; anything else surfaces as a
+    // bare socket error, which is the failure this exists to prevent.
+    expect(err).toBeInstanceOf(OaFetchError);
+    expect((err as Error).message).toMatch(/repo\.example/);
+    expect((err as Error).message).toMatch(/CERT_HAS_EXPIRED/);
+    expect((err as Error).message).toMatch(/all 2 of its addresses were tried/);
+    expect((err as Error).message).toMatch(/attach the file with `path`/);
+    expect(calls).toHaveLength(2);
+  });
+});
+
 /**
  * Every uncaught exception raised while `run` executes and settles, without letting it
  * take the process (or the suite) down. Vitest records these too, so a test that trips one
@@ -128,7 +169,7 @@ describe('the pinned transport never enqueues into a controller the consumer has
    */
   it('drops the buffered body after a cancel instead of throwing inside the event loop', async () => {
     transport([{ status: 404, body: Buffer.from('not here') }]);
-    const fetch = pinnedHttpsFetch('93.184.216.34');
+    const fetch = pinnedHttpsFetch(['93.184.216.34']);
     const errors = await uncaughtDuring(async () => {
       const res = await fetch('https://repo.example/paper.pdf');
       expect(res.status).toBe(404);
@@ -140,7 +181,7 @@ describe('the pinned transport never enqueues into a controller the consumer has
 
   it('hands a redirect over with no body at all, since the caller only reads its Location', async () => {
     transport([{ status: 302, headers: ['location', 'https://cdn.example/paper.pdf'], body: Buffer.from('moved') }]);
-    const fetch = pinnedHttpsFetch('93.184.216.34');
+    const fetch = pinnedHttpsFetch(['93.184.216.34']);
     const errors = await uncaughtDuring(async () => {
       const res = await fetch('https://repo.example/paper.pdf');
       expect(res.status).toBe(302);
@@ -152,7 +193,7 @@ describe('the pinned transport never enqueues into a controller the consumer has
 
   it('still streams an ordinary body to the end', async () => {
     transport([{ status: 200, body: PDF }]);
-    const fetch = pinnedHttpsFetch('93.184.216.34');
+    const fetch = pinnedHttpsFetch(['93.184.216.34']);
     const errors = await uncaughtDuring(async () => {
       const res = await fetch('https://repo.example/paper.pdf');
       expect(Buffer.from(await res.arrayBuffer())).toEqual(PDF);

@@ -2,7 +2,7 @@ import net from 'node:net';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { isPrivateOrReservedIp } from '../../lib/cimd.js';
 import type { ToolContext } from '../../registry/registry.js';
-import { pinnedHttpsFetch } from './pinned-fetch.js';
+import { PinnedConnectionError, pinnedHttpsFetch } from './pinned-fetch.js';
 
 /**
  * Downloading an open-access PDF from a host a lookup named.
@@ -78,9 +78,10 @@ export function setOaHostLookup(fn: HostLookup | null): void {
 
 /**
  * Reject a URL that is not https, or whose host is (or resolves to) an address inside the
- * deployment. Return the vetted address so the HTTPS connection uses exactly that address.
+ * deployment. Return every vetted address, in lookup order, so the HTTPS connection uses
+ * exactly those addresses and can move to the next one when the first does not answer.
  */
-async function assertPublicHttps(raw: string): Promise<string> {
+async function assertPublicHttps(raw: string): Promise<string[]> {
   let u: URL;
   try {
     u = new URL(raw);
@@ -98,7 +99,7 @@ async function assertPublicHttps(raw: string): Promise<string> {
     if (isPrivateOrReservedIp(host)) {
       throw new OaFetchError(`The open-access link points at a non-public address (${host}), so nothing was downloaded; that is not a repository, and the item's link needs checking.`);
     }
-    return host;
+    return [host];
   }
   let addrs: string[];
   try {
@@ -109,7 +110,7 @@ async function assertPublicHttps(raw: string): Promise<string> {
   if (addrs.length === 0 || addrs.some((address) => !net.isIP(address) || isPrivateOrReservedIp(address))) {
     throw new OaFetchError(`The host of the open-access link (${host}) resolves to a non-public address, so nothing was downloaded; that is not a repository, and the item's link needs checking.`);
   }
-  return addrs[0]!;
+  return addrs;
 }
 
 /** A millisecond budget as whole seconds for a sentence, never rounded down to "0 s". */
@@ -244,14 +245,27 @@ export async function fetchOaPdf(
     );
   let current = url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const address = await within(assertPublicHttps(current), deadlineAt - Date.now(), outOfTime);
+    const addresses = await within(assertPublicHttps(current), deadlineAt - Date.now(), outOfTime);
     const remaining = deadlineAt - Date.now();
     if (remaining <= 0) throw outOfTime();
-    const res = await ctx.fetcher.fetch(
-      current,
-      { method: 'GET', redirect: 'manual', headers: { accept: 'application/pdf,*/*' } },
-      { maxRetries: 2, deadlineMs: remaining, fetchImpl: pinnedHttpsFetch(address) },
-    );
+    let res: Response;
+    try {
+      res = await ctx.fetcher.fetch(
+        current,
+        { method: 'GET', redirect: 'manual', headers: { accept: 'application/pdf,*/*' } },
+        { maxRetries: 2, deadlineMs: remaining, fetchImpl: pinnedHttpsFetch(addresses) },
+      );
+    } catch (e) {
+      // Every vetted address was tried and none took the connection. A bare ENETUNREACH or
+      // CERT_HAS_EXPIRED is not the sentence this tool promises, so it becomes one here,
+      // with the host and the code kept so the reader knows what to look at.
+      if (e instanceof PinnedConnectionError) {
+        throw new OaFetchError(
+          `The host of the open-access link (${e.host}) could not be connected to (${e.code}, ${e.tried === 1 ? 'its one address was' : `all ${e.tried} of its addresses were`} tried), so nothing was downloaded; retry shortly, or open ${current} yourself and attach the file with \`path\`.`,
+        );
+      }
+      throw e;
+    }
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location');
       await res.body?.cancel().catch(() => {});

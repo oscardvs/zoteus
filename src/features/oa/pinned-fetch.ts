@@ -62,14 +62,50 @@ function bodyStream(res: IncomingMessage): ReadableStream<Uint8Array> {
   );
 }
 
+/** The `code` a socket or TLS error carries (ECONNREFUSED, CERT_HAS_EXPIRED, ...), or its name. */
+function errorCode(e: unknown): string {
+  const code = (e as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && code) return code;
+  return e instanceof Error && e.name ? e.name : 'unknown error';
+}
+
 /**
- * Connect directly to the vetted address while authenticating the original HTTPS host.
+ * No address of the host took the connection. Raised only after every vetted address has
+ * been tried, and carries what the caller's sentence needs: the host, how many addresses
+ * were tried, and the code of the last failure. The raw socket error is kept as `cause`.
+ */
+export class PinnedConnectionError extends Error {
+  constructor(
+    readonly host: string,
+    readonly tried: number,
+    readonly code: string,
+    cause: unknown,
+  ) {
+    super(`Could not connect to ${host} (${code}) after trying ${tried} address${tried === 1 ? '' : 'es'}.`, { cause });
+    this.name = 'PinnedConnectionError';
+  }
+}
+
+/**
+ * Connect directly to a vetted address while authenticating the original HTTPS host.
  * There is no second DNS lookup for an attacker to rebind. A fresh connection for every
  * request also prevents connection reuse from bypassing a redirect's address validation.
+ *
+ * Every address is one the host guard already validated, so they are tried in order: a
+ * dual-stack host whose lookup lists an AAAA first on a v4-only deployment, or one dead A
+ * record among several, is a reason to move to the next address, not to fail. Only an
+ * error before any response counts; once headers are in hand the response is the answer.
+ * When none of them connect, the rejection is a {@link PinnedConnectionError} rather than
+ * whatever the last socket said, so the caller can turn it into a sentence.
  */
-export function pinnedHttpsFetch(address: string): FetchLike {
-  if (!isIP(address) || isPrivateOrReservedIp(address)) {
-    throw new Error('A pinned HTTPS download requires a public IP address.');
+export function pinnedHttpsFetch(addresses: readonly string[]): FetchLike {
+  if (addresses.length === 0) {
+    throw new Error('A pinned HTTPS download requires at least one public IP address.');
+  }
+  for (const address of addresses) {
+    if (!isIP(address) || isPrivateOrReservedIp(address)) {
+      throw new Error('A pinned HTTPS download requires public IP addresses only.');
+    }
   }
   return async (raw, init) => {
     const url = new URL(raw);
@@ -82,38 +118,54 @@ export function pinnedHttpsFetch(address: string): FetchLike {
     // capped stream is the PDF itself, and never buffer an unbounded compressed response.
     headers['accept-encoding'] = 'identity';
     headers.host = url.host;
-    return new Promise<Response>((resolve, reject) => {
-      const req = request({
-        protocol: 'https:',
-        hostname: address,
-        port: url.port || 443,
-        path: url.pathname + url.search,
-        method: 'GET',
-        headers,
-        agent: false,
-        servername: isIP(host) ? '' : host,
-        rejectUnauthorized: true,
-        checkServerIdentity: (_name, cert) => checkServerIdentity(host, cert),
-        signal: init?.signal ?? undefined,
-      }, (res) => {
-        const responseHeaders = new Headers();
-        for (let i = 0; i < res.rawHeaders.length; i += 2) {
-          responseHeaders.append(res.rawHeaders[i]!, res.rawHeaders[i + 1]!);
-        }
-        const status = res.statusCode ?? 502;
-        // 204 and 205 may not carry a body at all, and a redirect's body is never read: this
-        // transport only serves `redirect: 'manual'` callers, which take the Location header
-        // and move on. Draining here means no stream is ever created for it, so there is
-        // nothing to cancel and nothing to enqueue into.
-        const noBody = status === 204 || status === 205 || (status >= 300 && status < 400);
-        if (noBody) res.resume();
-        resolve(new Response(noBody ? null : bodyStream(res), {
-          status,
-          headers: responseHeaders,
-        }));
+
+    const connect = (address: string) =>
+      new Promise<Response>((resolve, reject) => {
+        const req = request({
+          protocol: 'https:',
+          hostname: address,
+          port: url.port || 443,
+          path: url.pathname + url.search,
+          method: 'GET',
+          headers,
+          agent: false,
+          servername: isIP(host) ? '' : host,
+          rejectUnauthorized: true,
+          checkServerIdentity: (_name, cert) => checkServerIdentity(host, cert),
+          signal: init?.signal ?? undefined,
+        }, (res) => {
+          const responseHeaders = new Headers();
+          for (let i = 0; i < res.rawHeaders.length; i += 2) {
+            responseHeaders.append(res.rawHeaders[i]!, res.rawHeaders[i + 1]!);
+          }
+          const status = res.statusCode ?? 502;
+          // 204 and 205 may not carry a body at all, and a redirect's body is never read: this
+          // transport only serves `redirect: 'manual'` callers, which take the Location header
+          // and move on. Draining here means no stream is ever created for it, so there is
+          // nothing to cancel and nothing to enqueue into.
+          const noBody = status === 204 || status === 205 || (status >= 300 && status < 400);
+          if (noBody) res.resume();
+          resolve(new Response(noBody ? null : bodyStream(res), {
+            status,
+            headers: responseHeaders,
+          }));
+        });
+        // Before the response this is the connection failing; after it, the promise is
+        // already settled and the body stream reports the socket's fate on its own.
+        req.on('error', reject);
+        req.end();
       });
-      req.on('error', reject);
-      req.end();
-    });
+
+    let last: unknown;
+    for (const address of addresses) {
+      try {
+        return await connect(address);
+      } catch (e) {
+        // The caller's clock ran out: that is its error to report, not a reason to try on.
+        if (init?.signal?.aborted) throw e;
+        last = e;
+      }
+    }
+    throw new PinnedConnectionError(host, addresses.length, errorCode(last), last);
   };
 }
