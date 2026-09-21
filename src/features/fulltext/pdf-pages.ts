@@ -125,21 +125,109 @@ export function parsePageRange(range: string): { from: number; to: number } | un
   return from > 0 && to >= from ? { from, to } : undefined;
 }
 
+/** What `pdfPagesToText` puts between two pages, and what `pageAtOffset` counts. */
+const PAGE_SEPARATOR = '\n\n';
+
 /** Join extracted page texts into one document text (pages separated by a blank line). */
 export function pdfPagesToText(pages: string[]): string {
-  return pages.join('\n\n');
+  return pages.join(PAGE_SEPARATOR);
+}
+
+/**
+ * The 1-based page holding character `charStart` of `pdfPagesToText(pages)`.
+ *
+ * Exact by construction, and free: the joined text is the pages, so the page is a pure
+ * function of the offsets the chunker already returns. Every caller whose text came from
+ * these very pages should use this rather than `locatePage`, which has to search and can
+ * be defeated by a repeated running head.
+ *
+ * A page with no characters is never the answer (an OCR pass leaves the pages it did not
+ * read empty, and an unread page must not be citable), and an offset that lands in the
+ * `\n\n` between two pages belongs to the page that follows it, which is where the text
+ * after that join is. Undefined when the offset is past the end of the joined text.
+ */
+export function pageAtOffset(pages: string[], charStart: number): number | undefined {
+  if (!Number.isFinite(charStart) || charStart < 0) return undefined;
+  let start = 0;
+  for (let i = 0; i < pages.length; i++) {
+    const end = start + pages[i]!.length;
+    if (end > start && charStart < end) return i + 1;
+    start = end + PAGE_SEPARATOR.length;
+  }
+  return undefined;
 }
 
 function normalize(s: string): string {
   return s.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-/** 1-based page whose text contains the passage's leading window, or undefined. */
-export function locatePage(pages: string[], passage: string, headChars = 60): number | undefined {
-  const needle = normalize(passage).slice(0, headChars);
-  if (!needle) return undefined;
-  for (let i = 0; i < pages.length; i++) {
-    if (normalize(pages[i]!).includes(needle)) return i + 1;
+/**
+ * Normalized page texts, memoised per array: `locatePage` is called once per passage over
+ * the same pages, and normalising a whole book per passage is the one cost this adds. Keyed
+ * by the array's identity, so a caller that rewrites a page in place must pass a new array;
+ * every caller here builds one per extraction and never mutates it.
+ */
+const NORMALIZED = new WeakMap<string[], string[]>();
+function normalizedPages(pages: string[]): string[] {
+  let cached = NORMALIZED.get(pages);
+  if (!cached) {
+    cached = pages.map(normalize);
+    NORMALIZED.set(pages, cached);
   }
-  return undefined;
+  return cached;
+}
+
+export interface LocateOptions {
+  /** Characters of the passage's head to match on; widened automatically when ambiguous. */
+  headChars?: number;
+  /** The page the caller independently expects (a proportional estimate): breaks a tie. */
+  near?: number;
+}
+
+/**
+ * The 1-based page whose text contains the passage's leading window, or undefined.
+ *
+ * First match wins is not good enough. A running head, a repeated reference-list fragment
+ * or a duplicated appendix template puts the same 60 characters on many pages, and the
+ * first of them was then reported as an exact page for a passage cut from somewhere else
+ * (measured over this machine's own library: about 2% of real passages, the worst of them
+ * 30 pages out, every one of them labelled "exact"). So: collect every page that contains
+ * the window, widen the window when more than one does, and break a surviving tie with the
+ * caller's own estimate, which at least keeps the answer on a page that really does carry
+ * the text. With nothing left to separate them, return undefined and let the caller
+ * degrade to an estimate rather than publish a page number that is confidently wrong.
+ *
+ * A caller whose text IS these pages joined should use `pageAtOffset` instead: it is exact,
+ * and it cannot be confused by repetition at all.
+ */
+export function locatePage(pages: string[], passage: string, opts: LocateOptions = {}): number | undefined {
+  const normalized = normalize(passage);
+  if (!normalized) return undefined;
+  const head = Math.max(1, opts.headChars ?? 60);
+  const texts = normalizedPages(pages);
+  let matches: number[] = [];
+  for (const width of [head, head * 3, head * 8]) {
+    const needle = normalized.slice(0, width);
+    const found: number[] = [];
+    for (let i = 0; i < texts.length; i++) if (texts[i]!.includes(needle)) found.push(i + 1);
+    // A wider window can only ever match fewer pages, so nothing at this width means
+    // nothing at any greater one.
+    if (!found.length) break;
+    matches = found;
+    if (found.length === 1) return found[0];
+    if (needle.length === normalized.length) break; // the whole passage is already the needle
+  }
+  if (matches.length < 2) return undefined;
+  const near = opts.near;
+  if (!near) return undefined;
+  let best: number | undefined;
+  let bestGap = Infinity;
+  for (const page of matches) {
+    const gap = Math.abs(page - near);
+    if (gap < bestGap) {
+      bestGap = gap;
+      best = page;
+    }
+  }
+  return best;
 }

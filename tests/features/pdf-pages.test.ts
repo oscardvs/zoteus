@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   locatePage,
+  pageAtOffset,
   extractPdfPages,
   extractPdfOutline,
   DEFAULT_PRECISE_MAX_BYTES,
@@ -26,6 +27,80 @@ describe('locatePage', () => {
   });
   it('returns undefined when no page matches', () => {
     expect(locatePage(pages, 'completely unrelated phrase xyzzy')).toBeUndefined();
+  });
+});
+
+describe('locatePage when the head window is not unique', () => {
+  /**
+   * A real paper's running head: 69 characters, repeated at the top of every page, which is
+   * longer than the 60-character window the match starts from. Every page therefore contains
+   * that window, and taking the first of them reported page 1 for a passage on page 3, under
+   * a label saying "exact". Measured over this machine's Zotero storage, that was about 2%
+   * of real passages, the worst of them 30 pages out.
+   */
+  const head = 'Learning Transferable Visual Models From Natural Language Supervision';
+  const withHead = [
+    `${head} 1 We introduce a contrastive objective over image and caption pairs.`,
+    `${head} 2 Zero-shot transfer is measured on twenty-seven classification datasets.`,
+    `${head} 3 The prompt ensembling ablation is reported in table four of the appendix.`,
+  ];
+
+  it('does not report the first page carrying a repeated running head', () => {
+    const passage = `${head} 3 The prompt ensembling ablation is reported in table four`;
+    // The leading 60 characters are all running head and match every page; a longer window
+    // separates them, and the answer is the page the passage is actually on.
+    expect(locatePage(withHead, passage)).toBe(3);
+  });
+
+  it('returns undefined rather than a guess when nothing can separate the candidates', () => {
+    const identical = ['boilerplate page', 'boilerplate page', 'boilerplate page'];
+    expect(locatePage(identical, 'boilerplate page')).toBeUndefined();
+  });
+
+  it("breaks a tie with the caller's own estimate, and only with it", () => {
+    const identical = ['boilerplate page', 'boilerplate page', 'boilerplate page'];
+    expect(locatePage(identical, 'boilerplate page', { near: 3 })).toBe(3);
+    expect(locatePage(identical, 'boilerplate page', { near: 2 })).toBe(2);
+    // An estimate still cannot conjure a match where the text is absent.
+    expect(locatePage(identical, 'nothing like it', { near: 2 })).toBeUndefined();
+  });
+
+  it('still finds a unique match, and still refuses an empty page', () => {
+    expect(locatePage(withHead, 'zero-shot transfer is measured on twenty-seven')).toBe(2);
+    expect(locatePage(['', '', 'read page'], 'read page')).toBe(3);
+  });
+});
+
+describe('pageAtOffset', () => {
+  const pages = ['first page text', 'second page text', 'third page text'];
+  const joined = pages.join('\n\n');
+
+  it('maps every character offset of the joined text to the page it came from', () => {
+    expect(pageAtOffset(pages, 0)).toBe(1);
+    expect(pageAtOffset(pages, joined.indexOf('second'))).toBe(2);
+    expect(pageAtOffset(pages, joined.indexOf('third'))).toBe(3);
+    expect(pageAtOffset(pages, joined.length - 1)).toBe(3);
+  });
+
+  it('gives an offset inside the join to the page that follows it', () => {
+    // The two characters between two pages belong to whatever comes next: a chunk that
+    // starts there is the top of the following page, not the tail of the previous one.
+    expect(pageAtOffset(pages, pages[0]!.length)).toBe(2);
+    expect(pageAtOffset(pages, pages[0]!.length + 1)).toBe(2);
+  });
+
+  it('never returns a page with no characters, which is what an unread OCR page is', () => {
+    const partial = ['', '', 'the only page this call read', '', ''];
+    const text = partial.join('\n\n');
+    expect(pageAtOffset(partial, text.indexOf('the only page'))).toBe(3);
+    expect(pageAtOffset(partial, 0)).toBe(3);
+  });
+
+  it('returns undefined past the end of the text, and for a nonsense offset', () => {
+    expect(pageAtOffset(pages, joined.length)).toBeUndefined();
+    expect(pageAtOffset(pages, 10_000)).toBeUndefined();
+    expect(pageAtOffset(pages, -1)).toBeUndefined();
+    expect(pageAtOffset([], 0)).toBeUndefined();
   });
 });
 
