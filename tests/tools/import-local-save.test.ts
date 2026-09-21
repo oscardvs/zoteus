@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import importTool from '../../src/tools/import.js';
+import { SCHEMA_SLICE } from '../fixtures/zotero-schema.js';
 
 /** Minimal ctx for the DOI built-in resolution path (translation-server down). */
 function makeCtx(over: any = {}): any {
@@ -390,5 +391,175 @@ describe('zotero_import reports a save that wrote nothing as an error', () => {
       ctx,
     );
     expect(res.isError).toBeFalsy();
+  });
+});
+
+/**
+ * Zotero 10.0.3 answers every create on the local API with a per-item 400, `'primaryData'
+ * not loaded for item (null/1/<key>)`, while the connector protocol saves the same item
+ * with 201 and local-API updates and deletes still work (#88). The endpoint answered 200,
+ * so this is not the "local writes unavailable" case that hands over to the connector, and
+ * the import came back as "Nothing succeeded" with the app running and able to save.
+ */
+describe('zotero_import saves through the connector when the local API rejects every item (#88)', () => {
+  const primaryData = "'primaryData' not loaded for item (null/1/ABCD1234)";
+  const allRejected = {
+    successful: [],
+    unchanged: [],
+    failed: [{ index: 0, code: 400, message: primaryData }],
+    newLibraryVersion: 0,
+  };
+  const save = { action: 'by_identifier', identifier: '10.1234/example', save_to_library: true };
+  /** The desktop app is up, and its local API lists the item the connector saved. */
+  const desktopCtx = (over: any = {}) =>
+    makeCtx({
+      capabilities: { cloud: null, localApi: true },
+      local: {
+        listItems: vi.fn(async () => ({
+          data: [{ key: 'DESKKEY1', data: { key: 'DESKKEY1', title: 'A Scholarly Work' } }],
+          totalResults: 1,
+          lastModifiedVersion: 1,
+        })),
+      },
+      ...over,
+    });
+
+  it('sends the same items through the connector and says which route saved them', async () => {
+    const writeItems = vi.fn(async () => allRejected);
+    const saveItems = vi.fn(async (..._args: any[]) => ({ sessionID: 'sess-88', connectorIds: ['c1'] }));
+    const info = vi.fn();
+    const ctx = desktopCtx({
+      localWrites: { hasStoredKey: () => true, writeItems },
+      connectorWrites: { saveItems, updateSession: vi.fn() },
+      logger: { debug() {}, info, warn() {}, error() {} },
+    });
+    const res = await importTool.handler(save, ctx);
+
+    expect(res.isError).toBeFalsy();
+    expect(writeItems).toHaveBeenCalledTimes(1);
+    expect(saveItems).toHaveBeenCalledTimes(1);
+    expect(saveItems.mock.calls[0][0]).toHaveLength(1);
+    expect(saveItems.mock.calls[0][0][0]).toMatchObject({ title: 'A Scholarly Work' });
+    expect(ctx.web.writeItems).not.toHaveBeenCalled();
+    const sc = res.structuredContent as any;
+    expect(sc.target).toBe('desktop');
+    expect(sc.sessionID).toBe('sess-88');
+    expect(sc.created).toEqual(['DESKKEY1']);
+    expect(sc.localApiRejected).toEqual([{ index: 0, code: 400, message: primaryData }]);
+    // The summary names the route actually taken and quotes what the local API said...
+    const text = res.content[0].text;
+    expect(text).toContain("desktop app's local API rejected every item");
+    expect(text).toContain(primaryData);
+    expect(text).toContain('saved through the connector protocol instead');
+    expect(text).not.toContain('Nothing succeeded');
+    // ...and the JSON mirror carries the rejections for a client that reads only text.
+    expect(JSON.parse(res.content[1].text).localApiRejected).toEqual(sc.localApiRejected);
+    expect(info).toHaveBeenCalledWith(expect.stringContaining(primaryData));
+  });
+
+  it('leaves a partial success alone: re-sending would duplicate the item that did save', async () => {
+    const two =
+      '@article{a1, title={First Paper}, author={Ada Lovelace}, journal={Nature}, year={2024}}\n' +
+      '@article{a2, title={Second Paper}, author={Alan Turing}, journal={Science}, year={2023}}\n';
+    const partial = {
+      successful: [{ index: 0, key: 'LOCALKEY1', version: 7 }],
+      unchanged: [],
+      failed: [{ index: 1, code: 400, message: primaryData }],
+      newLibraryVersion: 7,
+    };
+    const saveItems = vi.fn();
+    const ctx = desktopCtx({
+      config: { translationServerUrl: 'http://127.0.0.1:1969', importMaxEntries: 200, confirmBulkWrites: 0 },
+      schema: { getSchema: vi.fn(async () => SCHEMA_SLICE) },
+      localWrites: { hasStoredKey: () => true, writeItems: vi.fn(async () => partial) },
+      connectorWrites: { saveItems },
+    });
+    const res = await importTool.handler({ action: 'by_file', text: two, save_to_library: true }, ctx);
+
+    expect(saveItems).not.toHaveBeenCalled();
+    expect(ctx.local.listItems).not.toHaveBeenCalled();
+    expect(res.isError).toBeFalsy();
+    const sc = res.structuredContent as any;
+    expect(sc.resolved).toBe(2);
+    expect(sc.target).toBe('local');
+    expect(sc.created).toEqual(['LOCALKEY1']);
+    expect(sc.failed).toEqual(partial.failed);
+    expect(sc.localApiRejected).toBeUndefined();
+    expect(res.content[0].text).toContain('Imported 1 of 2');
+    expect(res.content[0].text).toContain('1 failed.');
+  });
+
+  it('keeps the "Nothing succeeded" error when there is no connector protocol to fall back to', async () => {
+    const ctx = desktopCtx({
+      localWrites: { hasStoredKey: () => true, writeItems: vi.fn(async () => allRejected) },
+      connectorWrites: undefined,
+    });
+    const res = await importTool.handler(save, ctx);
+
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Nothing succeeded');
+    expect(res.content[0].text).toContain(primaryData);
+    expect(res.content[0].text).not.toContain('connector');
+    const sc = res.structuredContent as any;
+    expect(sc.target).toBe('local');
+    expect(sc.created).toEqual([]);
+    expect(sc.failed).toEqual(allRejected.failed);
+    expect(sc.localApiRejected).toBeUndefined();
+    expect(ctx.local.listItems).not.toHaveBeenCalled();
+    expect(ctx.web.writeItems).not.toHaveBeenCalled();
+  });
+
+  it('retargets the connector session to collection_key on the fallback route', async () => {
+    const saveItems = vi.fn(async (..._args: any[]) => ({ sessionID: 'sess-88', connectorIds: ['c1'] }));
+    const updateSession = vi.fn(async (..._args: any[]) => {});
+    const ctx = desktopCtx({
+      localWrites: { hasStoredKey: () => true, writeItems: vi.fn(async () => allRejected) },
+      connectorWrites: {
+        saveItems,
+        updateSession,
+        getSelectedCollection: vi.fn(async () => ({ current: 'L1', targets: [{ id: 'C20', name: 'Reading' }] })),
+      },
+      router: {
+        defaultLibrary: () => ({ type: 'user', id: 0 }),
+        listCollections: vi.fn(async () => ({ data: [{ key: 'COLLKEY1', data: { key: 'COLLKEY1', name: 'Reading' } }] })),
+      },
+    });
+    const res = await importTool.handler({ ...save, collection_key: 'COLLKEY1' }, ctx);
+
+    expect(res.isError).toBeFalsy();
+    // The local-API attempt filed the item by its collections array; the connector protocol
+    // files by session target instead, so the array does not travel and the session moves.
+    expect(saveItems.mock.calls[0][0][0].collections).toBeUndefined();
+    expect(updateSession).toHaveBeenCalledWith('sess-88', { target: 'C20' });
+    const sc = res.structuredContent as any;
+    expect(sc.target).toBe('desktop');
+    expect(sc.placedIn).toBe('C20');
+    expect(sc.localApiRejected).toEqual([{ index: 0, code: 400, message: primaryData }]);
+    expect(res.content[0].text).toContain('(collection C20)');
+    expect(res.content[0].text).toContain('saved through the connector protocol instead');
+  });
+
+  it("reports both refusals when the connector save fails too, not the connector's alone", async () => {
+    const saveItems = vi.fn(async () => {
+      throw new Error('Connector saveItems failed (HTTP 500): boom');
+    });
+    const ctx = desktopCtx({
+      localWrites: { hasStoredKey: () => true, writeItems: vi.fn(async () => allRejected) },
+      connectorWrites: { saveItems },
+    });
+    const res = await importTool.handler(save, ctx);
+
+    expect(res.isError).toBe(true);
+    const text = res.content[0].text;
+    expect(text).toContain('Nothing succeeded');
+    expect(text).toContain(primaryData);
+    expect(text).toContain('connector protocol failed too');
+    expect(text).toContain('HTTP 500');
+    const sc = res.structuredContent as any;
+    expect(sc.target).toBe('local');
+    expect(sc.created).toEqual([]);
+    expect(sc.failed).toEqual(allRejected.failed);
+    expect(sc.warning).toContain('HTTP 500');
+    expect(ctx.web.writeItems).not.toHaveBeenCalled();
   });
 });

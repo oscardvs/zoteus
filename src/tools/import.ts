@@ -4,6 +4,8 @@ import { readFile, stat } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { provenance, writeFailures, writeTarget, zoteroObject } from './common-output.js';
 import type { ToolDefinition, ToolHandlerResult, ToolContext } from '../registry/registry.js';
+import type { WriteResult } from '../api/web-client.js';
+import type { ConnectorWriteClient } from '../api/connector-writes.js';
 import { libraryArgs } from './common-args.js';
 import {
   LIBRARY_CONTENT_PROVENANCE,
@@ -237,6 +239,9 @@ const importTool: ToolDefinition = {
         .describe('Keys of the items written to the library.'),
       failed: writeFailures,
       target: writeTarget,
+      localApiRejected: writeFailures.describe(
+        'Present only on a desktop save that the app\'s local API refused item by item, for EVERY item, and that was then sent again through the connector protocol (`target` is "desktop"): the local API\'s rejections, one per item. The keys in `created` were written by that connector save, not by the local API. A save the local API took even partly never carries this, because re-sending after a partial success would duplicate what did land.',
+      ),
       sessionID: z.string().optional().describe('Connector save session, when the desktop app took the write.'),
       placedIn: z.string().optional().describe('The collection the saved items were filed in.'),
       attached: z
@@ -476,111 +481,57 @@ async function saveResolved(ctx: ToolContext, args: any, payload: any[], source:
   const personal = isPersonalLibrary(lib);
   // Prefer the desktop app for the personal library (no cloud key needed);
   // fall back to the cloud Web API otherwise.
+  //
+  // What the local API answered when it refused every item of the batch, kept only while
+  // the connector protocol is there to take the same items (#88); without it the result
+  // stays the plain "Nothing succeeded" below.
+  let localApiRejected: LocalApiRejection[] | undefined;
   if (personal && (await ensureLocalApi(ctx)) && ctx.localWrites) {
     try {
       if (args.collection_key) {
         for (const it of payload) it.collections = [...(it.collections ?? []), args.collection_key];
       }
       const result = await ctx.localWrites.writeItems(payload);
-      const created = result.successful.map((s) => s.key);
-      // The connector path streams attach_url into its save session; the local API has
-      // no such session, so the file is stored as a child attachment right after the
-      // save. As on the connector path, a failure here degrades to a warning — the
-      // items are already in the library and re-running would duplicate them.
-      let attached: { key: string; bytes: number; contentType: string; filename: string } | undefined;
-      let warning: string | undefined;
-      if (args.attach_url) {
-        if (!created[0]) {
-          warning = `No item key came back from the save, so ${args.attach_url} was not attached.`;
-        } else {
-          try {
-            attached = await attachUrlLocally(ctx, created[0], args.attach_url, args.attach_title);
-          } catch (e) {
-            const why = e instanceof Error ? e.message : String(e);
-            ctx.logger.warn(`Attaching ${args.attach_url} to ${created[0]} failed: ${why}`);
-            warning = `Item saved, but attaching ${args.attach_url} failed: ${why}`;
-          }
-        }
+      if (ctx.connectorWrites && localApiRejectedEveryItem(result, payload.length)) {
+        localApiRejected = result.failed.map(({ index, code, message }) => ({ index, code, message }));
+        const first = localApiRejected[0]!;
+        ctx.logger.info(
+          `Local API rejected every item of the save (first: ${first.code} ${first.message}); saving them through the connector protocol instead.`,
+        );
+      } else {
+        return await completeLocalSave(ctx, args, payload, source, result);
       }
-      return writeResult(
-        { created, failed: result.failed, resolved: payload.length, source, target: 'local', attached, warning },
-        `Imported ${result.successful.length} of ${payload.length} resolved item(s) via ${source} into the library (Zotero desktop)` +
-          (attached ? `, with ${attached.bytes}-byte ${attached.filename} attached` : '') +
-          '.' +
-          (warning ? ` ${warning}` : ''),
-        result.successful.length,
-        payload.length,
-        result.failed,
-      );
     } catch (e) {
       if (!isLocalWritesUnavailable(e)) throw e;
       ctx.logger.info(`Local-API writes unavailable (${e instanceof Error ? e.message : e}); using the connector protocol.`);
     }
   }
   if (personal && ctx.connectorWrites && (await ensureLocalApi(ctx))) {
-    // Connector protocol: collections are targeted by treeViewID via updateSession,
-    // not by the collections array, so strip it from the payload.
-    const stripped = payload.map(({ collections: _c, ...rest }) => rest);
-    const { sessionID, connectorIds } = await ctx.connectorWrites.saveItems(stripped, {
-      uri: 'zotero://zoteus/import',
-    });
-    let placedIn: string | undefined;
-    if (args.collection_key) {
-      try {
-        const target = await resolveTreeViewId(ctx, args.collection_key);
-        if (target) {
-          await ctx.connectorWrites.updateSession(sessionID, { target });
-          placedIn = target;
-        }
-      } catch (e) {
-        return ok(
-          { sessionID, resolved: stripped.length, source, target: 'desktop', warning: String(e) },
-          `Saved ${stripped.length} item(s) via ${source}, but could not place them in "${args.collection_key}": ${e}`,
-        );
-      }
+    if (!localApiRejected) return saveThroughConnector(ctx, ctx.connectorWrites, args, payload, source);
+    try {
+      return await saveThroughConnector(ctx, ctx.connectorWrites, args, payload, source, localApiRejected);
+    } catch (e) {
+      // Both desktop routes refused. The local API's answer is the one that names the
+      // item, so it stays the headline, with the connector's failure beside it rather
+      // than in its place.
+      const why = e instanceof Error ? e.message : String(e);
+      ctx.logger.warn(`Connector-protocol save after the local API's rejection failed too: ${why}`);
+      return writeResult(
+        {
+          created: [],
+          failed: localApiRejected,
+          resolved: payload.length,
+          source,
+          target: 'local',
+          warning: `The retry through the connector protocol failed too: ${why}`,
+        },
+        `Imported 0 of ${payload.length} resolved item(s) via ${source} into the library (Zotero desktop); ` +
+          `the retry through the connector protocol failed too (${why}).`,
+        0,
+        payload.length,
+        localApiRejected,
+      );
     }
-    let attached: { bytes: number; contentType: string } | undefined;
-    if (args.attach_url && connectorIds[0]) {
-      let file: { bytes: Uint8Array; contentType?: string };
-      try {
-        file = await downloadAttachment(ctx, args.attach_url);
-      } catch (e) {
-        if (!(e instanceof AttachmentDownloadError)) throw e;
-        return ok(
-          { sessionID, resolved: stripped.length, source, target: 'desktop', warning: `File download failed (${e.status}) for ${args.attach_url}` },
-          `Saved ${stripped.length} item(s) via ${source}; attachment download failed (${e.status}).`,
-        );
-      }
-      const contentType = file.contentType ?? 'application/pdf';
-      const bytes = file.bytes;
-      await ctx.connectorWrites.saveAttachment({
-        sessionID,
-        parentConnectorId: connectorIds[0],
-        url: args.attach_url,
-        title: args.attach_title ?? 'Full Text PDF',
-        bytes,
-        contentType,
-      });
-      attached = { bytes: bytes.length, contentType };
-    }
-    const created = await pollImportedItems(ctx, stripped);
-    return ok(
-      {
-        sessionID,
-        created,
-        resolved: stripped.length,
-        source,
-        target: 'desktop',
-        placedIn,
-        attached,
-        note: created.length < stripped.length
-          ? 'Some items could not be matched back yet; they may still appear in Zotero.'
-          : undefined,
-      },
-      `Imported ${created.length}/${stripped.length} resolved item(s) via ${source} into the running Zotero desktop app` +
-        (placedIn ? ` (collection ${placedIn})` : '') +
-        (attached ? `, with ${attached.bytes}-byte PDF attached` : '') + '.',
-    );
   }
   if (args.collection_key) {
     for (const it of payload) it.collections = [...(it.collections ?? []), args.collection_key];
@@ -634,6 +585,170 @@ async function saveResolved(ctx: ToolContext, args: any, payload: any[], source:
     result.successful.length,
     payload.length,
     result.failed,
+  );
+}
+
+/** One item's answer from a local-API save that the connector protocol then took over (#88). */
+type LocalApiRejection = { index: number; code: number; message: string };
+
+/**
+ * Whether the desktop app's local API refused the WHOLE batch, as opposed to part of it.
+ *
+ * Zotero 10.0.3 answers every create on `POST /api/users/0/items` with a per-item 400,
+ * `'primaryData' not loaded for item (null/1/<key>)`, while updates and deletes on the same
+ * endpoint, and the connector protocol's `saveItems`, take the same items fine (#88). The
+ * response is a 200 with per-item failures, so `isLocalWritesUnavailable` is right not to
+ * call the API unavailable, and the payload is not at fault, so there is nothing in it to
+ * fix and re-send. The one safe move is to send the same items through the connector
+ * protocol, and only when nothing landed: after a partial success, re-sending would
+ * duplicate the items that did save, so a partial result stays reported as it is.
+ */
+function localApiRejectedEveryItem(result: WriteResult, attempted: number): boolean {
+  if (attempted === 0 || result.successful.length || result.unchanged.length) return false;
+  const failed = new Set(result.failed.map((f) => f.index));
+  for (let i = 0; i < attempted; i++) if (!failed.has(i)) return false;
+  return true;
+}
+
+/**
+ * The rest of a local-API save that Zotero answered item by item: the attachment, then
+ * the report.
+ *
+ * The connector path streams attach_url into its save session; the local API has no such
+ * session, so the file is stored as a child attachment right after the save. As on the
+ * connector path, a failure here degrades to a warning: the items are already in the
+ * library and re-running would duplicate them.
+ */
+async function completeLocalSave(
+  ctx: ToolContext,
+  args: any,
+  payload: any[],
+  source: string,
+  result: WriteResult,
+): Promise<ToolHandlerResult> {
+  const created = result.successful.map((s) => s.key);
+  let attached: { key: string; bytes: number; contentType: string; filename: string } | undefined;
+  let warning: string | undefined;
+  if (args.attach_url) {
+    if (!created[0]) {
+      warning = `No item key came back from the save, so ${args.attach_url} was not attached.`;
+    } else {
+      try {
+        attached = await attachUrlLocally(ctx, created[0], args.attach_url, args.attach_title);
+      } catch (e) {
+        const why = e instanceof Error ? e.message : String(e);
+        ctx.logger.warn(`Attaching ${args.attach_url} to ${created[0]} failed: ${why}`);
+        warning = `Item saved, but attaching ${args.attach_url} failed: ${why}`;
+      }
+    }
+  }
+  return writeResult(
+    { created, failed: result.failed, resolved: payload.length, source, target: 'local', attached, warning },
+    `Imported ${result.successful.length} of ${payload.length} resolved item(s) via ${source} into the library (Zotero desktop)` +
+      (attached ? `, with ${attached.bytes}-byte ${attached.filename} attached` : '') +
+      '.' +
+      (warning ? ` ${warning}` : ''),
+    result.successful.length,
+    payload.length,
+    result.failed,
+  );
+}
+
+/**
+ * The connector-protocol save, for a desktop app whose local API could not take the
+ * write: one with no write support at all (Zotero 9 and earlier), or one that refused
+ * every item of this batch (`localApiRejected`, #88).
+ *
+ * Collections are targeted by treeViewID via updateSession, not by the collections array,
+ * so that is stripped from the payload; attach_url streams into the same save session; and
+ * the keys come from polling the local API afterwards, since the protocol returns none.
+ *
+ * A save that comes here after the local API's rejection says so in every result it can
+ * produce, because "imported into the desktop app" would otherwise read as the local-API
+ * save the caller was told to expect, which is the one that did not happen.
+ */
+async function saveThroughConnector(
+  ctx: ToolContext,
+  connector: ConnectorWriteClient,
+  args: any,
+  payload: any[],
+  source: string,
+  localApiRejected?: LocalApiRejection[],
+): Promise<ToolHandlerResult> {
+  const stripped = payload.map(({ collections: _c, ...rest }) => rest);
+  const first = localApiRejected?.[0];
+  const rejectedNote = first
+    ? ` The desktop app's local API rejected every item (${first.code}: ${first.message}), so they were saved through the connector protocol instead.`
+    : '';
+  const rejected = localApiRejected ? { localApiRejected } : {};
+  const { sessionID, connectorIds } = await connector.saveItems(stripped, { uri: 'zotero://zoteus/import' });
+  let placedIn: string | undefined;
+  if (args.collection_key) {
+    try {
+      const target = await resolveTreeViewId(ctx, args.collection_key);
+      if (target) {
+        await connector.updateSession(sessionID, { target });
+        placedIn = target;
+      }
+    } catch (e) {
+      return ok(
+        { sessionID, resolved: stripped.length, source, target: 'desktop', warning: String(e), ...rejected },
+        `Saved ${stripped.length} item(s) via ${source}, but could not place them in "${args.collection_key}": ${e}` +
+          rejectedNote,
+      );
+    }
+  }
+  let attached: { bytes: number; contentType: string } | undefined;
+  if (args.attach_url && connectorIds[0]) {
+    let file: { bytes: Uint8Array; contentType?: string };
+    try {
+      file = await downloadAttachment(ctx, args.attach_url);
+    } catch (e) {
+      if (!(e instanceof AttachmentDownloadError)) throw e;
+      return ok(
+        {
+          sessionID,
+          resolved: stripped.length,
+          source,
+          target: 'desktop',
+          warning: `File download failed (${e.status}) for ${args.attach_url}`,
+          ...rejected,
+        },
+        `Saved ${stripped.length} item(s) via ${source}; attachment download failed (${e.status}).` + rejectedNote,
+      );
+    }
+    const contentType = file.contentType ?? 'application/pdf';
+    const bytes = file.bytes;
+    await connector.saveAttachment({
+      sessionID,
+      parentConnectorId: connectorIds[0],
+      url: args.attach_url,
+      title: args.attach_title ?? 'Full Text PDF',
+      bytes,
+      contentType,
+    });
+    attached = { bytes: bytes.length, contentType };
+  }
+  const created = await pollImportedItems(ctx, stripped);
+  return ok(
+    {
+      sessionID,
+      created,
+      resolved: stripped.length,
+      source,
+      target: 'desktop',
+      placedIn,
+      attached,
+      note: created.length < stripped.length
+        ? 'Some items could not be matched back yet; they may still appear in Zotero.'
+        : undefined,
+      ...rejected,
+    },
+    `Imported ${created.length}/${stripped.length} resolved item(s) via ${source} into the running Zotero desktop app` +
+      (placedIn ? ` (collection ${placedIn})` : '') +
+      (attached ? `, with ${attached.bytes}-byte PDF attached` : '') +
+      '.' +
+      rejectedNote,
   );
 }
 
