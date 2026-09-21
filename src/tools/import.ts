@@ -105,7 +105,8 @@ const importTool: ToolDefinition = {
     'for identifiers and URLs; with none running, DOI and arXiv ids fall back to built-in resolution (OpenAlex/Crossref and the arXiv API), ' +
     'and the result then carries a `source` field ("scholar" or "arxiv"). ISBN/PMID/bibcode and web URLs require a translation-server. ' +
     'Set `check_duplicates:true` to compare what was resolved against your library first: matching items are reported under `duplicates` ' +
-    '(matched on normalised DOI, then ISBN, then normalised title plus year, all exact comparisons rather than similarity), and a save that ' +
+    '(matched on normalised DOI, then ISBN, then normalised title plus year, all exact comparisons rather than similarity; a title match ' +
+    'with no year on one side needs a title of at least four words or a creator surname both records share, and says so), and a save that ' +
     'would add a second copy is refused unless you also pass `allow_duplicate:true`. The scan stops at 5000 top-level items; when it stopped ' +
     'early it saves and says so in the answer rather than refusing, so read `duplicateScan.complete` before treating "no match" as "no". ' +
     'To fold an existing pair of records together instead, ' +
@@ -161,7 +162,7 @@ const importTool: ToolDefinition = {
       .boolean()
       .optional()
       .describe(
-        'Scan the library first and report items that already hold this work, matched by normalised DOI, then ISBN, then normalised title plus year. Default false. With save_to_library, a match REFUSES the save unless allow_duplicate is also set. The scan crawls up to 5000 top-level items (one request per 100), which is why it is opt-in.',
+        'Scan the library first and report items that already hold this work, matched by normalised DOI, then ISBN, then normalised title plus year (a title match with no year on one side needs at least four title words or a shared creator surname, and carries a `caveat` saying so). Default false. With save_to_library, a match REFUSES the save unless allow_duplicate is also set. The scan crawls up to 5000 top-level items (one request per 100), which is why it is opt-in.',
       ),
     allow_duplicate: z
       .boolean()
@@ -274,6 +275,7 @@ const importTool: ToolDefinition = {
               year: z.string().optional().describe('The year in its date field, when it has one.'),
               matchedOn: z.string().describe('Which identifier matched: "doi", "isbn" or "title".'),
               value: z.string().describe('The normalised value both records share.'),
+              caveat: z.string().optional().describe('On a title match with no year to check against: which side had none, and whether the match rests on a long title or a shared creator surname.'),
               candidate: z.string().optional().describe('Title of the resolved item this library item matched.'),
             })
             .passthrough(),

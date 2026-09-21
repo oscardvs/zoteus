@@ -121,6 +121,59 @@ describe('duplicate detection', () => {
   });
 });
 
+describe('a title match with no year to check against', () => {
+  const ADA = { creatorType: 'author', firstName: 'Ada', lastName: 'Lovelace' };
+  const library = [
+    item('INTRO01', { itemType: 'bookSection', title: 'Introduction', date: '2001' }),
+    item('INTRO02', { itemType: 'bookSection', title: 'Introduction', creators: [ADA] }),
+    item('INTRO03', { itemType: 'bookSection', title: 'Introduction', creators: [{ creatorType: 'author', name: 'Ada Lovelace' }] }),
+    item('LONG001', { itemType: 'journalArticle', title: 'A very long title about Kalman filters', date: '2010' }),
+  ];
+
+  async function index() {
+    const { ctx } = routerOf(library);
+    return duplicateIndexFor(ctx);
+  }
+
+  it('refuses a short title with nothing else in common, so "Introduction" is not every introduction', async () => {
+    const idx = await index();
+    expect(idx.matchesFor({ title: 'Introduction' })).toEqual([]);
+    expect(idx.matchesFor({ title: 'Introduction', creators: [{ creatorType: 'author', lastName: 'Turing' }] })).toEqual([]);
+    // The rule cuts both ways: a dated candidate still matches the dated item on title plus
+    // year, and is refused against the two undated ones it shares nothing else with.
+    const dated = idx.matchesFor({ title: 'Introduction', date: '2001', creators: [{ creatorType: 'author', lastName: 'Turing' }] });
+    expect(dated.map((m) => m.item_key)).toEqual(['INTRO01']);
+    expect(dated[0]!.caveat).toBeUndefined();
+  });
+
+  it('accepts a title long enough to name a work, and says what the match rests on', async () => {
+    const matches = (await index()).matchesFor({ title: 'A Very Long Title About Kalman Filters!' });
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({ item_key: 'LONG001', matchedOn: 'title' });
+    expect(matches[0]!.caveat).toMatch(/The candidate carries no year/);
+    expect(matches[0]!.caveat).toMatch(/title alone \(7 words\)/);
+  });
+
+  it('accepts a short title when the two records share a creator surname, whichever form the name takes', async () => {
+    const matches = (await index()).matchesFor({
+      title: 'Introduction',
+      creators: [{ creatorType: 'author', firstName: 'A.', lastName: 'LOVELACE' }],
+    });
+    // INTRO01 has a year and no creators; INTRO02 and INTRO03 have no year but share the surname.
+    expect(matches.map((m) => m.item_key).sort()).toEqual(['INTRO02', 'INTRO03']);
+    for (const m of matches) {
+      expect(m.caveat).toMatch(/Neither record carries a year/);
+      expect(m.caveat).toMatch(/shared creator surname "lovelace"/);
+    }
+  });
+
+  it('says nothing extra on a match that had both years to compare', async () => {
+    const matches = (await index()).matchesFor({ title: 'Introduction', date: '2002' });
+    expect(matches.map((m) => m.item_key)).toEqual(['INTRO01']);
+    expect(matches[0]!.caveat).toBeUndefined();
+  });
+});
+
 describe('title normalisation', () => {
   it('keeps letters of every script, so two unrelated titles do not collide on one Latin token', () => {
     // Both of these used to reduce to "bert", because every CJK codepoint was deleted.

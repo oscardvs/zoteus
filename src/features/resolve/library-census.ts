@@ -19,6 +19,34 @@ export interface CensusEntry {
   /** Title reduced to its comparable form; see {@link titleKey}. */
   titleKey?: string;
   year?: string;
+  /** Creator surnames, folded the way a title is; see {@link surnameKeys}. */
+  surnames?: string[];
+}
+
+/**
+ * The surnames a record's creators carry, folded the way a title is, so that a title match
+ * with no year to check against can at least ask whether the two records share an author.
+ *
+ * A single-field name (an organisation, or a name a translator could not split) contributes
+ * the whole name and its last word, so "Ada Lovelace" in one record still meets "Lovelace"
+ * in the other.
+ */
+export function surnameKeys(creators: unknown): string[] {
+  if (!Array.isArray(creators)) return [];
+  const out = new Set<string>();
+  for (const creator of creators) {
+    const rec = creator as Record<string, unknown> | null;
+    if (!rec || typeof rec !== 'object') continue;
+    const last = typeof rec.lastName === 'string' ? titleKey(rec.lastName) : undefined;
+    if (last) out.add(last);
+    const name = typeof rec.name === 'string' ? titleKey(rec.name) : undefined;
+    if (name) {
+      out.add(name);
+      const words = name.split(' ');
+      if (words.length > 1) out.add(words[words.length - 1]!);
+    }
+  }
+  return [...out];
 }
 
 /**
@@ -171,6 +199,7 @@ function project(it: unknown): CensusEntry | undefined {
     isbns: isbnKeys(data.ISBN),
     itemType: typeof data.itemType === 'string' ? data.itemType : undefined,
     year: yearKey(data.date),
+    surnames: surnameKeys(data.creators),
   };
 }
 

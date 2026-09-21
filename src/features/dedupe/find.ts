@@ -5,6 +5,7 @@ import {
   doiFrom,
   isbnKeys,
   libraryCensusReport,
+  surnameKeys,
   titleKey,
   yearKey,
   type CensusEntry,
@@ -19,7 +20,9 @@ import {
  * records match when their DOIs are the same string once the doi.org prefix is stripped and
  * the case folded (the DOI field, or the `DOI:` line in Extra), or they share any ISBN once
  * hyphens are dropped, or their titles are the same string once case, accents and
- * punctuation are removed. A duplicate whose title differs by a word, or a preprint saved
+ * punctuation are removed and their years are within one of each other (with no year on
+ * one side, only when the title runs to four words or the two share a creator surname, and
+ * the match then says so). A duplicate whose title differs by a word, or a preprint saved
  * with no DOI, is not found by any of that, and nothing here pretends otherwise.
  *
  * Neither Zotero API can filter on a field (no DOI, ISBN or title filter exists in either
@@ -40,6 +43,8 @@ export interface DuplicateCandidate {
   itemType?: unknown;
   /** Read for a `DOI:` line, so a candidate whose DOI lives in Extra is compared on it too. */
   extra?: unknown;
+  /** Zotero creators, read for surnames when a title match has no year to check against. */
+  creators?: unknown;
 }
 
 /** One library item that matches a candidate, and what matched. */
@@ -51,6 +56,11 @@ export interface DuplicateMatch {
   matchedOn: MatchedOn;
   /** The normalised value both records share: the bare DOI, the bare ISBN, or the folded title. */
   value: string;
+  /**
+   * Present on a title match that could not be checked against a year: says which side had
+   * none and what the match rests on instead, because it is a weaker claim than the others.
+   */
+  caveat?: string;
 }
 
 /** A candidate and the library items it matched. */
@@ -72,10 +82,45 @@ export interface CandidateDuplicates {
  */
 const YEAR_TOLERANCE = 1;
 
-function sameishYear(a?: string, b?: string): boolean {
-  // Missing on either side proves nothing, so it never rules a match out.
-  if (!a || !b) return true;
+function sameishYear(a: string, b: string): boolean {
   return Math.abs(Number(a) - Number(b)) <= YEAR_TOLERANCE;
+}
+
+/**
+ * How many words a title needs before it can match on its own, with no year to check.
+ *
+ * A missing year proves nothing either way, so it used to rule nothing out, and that let a
+ * year-less record titled "Introduction" match every "Introduction" in the library and
+ * refuse the save. Four words is where a title stops being a chapter heading and starts
+ * being the name of a work.
+ */
+const MIN_YEARLESS_TITLE_WORDS = 4;
+
+/**
+ * Whether a title match that cannot be checked against a year is worth reporting, and, when
+ * it is, the sentence that says what it rests on.
+ *
+ * The match needs either a title long enough to be distinctive or a creator surname the two
+ * records share. Either way the caller is being handed a weaker claim than title plus year,
+ * so the answer says which side had no year and what carried the match instead.
+ */
+function yearlessBasis(
+  title: string,
+  candidateYear: string | undefined,
+  candidateSurnames: string[],
+  entry: CensusEntry,
+): string | undefined {
+  const missing =
+    !candidateYear && !entry.year
+      ? 'Neither record carries a year'
+      : !candidateYear
+        ? 'The candidate carries no year'
+        : 'The library item carries no year';
+  const shared = candidateSurnames.find((s) => entry.surnames?.includes(s));
+  if (shared) return `${missing}, so this match rests on the title and the shared creator surname "${shared}".`;
+  const words = title.split(' ').length;
+  if (words >= MIN_YEARLESS_TITLE_WORDS) return `${missing}, so this match rests on the title alone (${words} words).`;
+  return undefined;
 }
 
 function matchOf(entry: CensusEntry, matchedOn: MatchedOn, value: string): DuplicateMatch {
@@ -149,8 +194,18 @@ export class DuplicateIndex {
     if (isbnHits.size) return [...isbnHits.values()];
     if (title) {
       const year = yearKey(candidate.date);
-      const hits = (this.byTitle.get(title) ?? []).filter((e) => notSelf(e) && compatibleDoi(e) && sameishYear(year, e.year));
-      if (hits.length) return hits.map((e) => matchOf(e, 'title', title));
+      const surnames = surnameKeys(candidate.creators);
+      const hits: DuplicateMatch[] = [];
+      for (const e of this.byTitle.get(title) ?? []) {
+        if (!notSelf(e) || !compatibleDoi(e)) continue;
+        if (year && e.year) {
+          if (sameishYear(year, e.year)) hits.push(matchOf(e, 'title', title));
+          continue;
+        }
+        const caveat = yearlessBasis(title, year, surnames, e);
+        if (caveat) hits.push({ ...matchOf(e, 'title', title), caveat });
+      }
+      if (hits.length) return hits;
     }
     return [];
   }

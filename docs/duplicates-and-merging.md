@@ -16,7 +16,11 @@ An **exact comparison of normalised identifiers**, in this order, first hit wins
 A title match additionally requires the two years to be within one of each other, when both
 records carry one: the ordinary same-title duplicate is a preprint in one year and the
 journal version in the next, while two papers sharing a title a decade apart are usually
-different works.
+different works. When either record has no year there is nothing to check, so the match is
+reported only when the title runs to at least four words or the two records share a creator
+surname; a year-less record titled "Introduction" would otherwise match every "Introduction"
+in the library. Such a match carries a `caveat` saying which side had no year and what the
+match rests on instead.
 
 This is **not fuzzy matching**. A duplicate whose title differs by one word, or a preprint
 saved with no DOI next to a published article that has one, is not found. The reason is that
