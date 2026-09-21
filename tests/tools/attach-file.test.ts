@@ -192,4 +192,19 @@ describe('zotero_attach_file', () => {
     expect(res.content[0].text).toMatch(/404/);
     expect(ctx.web.writeItems).not.toHaveBeenCalled();
   });
+
+  /**
+   * On a hosted deployment `url` is a tenant naming a host to the operator's box. The bytes
+   * of the cloud metadata service, or of a loopback service, must not land in a library,
+   * and the refusal has to come before any request and read as a sentence, not a stack.
+   */
+  it('refuses a hosted tenant a url into the deployment, before any request and without any write', async () => {
+    const ctx = makeCtx({ remoteCaller: true });
+    const res = await attachFile.handler({ parent: 'ITEM1', url: 'http://169.254.169.254/latest/meta-data/' }, ctx);
+
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/hosted Zoteus fetches only over https from public hosts/);
+    expect(ctx.fetcher.fetch).not.toHaveBeenCalled();
+    expect(ctx.web.writeItems).not.toHaveBeenCalled();
+  });
 });

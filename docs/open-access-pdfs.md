@@ -94,16 +94,24 @@ lookup named. Finding and reporting a link is always allowed, so turning it off 
 discovery go silent: `zotero_scholar` still returns the `oa` block, and `find_oa` still tells
 you the URL it found and then declines to fetch it.
 
-Turn it off on a shared deployment where egress to arbitrary hosts is not wanted. Users can
-still download the file themselves and attach it with `url` or `path`.
+Turn it off on a shared deployment where you do not want Zoteus fetching from whatever host a
+lookup names. It is not a switch for all egress: the caller-named `url` argument of
+`zotero_attach_file` and `zotero_import` stays available, so users can still download the
+file themselves and attach it with `url`, or with `path` on a local install.
 
-Downloads are bounded whether or not that setting is on: https only, redirects followed by
-hand so every hop is re-checked against private address space, and a 64 MB cap enforced while
-streaming rather than after buffering. A legitimate file above the cap is still attachable by
-hand with `url` or `path`.
+What every download is held to does not depend on that setting. An open-access fetch, and a
+`url` given to a hosted Zoteus (one reached over the network rather than stdio), both go
+through the same bounded transport: https only, public hosts only, redirects followed by hand
+so every hop is re-checked against private address space and connected to the address that
+was checked, and a 64 MB cap enforced while streaming rather than after buffering. So
+`url: "http://169.254.169.254/..."` or `http://127.0.0.1:<port>/...` from a tenant of a hosted
+deployment is refused before any request goes out. A local, stdio Zoteus keeps fetching `url`
+from wherever its user points it, including http and their own loopback: that is their
+machine. A legitimate file above the cap is still attachable with `path` on a local install, or
+through Zotero itself.
 
 There is a clock on them too, and it covers the body, not just the connection: 120 seconds for
-the whole download including every redirect, and 30 seconds of silence mid-file before the
-host is given up on. A repository that answers instantly and then trickles the file cannot
+the whole open-access download including every redirect (300 seconds for a `url` handed to a
+hosted Zoteus), and 30 seconds of silence mid-file before the host is given up on. A repository that answers instantly and then trickles the file cannot
 hold the tool call open; you get a sentence saying which limit was reached, and the link, so
 you can fetch it yourself and attach it with `path`.

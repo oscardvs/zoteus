@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import type { ToolContext } from '../../registry/registry.js';
 import type { LibraryRef } from '../../api/web-client.js';
 import { guessContentType, uploadAttachmentBytes } from '../../api/attachments.js';
+import { OaFetchError, fetchPublicHttps, type EgressWording } from '../oa/fetch.js';
 
 /**
  * Shared plumbing for storing a file as a child attachment: resolve the bytes (from a
@@ -73,23 +74,89 @@ export function resolveContentType(
   return opts.fallback ?? GENERIC_TYPE;
 }
 
-/** A file URL that answered with a non-2xx status; callers decide how loudly to fail. */
+/**
+ * A file URL whose bytes did not arrive; callers decide how loudly to fail.
+ *
+ * `status` is the HTTP status when there was one. It is 0 when no HTTP answer was involved
+ * at all: the URL was refused before any request went out, or the download was cut short by
+ * a limit. `message` then carries the sentence that says which, and is the thing to show.
+ */
 export class AttachmentDownloadError extends Error {
   constructor(
     readonly status: number,
     readonly url: string,
+    detail?: string,
   ) {
-    super(`Download failed (${status}) for ${url}`);
+    super(detail ?? `Download failed (${status}) for ${url}`);
     this.name = 'AttachmentDownloadError';
   }
 }
 
-/** Fetch the bytes to attach, with the generous deadline a full-text PDF needs. */
+/** The generous deadline a full-text PDF needs, on either path. */
+const ATTACHMENT_DEADLINE_MS = 300_000;
+
+/**
+ * The sentences a hosted tenant reads when `url` cannot be fetched. Same mechanics as an
+ * open-access download, different subject and different remedy: the caller named this link
+ * themselves, and `path` is confined to the server on a hosted deployment, so the way out is
+ * a public https link or attaching the file through Zotero itself.
+ */
+const HOSTED_URL_WORDING: EgressWording = {
+  notUrl: (raw) => `\`url\` is not a usable URL (${raw}), so nothing was downloaded.`,
+  notHttps: (raw, scheme) =>
+    `\`url\` is served over ${scheme} rather than https (${raw}), and a hosted Zoteus fetches only over https from public hosts, so nothing was downloaded; give an https link, or attach the file through Zotero itself.`,
+  credentials: () => '`url` carries credentials, which a hosted Zoteus does not send, so nothing was downloaded.',
+  privateAddress: (_raw, host) =>
+    `\`url\` points at a non-public address (${host}), and a hosted Zoteus fetches only from public hosts, so nothing was downloaded; give a public https link, or attach the file through Zotero itself.`,
+  unresolvable: (_raw, host) =>
+    `The host of \`url\` (${host}) could not be resolved, so nothing was downloaded; retry shortly, or attach the file through Zotero itself.`,
+  resolvesPrivate: (_raw, host) =>
+    `The host of \`url\` (${host}) resolves to a non-public address, and a hosted Zoteus fetches only from public hosts, so nothing was downloaded; give a public https link, or attach the file through Zotero itself.`,
+  unreachable: (_url, host, code, tried) =>
+    `The host of \`url\` (${host}) could not be connected to (${code}, ${tried} tried), so nothing was downloaded; retry shortly, or attach the file through Zotero itself.`,
+  noLocation: (url, status) => `${url} answered ${status} with no destination, so nothing was downloaded.`,
+  // The sentence the non-hosted path has always used, so a status reads the same on both.
+  httpStatus: (url, status) => `Download failed (${status}) for ${url}`,
+  tooManyRedirects: (url, max) => `${url} redirected more than ${max} times without arriving at a file, so nothing was downloaded.`,
+  outOfTime: (url, seconds) =>
+    `Downloading ${url} took longer than the ${seconds} s a hosted Zoteus allows for one download, so nothing was attached; attach the file through Zotero itself.`,
+  tooLarge: (url, megabytes) =>
+    `The file at ${url} is larger than the ${megabytes} MB a hosted Zoteus downloads, so nothing was attached; attach it through Zotero itself.`,
+  tooSlow: (url, seconds) =>
+    `The file at ${url} was still arriving after the ${seconds} s a hosted Zoteus allows for one download, so nothing was attached; retry shortly, or attach it through Zotero itself.`,
+  wentQuiet: (url, seconds) =>
+    `The file at ${url} stopped arriving: ${seconds} s passed with no further bytes, so nothing was attached; retry shortly, or attach it through Zotero itself.`,
+};
+
+/**
+ * Fetch the bytes to attach, with the generous deadline a full-text PDF needs.
+ *
+ * Who named the URL decides how far it is trusted. On stdio the caller is the person running
+ * the process, on their own machine, and may fetch from wherever they like: http, a LAN
+ * host, their own loopback. On a hosted deployment the caller is a tenant and the request
+ * leaves the operator's box, so `url` goes through the same bounded transport as an
+ * open-access download: https only, public hosts only, every redirect hop re-checked and
+ * pinned to a vetted address, a byte cap enforced while streaming, and a clock on the body.
+ * Without that, `url: "http://169.254.169.254/..."` or `http://127.0.0.1:<port>/...` was a
+ * way to read the operator's metadata service or a loopback service into a library.
+ */
 export async function downloadAttachment(
-  ctx: Pick<ToolContext, 'fetcher'>,
+  ctx: Pick<ToolContext, 'fetcher' | 'remoteCaller'>,
   url: string,
 ): Promise<{ bytes: Uint8Array; contentType?: string; filename: string }> {
-  const res = await ctx.fetcher.fetch(url, { method: 'GET' }, { maxRetries: 2, deadlineMs: 300_000 });
+  if (ctx.remoteCaller) {
+    let fetched: Awaited<ReturnType<typeof fetchPublicHttps>>;
+    try {
+      fetched = await fetchPublicHttps(ctx, url, { deadlineMs: ATTACHMENT_DEADLINE_MS, wording: HOSTED_URL_WORDING });
+    } catch (e) {
+      // One error type for every way the bytes did not arrive, so the three tools that
+      // catch AttachmentDownloadError show the sentence instead of failing the whole call.
+      if (e instanceof OaFetchError) throw new AttachmentDownloadError(e.status ?? 0, url, e.message);
+      throw e;
+    }
+    return { bytes: fetched.bytes, contentType: fetched.servedType, filename: filenameFromUrl(url) };
+  }
+  const res = await ctx.fetcher.fetch(url, { method: 'GET' }, { maxRetries: 2, deadlineMs: ATTACHMENT_DEADLINE_MS });
   if (!res.ok) {
     await res.body?.cancel().catch(() => {});
     throw new AttachmentDownloadError(res.status, url);
@@ -112,7 +179,7 @@ export async function downloadAttachment(
  * since arXiv-style PDF URLs do not carry one.
  */
 export async function readAttachmentSource(
-  ctx: Pick<ToolContext, 'fetcher'>,
+  ctx: Pick<ToolContext, 'fetcher' | 'remoteCaller'>,
   src: {
     path?: string;
     url?: string;

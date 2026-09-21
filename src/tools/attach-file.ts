@@ -149,7 +149,7 @@ const attachFile: ToolDefinition = {
   inputSchema: {
     parent: z.string().describe('Key of the parent item to attach the file to.'),
     path: z.string().optional().describe('Filesystem path to the file, on the machine running Zoteus.'),
-    url: z.string().url().optional().describe('URL to download the file from; works on remote/hosted servers.'),
+    url: z.string().url().optional().describe('URL to download the file from; works on remote/hosted servers, where it must be an https link to a public host (no private or loopback addresses, 64 MB at most).'),
     find_oa: z
       .boolean()
       .optional()
