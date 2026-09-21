@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { RateLimitedFetcher } from './http.js';
+import { RateLimitedFetcher, type FetchLike } from './http.js';
 import { ZoteroApiError } from './errors.js';
 import type { WriteResult } from './web-client.js';
 import type { Logger } from '../lib/logger.js';
@@ -17,6 +17,13 @@ export interface LocalWriteClientOptions {
   key?: string;
   /** App name shown in Zotero's grant dialog. */
   appName?: string;
+  /**
+   * The transport this client's requests go over, handed to the fetcher per call so its
+   * semaphore and budgets still apply. src/server.ts passes the loopback transport
+   * (loopback-fetch.ts, node:http rather than the undici behind fetch, #85); unset, every
+   * request uses the fetcher's own fetch, which is what a test double wants.
+   */
+  fetchImpl?: FetchLike;
 }
 
 interface StoredGrant {
@@ -70,6 +77,7 @@ export class LocalWriteClient {
   private readonly logger?: Logger;
   private readonly keyStorePath?: string;
   private readonly appName: string;
+  private readonly fetchImpl: FetchLike | undefined;
   private key?: string;
   private serverId?: string;
   private libraryVersion?: number;
@@ -81,6 +89,7 @@ export class LocalWriteClient {
     this.keyStorePath = opts.keyStorePath;
     this.appName = opts.appName ?? 'Zoteus MCP';
     this.key = opts.key;
+    this.fetchImpl = opts.fetchImpl;
   }
 
   /**
@@ -104,7 +113,7 @@ export class LocalWriteClient {
     const res = await this.fetcher.fetch(
       `${this.base}/users/0/items?limit=1`,
       { method: 'GET', headers: this.readHeaders() },
-      { maxRetries: 0 },
+      { maxRetries: 0, fetchImpl: this.fetchImpl },
     );
     if (!res.ok) {
       await res.body?.cancel().catch(() => {});
@@ -152,7 +161,7 @@ export class LocalWriteClient {
         headers: { ...this.readHeaders(), 'Content-Type': 'application/json', 'Zotero-Server-ID': serverId },
         body: JSON.stringify({ appName: this.appName }),
       },
-      { maxRetries: 0, deadlineMs: 300_000 },
+      { maxRetries: 0, fetchImpl: this.fetchImpl, deadlineMs: 300_000 },
     );
     const text = await res.text().catch(() => '');
     if (res.status === 403) {
@@ -258,7 +267,7 @@ export class LocalWriteClient {
         headers: { ...headers, ...init.headers },
         body: init.json !== undefined ? JSON.stringify(init.json) : init.form?.toString(),
       },
-      { maxRetries: 0, deadlineMs: 120_000 },
+      { maxRetries: 0, fetchImpl: this.fetchImpl, deadlineMs: 120_000 },
     );
     if (res.status === 401 && !retried) {
       this.logger?.info('Local API key rejected (401); requesting a fresh grant from Zotero…');
@@ -367,7 +376,7 @@ export class LocalWriteClient {
         headers: { 'Content-Type': 'application/octet-stream' },
         body: bodyInit,
       },
-      { maxRetries: 0, deadlineMs: 300_000 },
+      { maxRetries: 0, fetchImpl: this.fetchImpl, deadlineMs: 300_000 },
     );
     if (!up.ok) await this.throwApi(up, 'file-bytes upload');
     await up.body?.cancel().catch(() => {});

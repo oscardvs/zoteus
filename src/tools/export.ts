@@ -3,6 +3,7 @@ import type { ToolDefinition, ToolHandlerResult } from '../registry/registry.js'
 import { libraryArgs } from './common-args.js';
 import { optionalLibrary } from '../registry/registry.js';
 import { BbtClient } from '../api/bbt-client.js';
+import { loopbackFetch } from '../api/loopback-fetch.js';
 import { refuseUnknownCollection } from './collection-guard.js';
 
 const EXPORT_FORMATS = [
@@ -152,7 +153,7 @@ const exportTool: ToolDefinition = {
       });
 
     if (args.format === 'better-biblatex') {
-      const bbt = ctx.local ? new BbtClient({ port: ctx.config.localPort }) : undefined;
+      const bbt = ctx.local ? new BbtClient({ port: ctx.config.localPort, fetchImpl: loopbackFetch }) : undefined;
       if (bbt && (await bbt.ping())) {
         try {
           if (!args.item_keys?.length) {

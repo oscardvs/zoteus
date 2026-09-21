@@ -5,6 +5,7 @@ import { createLogger, type Logger } from './lib/logger.js';
 import type { Metrics } from './lib/metrics.js';
 import type { UsageRecorder } from './lib/usage/event.js';
 import { RateLimitedFetcher } from './api/http.js';
+import { loopbackFetch } from './api/loopback-fetch.js';
 import { WebApiClient } from './api/web-client.js';
 import { LocalApiClient } from './api/local-client.js';
 import { LocalWriteClient } from './api/local-writes.js';
@@ -95,9 +96,20 @@ export async function buildContext(
   const fetcher = new RateLimitedFetcher({ maxConcurrency: 4, logger });
   const web = new WebApiClient({ apiKey, fetcher, contactEmail: config.contactEmail, logger });
   // Per-user (hosted) contexts never touch the operator's desktop local API.
+  //
+  // Every client that does speaks to it over node:http (`loopbackFetch`) rather than through
+  // the fetch behind the shared fetcher: on Node 24.20.0 an undici parser assertion, thrown
+  // from a socket event handler where no caller could catch it, ended the process during
+  // this very probe (#85). The fetcher keeps its semaphore and budgets; only the socket
+  // layer differs. See src/api/loopback-fetch.ts.
   const local =
     !perUser && config.local !== 'off'
-      ? new LocalApiClient({ port: config.localPort, fetcher, deadlineMs: config.zoteroDeadlineMs })
+      ? new LocalApiClient({
+          port: config.localPort,
+          fetcher,
+          deadlineMs: config.zoteroDeadlineMs,
+          fetchImpl: loopbackFetch,
+        })
       : undefined;
 
   const capabilities = await probeCapabilities(config, { web, local, logger });
@@ -139,13 +151,14 @@ export async function buildContext(
           logger,
           key: config.localApiKey,
           keyStorePath: join(config.dataDir, 'local-api-key.json'),
+          fetchImpl: loopbackFetch,
         })
       : undefined;
   // The connector protocol works on all recent Zotero versions while the app runs,
   // including Zotero 9 and earlier, whose local API is read-only (no grant dialog).
   const connectorWrites =
     !perUser && config.local !== 'off'
-      ? new ConnectorWriteClient({ port: config.localPort, fetcher, logger })
+      ? new ConnectorWriteClient({ port: config.localPort, fetcher, logger, fetchImpl: loopbackFetch })
       : undefined;
   const schema = new SchemaService({ web });
   const styles = new StyleResolver();

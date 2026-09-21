@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { RateLimitedFetcher } from './http.js';
+import { RateLimitedFetcher, type FetchLike } from './http.js';
 import type { ItemQuery, LibraryRef, ListResult, VersionsResult } from './web-client.js';
 
 export interface LocalApiClientOptions {
@@ -21,6 +21,14 @@ export interface LocalApiClientOptions {
    * two minutes inside an MCP host's own timeout (#78).
    */
   deadlineMs?: number;
+  /**
+   * The transport this client's requests go over, handed to both fetchers per call so
+   * their semaphores and budgets still apply. src/server.ts passes the loopback transport
+   * (loopback-fetch.ts), node:http rather than the undici behind fetch, which is what
+   * speaks to the desktop app in production (#85). Unset, every request uses the fetcher's
+   * own fetch, which is what a test double wants.
+   */
+  fetchImpl?: FetchLike;
 }
 
 /**
@@ -110,12 +118,14 @@ export class LocalApiClient {
   private readonly fetcher: RateLimitedFetcher;
   private readonly probeFetcher: RateLimitedFetcher;
   private readonly deadlineMs: number | undefined;
+  private readonly fetchImpl: FetchLike | undefined;
 
   constructor(opts: LocalApiClientOptions = {}) {
     this.base = `http://127.0.0.1:${opts.port ?? 23119}/api`;
     this.fetcher = opts.fetcher ?? new RateLimitedFetcher();
     this.probeFetcher = opts.probeFetcher ?? new RateLimitedFetcher({ maxConcurrency: 2 });
     this.deadlineMs = opts.deadlineMs;
+    this.fetchImpl = opts.fetchImpl;
   }
 
   /**
@@ -129,8 +139,12 @@ export class LocalApiClient {
    * answers at once and then bytes read straight off disk, not a query Zotero has to
    * compute, so the budget this variable raises is not the budget it is spending.
    */
-  private readOpts(): { maxRetries: number; deadlineMs?: number } {
-    return { maxRetries: 0, ...(this.deadlineMs !== undefined ? { deadlineMs: this.deadlineMs } : {}) };
+  private readOpts(): { maxRetries: number; deadlineMs?: number; fetchImpl?: FetchLike } {
+    return {
+      maxRetries: 0,
+      fetchImpl: this.fetchImpl,
+      ...(this.deadlineMs !== undefined ? { deadlineMs: this.deadlineMs } : {}),
+    };
   }
 
   private headers(): Record<string, string> {
@@ -224,8 +238,12 @@ export class LocalApiClient {
       const res = await this.probeFetcher.fetch(
         `${this.base}/users/0/items?limit=1`,
         { method: 'GET', headers: this.headers() },
-        { maxRetries: 0, deadlineMs: timeoutMs },
+        { maxRetries: 0, deadlineMs: timeoutMs, fetchImpl: this.fetchImpl },
       );
+      // Nothing here reads the body, and a body nobody reads keeps its socket until it is
+      // collected: the loopback transport buffers only so much of one before it stops
+      // reading. Cancelling lets the socket go now.
+      await res.body?.cancel().catch(() => {});
       // Any answer at all proves something is listening and speaking HTTP on the port,
       // which is what the capability means. A non-2xx from Zotero itself (an unsupported
       // query, say) is not the app being absent.
@@ -399,7 +417,7 @@ export class LocalApiClient {
     const res = await this.fetcher.fetch(
       url,
       { method: 'GET', headers: this.headers(), redirect: 'manual' },
-      { maxRetries: 0 },
+      { maxRetries: 0, fetchImpl: this.fetchImpl },
     );
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location');
@@ -408,7 +426,11 @@ export class LocalApiClient {
         const { readFile } = await import('node:fs/promises');
         return new Uint8Array(await readFile(fileURLToPath(location)));
       }
-      const followed = await this.fetcher.fetch(location, { method: 'GET' }, { maxRetries: 0 });
+      const followed = await this.fetcher.fetch(
+        location,
+        { method: 'GET' },
+        { maxRetries: 0, fetchImpl: this.fetchImpl },
+      );
       if (!followed.ok) throw new LocalApiError(followed.status, `Local API file fetch ${followed.status} for ${key}`);
       return new Uint8Array(await followed.arrayBuffer());
     }

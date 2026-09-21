@@ -14,6 +14,7 @@ import { startHttp } from './transports/http.js';
 import { buildOAuth } from './auth/router.js';
 import { createLogger } from './lib/logger.js';
 import { ATTRIBUTION_LINE } from './lib/notices.js';
+import { undiciParserAssertionAdvisory } from './api/loopback-fetch.js';
 import { createMetrics } from './lib/metrics.js';
 import { makeReadiness, storeCheck, zoteroPingCheck } from './lib/health.js';
 import { installShutdownHandlers } from './lib/lifecycle.js';
@@ -56,6 +57,11 @@ async function main(): Promise<void> {
   // Held by loadConfig rather than printed there: it runs before this logger exists, and a
   // setting it could not use must not be the reason the server never starts (#18).
   for (const warning of config.warnings) logger.warn(`Configuration: ${warning}`);
+  // The desktop app is spoken to over node:http since #85; everything else this process
+  // fetches still goes through the undici Node bundles, and on a build whose parser can end
+  // the process the operator should read that here rather than learn it from a crash.
+  const undiciAdvisory = undiciParserAssertionAdvisory();
+  if (undiciAdvisory) logger.warn(undiciAdvisory);
   // citeproc-js is redistributed under the CPAL, whose Exhibit B asks for this line when a
   // session begins (#70). Written before either transport is chosen, so both carry it, and
   // through the logger, which writes to stderr: stdout is the JSON-RPC stream on stdio.

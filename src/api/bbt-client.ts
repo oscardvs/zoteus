@@ -1,7 +1,14 @@
+import type { FetchLike } from './http.js';
+
 export interface BbtClientOptions {
   port?: number;
   baseUrl?: string;
-  fetchImpl?: typeof fetch;
+  /**
+   * The transport requests go over. zotero_export passes the loopback transport
+   * (loopback-fetch.ts, node:http rather than the undici behind fetch, #85); the default
+   * is the global fetch, which is what a test double replaces.
+   */
+  fetchImpl?: FetchLike;
 }
 
 /**
@@ -16,11 +23,11 @@ export interface BbtClientOptions {
  */
 export class BbtClient {
   private readonly base: string;
-  private readonly fetchImpl: typeof fetch;
+  private readonly fetchImpl: FetchLike;
 
   constructor(opts: BbtClientOptions = {}) {
     this.base = opts.baseUrl ?? `http://127.0.0.1:${opts.port ?? 23119}/better-bibtex`;
-    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.fetchImpl = opts.fetchImpl ?? (fetch as FetchLike);
   }
 
   async ping(): Promise<boolean> {
@@ -30,6 +37,9 @@ export class BbtClient {
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', method: 'item.search', params: [''], id: 0 }),
       });
+      // The answer to an empty search can be every item BBT knows, and nobody here reads
+      // it; a body nobody reads keeps its socket until it is collected.
+      await res.body?.cancel().catch(() => {});
       return res.ok;
     } catch {
       return false;

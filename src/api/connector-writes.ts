@@ -1,11 +1,18 @@
 import { randomBytes } from 'node:crypto';
-import { RateLimitedFetcher } from './http.js';
+import { RateLimitedFetcher, type FetchLike } from './http.js';
 import type { Logger } from '../lib/logger.js';
 
 export interface ConnectorWriteClientOptions {
   port?: number;
   fetcher?: RateLimitedFetcher;
   logger?: Logger;
+  /**
+   * The transport this client's requests go over, handed to the fetcher per call so its
+   * semaphore and budgets still apply. src/server.ts passes the loopback transport
+   * (loopback-fetch.ts, node:http rather than the undici behind fetch, #85); unset, every
+   * request uses the fetcher's own fetch, which is what a test double wants.
+   */
+  fetchImpl?: FetchLike;
 }
 
 export interface SaveTarget {
@@ -35,11 +42,13 @@ export class ConnectorWriteClient {
   private readonly base: string;
   private readonly fetcher: RateLimitedFetcher;
   private readonly logger?: Logger;
+  private readonly fetchImpl: FetchLike | undefined;
 
   constructor(opts: ConnectorWriteClientOptions = {}) {
     this.base = `http://127.0.0.1:${opts.port ?? 23119}`;
     this.fetcher = opts.fetcher ?? new RateLimitedFetcher();
     this.logger = opts.logger;
+    this.fetchImpl = opts.fetchImpl;
   }
 
   private jsonHeaders(): Record<string, string> {
@@ -56,7 +65,7 @@ export class ConnectorWriteClient {
 
   async ping(): Promise<boolean> {
     try {
-      const res = await this.fetcher.fetch(`${this.base}/connector/ping`, { method: 'GET' }, { maxRetries: 0 });
+      const res = await this.fetcher.fetch(`${this.base}/connector/ping`, { method: 'GET' }, { maxRetries: 0, fetchImpl: this.fetchImpl });
       const text = await res.text().catch(() => '');
       return res.ok && /zotero is running/i.test(text);
     } catch {
@@ -83,7 +92,7 @@ export class ConnectorWriteClient {
     const res = await this.fetcher.fetch(
       `${this.base}/connector/saveItems`,
       { method: 'POST', headers: this.jsonHeaders(), body: JSON.stringify(payload) },
-      { maxRetries: 0, deadlineMs: 120_000 },
+      { maxRetries: 0, fetchImpl: this.fetchImpl, deadlineMs: 120_000 },
     );
     const text = await res.text().catch(() => '');
     if (res.status === 409) {
@@ -113,7 +122,7 @@ export class ConnectorWriteClient {
     const res = await this.fetcher.fetch(
       `${this.base}/connector/updateSession`,
       { method: 'POST', headers: this.jsonHeaders(), body: JSON.stringify(body) },
-      { maxRetries: 0, deadlineMs: 60_000 },
+      { maxRetries: 0, fetchImpl: this.fetchImpl, deadlineMs: 60_000 },
     );
     const text = await res.text().catch(() => '');
     if (!res.ok) throw new Error(`Connector updateSession failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
@@ -152,7 +161,7 @@ export class ConnectorWriteClient {
         },
         body: bodyInit,
       },
-      { maxRetries: 0, deadlineMs: 300_000 },
+      { maxRetries: 0, fetchImpl: this.fetchImpl, deadlineMs: 300_000 },
     );
     const text = await res.text().catch(() => '');
     if (!res.ok && res.status !== 201) {
@@ -167,7 +176,7 @@ export class ConnectorWriteClient {
     const res = await this.fetcher.fetch(
       `${this.base}/connector/getSelectedCollection`,
       { method: 'POST', headers: this.jsonHeaders(), body: '{}' },
-      { maxRetries: 0 },
+      { maxRetries: 0, fetchImpl: this.fetchImpl },
     );
     const json = (await res.json().catch(() => ({}))) as any;
     return {
