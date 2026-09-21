@@ -98,8 +98,11 @@ function bodyLines(table: string): string[] {
 }
 
 describe('zotero_evidence_table rendering', () => {
-  it('is annotated read-only and does not open the world', () => {
-    expect(evidenceTable.annotations?.readOnlyHint).toBe(true);
+  it('is not annotated read-only, because save_path writes a file, and does not open the world', () => {
+    // A client auto-approves on readOnlyHint, and a file write (or, with overwrite:true, a
+    // file replaced) is exactly what that approval must never cover.
+    expect(evidenceTable.annotations?.readOnlyHint).toBe(false);
+    expect(evidenceTable.annotations?.destructiveHint).toBe(false);
     expect(evidenceTable.annotations?.openWorldHint).toBe(false);
   });
 
@@ -244,7 +247,7 @@ describe('zotero_evidence_table coverage summary', () => {
 
 describe('zotero_evidence_table warnings', () => {
   it('warns when a page is given with no quotation, and still renders the row', async () => {
-    const res = await call({ rows: [{ ...ROW, quotation: undefined, coverage: 'abstract-only', support: 'uncertain' }] });
+    const res = await call({ rows: [{ ...ROW, quotation: undefined, coverage: 'abstract-only', support: 'unverified' }] });
     expect(res.isError).toBeFalsy();
     expect(res.structuredContent.warnings).toEqual([
       'Row 1 (ABCD1234): a page locator is given with no quotation, so the locator points at text this table does not show.',
@@ -272,8 +275,72 @@ describe('zotero_evidence_table warnings', () => {
       rows: [{ ...ROW, quotation: undefined, page: undefined, page_exact: undefined, coverage: 'unavailable', support: 'supported' }],
     });
     expect(res.structuredContent.warnings).toEqual([
-      'Row 1 (ABCD1234): support says "supported" while coverage says the source could not be read at all.',
+      'Row 1 (ABCD1234): support says "supported" while coverage says the source could not be read at all; a row with no retrieved passage is "unverified".',
     ]);
+  });
+
+  /**
+   * The rule the prompt (step 4) and the schema both state: a row with no retrieved passage
+   * is "unverified", never anything else. The check used to fire on "supported" over
+   * "unavailable" alone, so "supported" over an abstract, or "contradicted" over a source
+   * nobody read, rendered with no warning and a summary reporting zero contradictions.
+   */
+  it('warns whatever the verdict is when only the abstract was read', async () => {
+    for (const support of ['supported', 'contradicted', 'uncertain'] as const) {
+      const res = await call({
+        rows: [{ ...ROW, quotation: undefined, page: undefined, page_exact: undefined, coverage: 'abstract-only', support }],
+      });
+      expect(res.structuredContent.warnings).toEqual([
+        `Row 1 (ABCD1234): support says "${support}" while coverage says only the abstract was read; a row with no retrieved passage is "unverified".`,
+      ]);
+      expect(res.content[0].text).toContain('1 row contradicts its own evidence (1 warning)');
+    }
+  });
+
+  it('warns when a source that could not be read is called contradicted or uncertain', async () => {
+    for (const support of ['contradicted', 'uncertain'] as const) {
+      const res = await call({
+        rows: [{ ...ROW, quotation: undefined, page: undefined, page_exact: undefined, coverage: 'unavailable', support }],
+      });
+      expect(res.structuredContent.warnings).toEqual([
+        `Row 1 (ABCD1234): support says "${support}" while coverage says the source could not be read at all; a row with no retrieved passage is "unverified".`,
+      ]);
+    }
+  });
+
+  it('leaves an unverified row with no passage alone: that is the honest shape', async () => {
+    const res = await call({
+      rows: [
+        { ...ROW, quotation: undefined, page: undefined, page_exact: undefined, coverage: 'abstract-only', support: 'unverified' },
+        { ...ROW, item_key: 'BBBB2222', quotation: undefined, page: undefined, page_exact: undefined, coverage: 'unavailable', support: 'unverified' },
+      ],
+    });
+    expect(res.structuredContent.warnings).toBeUndefined();
+    expect(res.content[0].text).not.toContain('contradicts');
+  });
+
+  it('warns when a source marked unavailable nonetheless carries a quotation', async () => {
+    const res = await call({
+      rows: [{ ...ROW, page: undefined, page_exact: undefined, coverage: 'unavailable', support: 'unverified' }],
+    });
+    expect(res.structuredContent.warnings).toEqual([
+      'Row 1 (ABCD1234): coverage says the source could not be read, but the row carries a quotation.',
+    ]);
+    // The quotation is still rendered: the row is flagged, never edited.
+    expect(bodyLines(res.structuredContent.table as string)[0]).toContain(ROW.quotation);
+  });
+
+  it('counts the new checks in the summary alongside the old ones', async () => {
+    const res = await call({
+      rows: [
+        ROW,
+        { ...ROW, item_key: 'BBBB2222', quotation: undefined, page: undefined, page_exact: undefined, coverage: 'abstract-only', support: 'supported' },
+        { ...ROW, item_key: 'CCCC3333', page: undefined, page_exact: undefined, coverage: 'unavailable', support: 'contradicted' },
+      ],
+    });
+    // Row 3 trips two checks (a verdict on an unread source, and a quotation on it).
+    expect(res.structuredContent.warnings).toHaveLength(3);
+    expect(res.content[0].text).toContain('2 rows contradict their own evidence (3 warnings)');
   });
 
   it('names each offending row by its position and key, and leaves clean rows unnamed', async () => {

@@ -68,4 +68,13 @@ describe('tool annotations', () => {
       .map((t) => t.name);
     expect(contradictory).toEqual([]);
   });
+
+  it('never marks a tool that writes to disk read-only, whatever it does to the library', () => {
+    // Clients auto-approve on readOnlyHint. zotero_evidence_table declared it while writing
+    // `save_path` (and replacing a file with overwrite:true); zotero_word_document is the
+    // precedent for saying no.
+    const diskWriters = tools.filter((t) => ['zotero_evidence_table', 'zotero_word_document'].includes(t.name));
+    expect(diskWriters.map((t) => t.name).sort()).toEqual(['zotero_evidence_table', 'zotero_word_document']);
+    for (const t of diskWriters) expect(t.annotations?.readOnlyHint).toBe(false);
+  });
 });

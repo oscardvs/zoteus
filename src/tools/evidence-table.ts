@@ -152,8 +152,16 @@ function rowWarnings(row: EvidenceRow, index: number): string[] {
   if (row.coverage === 'passage' && !filled(row.quotation)) {
     out.push(`${where}: coverage says a passage was retrieved, but the row carries no quotation.`);
   }
-  if (row.support === 'supported' && row.coverage === 'unavailable') {
-    out.push(`${where}: support says "supported" while coverage says the source could not be read at all.`);
+  // The rule the prompt and the schema both state: a row with no retrieved passage is
+  // "unverified", never anything else. "supported" on an abstract is the obvious breach,
+  // but "contradicted" or "uncertain" on a source nobody read is the same claim to have
+  // weighed a passage that was never retrieved.
+  if (row.coverage !== 'passage' && row.support !== 'unverified') {
+    const read = row.coverage === 'unavailable' ? 'the source could not be read at all' : 'only the abstract was read';
+    out.push(`${where}: support says "${row.support}" while coverage says ${read}; a row with no retrieved passage is "unverified".`);
+  }
+  if (row.coverage === 'unavailable' && filled(row.quotation)) {
+    out.push(`${where}: coverage says the source could not be read, but the row carries a quotation.`);
   }
   return out;
 }
@@ -280,7 +288,7 @@ const evidenceTable: ToolDefinition = {
   name: 'zotero_evidence_table',
   title: 'Render an evidence table',
   description:
-    'Render rows of retrieved evidence as a Markdown or CSV table, deterministically, from passages you already retrieved with zotero_get_fulltext and zotero_semantic_search. This tool does NOT search and does NOT read the library: it formats what you pass it and echoes each row\'s quotation, locator and coverage back unchanged. It counts the coverage summary from the rows rather than taking your word for it, and it warns, naming the row, when a row contradicts its own evidence (a page locator with no quotation, coverage claiming a retrieved passage with no quotation, or a "supported" verdict on a source that could not be read); it warns and still renders, and never rewords a cell. One byte is added and only in CSV: a cell whose text begins with =, +, -, @ or a tab is a formula to Excel, LibreOffice and Sheets, so the CSV writes it with a leading apostrophe, the spreadsheet\'s own marker for literal text, which the spreadsheet consumes so the passage still displays exactly as it was retrieved; every such cell is named in `warnings`, and a plain number like a page locator of -5 is left alone. Markdown output carries no such marker. Use the `zotero-evidence-table` prompt to gather the rows first. Each row records one study against one question: the finding, the verbatim quotation that supports it, the page locator, whether that locator is exact or approximate, how well the source was covered (a passage was retrieved, only the abstract was available, or nothing was), and the support status. Returns the rendered table as text; pass `save_path` to also write it to a file.',
+    'Render rows of retrieved evidence as a Markdown or CSV table, deterministically, from passages you already retrieved with zotero_get_fulltext and zotero_semantic_search. This tool does NOT search and does NOT read the library: it formats what you pass it and echoes each row\'s quotation, locator and coverage back unchanged. It counts the coverage summary from the rows rather than taking your word for it, and it warns, naming the row, when a row contradicts its own evidence (a page locator with no quotation, coverage claiming a retrieved passage with no quotation, a quotation on a source marked unavailable, or any support verdict other than "unverified" on a row whose coverage is not a retrieved passage); it warns and still renders, and never rewords a cell. One byte is added and only in CSV: a cell whose text begins with =, +, -, @ or a tab is a formula to Excel, LibreOffice and Sheets, so the CSV writes it with a leading apostrophe, the spreadsheet\'s own marker for literal text, which the spreadsheet consumes so the passage still displays exactly as it was retrieved; every such cell is named in `warnings`, and a plain number like a page locator of -5 is left alone. Markdown output carries no such marker. Use the `zotero-evidence-table` prompt to gather the rows first. Each row records one study against one question: the finding, the verbatim quotation that supports it, the page locator, whether that locator is exact or approximate, how well the source was covered (a passage was retrieved, only the abstract was available, or nothing was), and the support status. Returns the rendered table as text; pass `save_path` to also write it to a file.',
   inputSchema: {
     question: z.string().describe('The research question this table answers; it becomes the table caption.'),
     rows: z.array(rowSchema).min(1).describe('One row per study. Order is preserved.'),
@@ -318,7 +326,11 @@ const evidenceTable: ToolDefinition = {
       provenance,
     })
     .passthrough(),
-  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+  // Not read-only: `save_path` writes a file, and `overwrite:true` replaces one. A client
+  // auto-approves on readOnlyHint, and a file write is exactly what that approval must not
+  // cover. Nothing here touches the library, so it is not destructive in the sense the hint
+  // carries (zotero_word_document, which also writes a file, declares the same).
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   handler: async (args, ctx) => {
     const rows = args.rows as EvidenceRow[];
     const question = args.question as string;

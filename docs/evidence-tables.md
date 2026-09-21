@@ -42,7 +42,7 @@ Pages are not guaranteed. An EPUB has no fixed pages, a Zotero full-text record 
 
 - **The quotation cannot drift.** The cell is the string that was passed in, escaped only where the format would otherwise break, never reworded.
 - **The coverage summary is counted, not claimed.** `coverage` in the result counts the rows; a sentence saying four of six rows rest on retrieved text is arithmetic, not a summary the assistant wrote.
-- **A row that contradicts itself is named.** Three checks run, and each one names the row and its item key: a page locator with no quotation, coverage claiming a retrieved passage with no quotation, and a `supported` verdict on a source marked `unavailable`. These are warnings, not refusals. The table still renders, because a half-covered table is a real result and you need to see it to fix it.
+- **A row that contradicts itself is named.** Four checks run, and each one names the row and its item key: a page locator with no quotation, coverage claiming a retrieved passage with no quotation, a quotation on a source marked `unavailable`, and any support verdict other than `unverified` on a row whose coverage is not a retrieved passage (an `abstract only` or `unavailable` row can be `unverified` and nothing else, because no passage was weighed). These are warnings, not refusals. The table still renders, because a half-covered table is a real result and you need to see it to fix it.
 
 The warnings are about a row disagreeing with itself. Nothing here checks whether the quotation actually supports the finding: that is your reading, and the reason the quotation and the page are in the table at all.
 
@@ -52,12 +52,12 @@ The warnings are about a row disagreeing with itself. Nothing here checks whethe
 
 `format: "csv"` returns RFC 4180 rows and nothing else, so it opens in a spreadsheet unaltered: no caption, no warnings, no coverage line inside the file. It has two columns Markdown folds into one, `Locator` and `Locator quality`, plus the item key, so you can sort on them.
 
-`save_path` writes the rendered text to a file as well as returning it. An existing file is not replaced unless you pass `overwrite: true`. On a shared (hosted) deployment the path is confined to the server's data directory, because a filesystem path there points at the operator's disk rather than yours; the refusal says so, and you can copy the table out of the result instead.
+`save_path` writes the rendered text to a file as well as returning it. An existing file is not replaced unless you pass `overwrite: true`. On a shared (hosted) deployment the path is confined to your own directory under the server's data directory, one per signed-in user, because a filesystem path there points at the operator's disk rather than yours, and another user's directory is not yours to write into or to learn about; the refusal names the directory you may use, and you can copy the table out of the result instead. Because the tool can write a file, it is not marked read-only, so a client that auto-approves read-only tools asks before this one runs.
 
 Two honest limits on the rendering:
 
 - Markdown escaping covers what breaks a table: pipes, backslashes and line breaks. It does not neutralise the rest of Markdown, so a quotation containing asterisks still renders as emphasis.
-- A CSV cell that begins with `=`, `+`, `-` or `@` is a formula to a spreadsheet. Zoteus does not prefix or rewrite those cells, because the quotation has to stay verbatim. Import the file as text, or check such cells before opening them in a spreadsheet that evaluates formulas on import.
+- A CSV cell that begins with `=`, `+`, `-`, `@` or a tab is a formula to Excel, LibreOffice and Sheets, and RFC 4180 quoting does not stop that: the spreadsheet unquotes the field before deciding what it is. The CSV writes such a cell with a leading apostrophe, the spreadsheet's own marker for literal text, which the spreadsheet consumes so the passage displays exactly as it was retrieved; nothing runs when the file is opened. Every cell marked that way is named in `warnings`, so a quotation you were promised verbatim is never altered silently, and a plain number such as a page locator of `-5` is left alone. Markdown output is never marked, because nothing evaluates it.
 
 ## Saving the table into Zotero
 
