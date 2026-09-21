@@ -15,8 +15,17 @@ const PDF = Buffer.from('%PDF-1.7\nfixture');
  * One scripted answer per connection attempt. `refuse` names a socket or TLS error code
  * the attempt fails with before any response, the way a dead address or a bad certificate
  * does; the others describe the response the attempt gets.
+ *
+ * A real client response carries its request as `res.req`, and Node's stream destroyer
+ * routes a destroy through `req.abort()`, which dumps the response's 'data' listeners. The
+ * shim below gives the mock that shape. `plainResponse` leaves it off: the response is then
+ * a bare Readable whose destroy removes nothing, so a buffered body still drains into
+ * whatever listener is attached, and the adapter has to hold on its own rather than by
+ * courtesy of the destroyer's heuristics.
  */
-function transport(replies: Array<{ status?: number; headers?: string[]; body?: Buffer; stall?: boolean; refuse?: string }>) {
+function transport(
+  replies: Array<{ status?: number; headers?: string[]; body?: Buffer; stall?: boolean; refuse?: string; plainResponse?: boolean }>,
+) {
   const calls: RequestOptions[] = [];
   vi.mocked(request).mockImplementation(((opts: RequestOptions, callback: (res: unknown) => void) => {
     calls.push(opts);
@@ -35,21 +44,13 @@ function transport(replies: Array<{ status?: number; headers?: string[]; body?: 
         callback(res);
         if (!reply.stall) res.end(reply.body ?? PDF);
       },
-      // Cancelling the web stream that `Readable.toWeb` builds over a client response does
-      // not destroy the response. Node's stream destroyer recognises `res.req` as the request
-      // (anything with `setHeader` and `abort`) and aborts that instead, and
-      // ClientRequest.destroy() then dumps the response: every 'data' listener is removed
-      // before the buffered body drains. A PassThrough with no `req` is destroyed in its
-      // place, which removes nothing, so the resume the adapter had already scheduled still
-      // delivered the buffered body to its listener, and enqueue on the cancelled controller
-      // threw "Controller is already closed" on a nextTick outside any test.
       setHeader: () => {},
       abort: () => {
         res.removeAllListeners('data');
         res.resume();
       },
     });
-    Object.assign(res, { req });
+    if (!reply.plainResponse) Object.assign(res, { req });
     return req;
   }) as any);
   const defaultFetch = vi.fn(async () => { throw new Error('Unpinned fetch must never be used'); });
@@ -168,7 +169,7 @@ describe('the pinned transport never enqueues into a controller the consumer has
    * nothing catches it.
    */
   it('drops the buffered body after a cancel instead of throwing inside the event loop', async () => {
-    transport([{ status: 404, body: Buffer.from('not here') }]);
+    transport([{ status: 404, body: Buffer.from('not here'), plainResponse: true }]);
     const fetch = pinnedHttpsFetch(['93.184.216.34']);
     const errors = await uncaughtDuring(async () => {
       const res = await fetch('https://repo.example/paper.pdf');
@@ -180,7 +181,7 @@ describe('the pinned transport never enqueues into a controller the consumer has
   });
 
   it('hands a redirect over with no body at all, since the caller only reads its Location', async () => {
-    transport([{ status: 302, headers: ['location', 'https://cdn.example/paper.pdf'], body: Buffer.from('moved') }]);
+    transport([{ status: 302, headers: ['location', 'https://cdn.example/paper.pdf'], body: Buffer.from('moved'), plainResponse: true }]);
     const fetch = pinnedHttpsFetch(['93.184.216.34']);
     const errors = await uncaughtDuring(async () => {
       const res = await fetch('https://repo.example/paper.pdf');
