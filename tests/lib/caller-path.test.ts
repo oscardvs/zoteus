@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtemp, mkdir, writeFile, symlink, rm, realpath } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { resolveCallerPath, CallerPathError } from '../../src/lib/caller-path.js';
 
 /**
@@ -41,6 +41,25 @@ describe('resolveCallerPath', () => {
   it('lets an unconfined caller reach anything: on stdio they own the machine', async () => {
     const target = join(outside, 'secret.env');
     await expect(resolveCallerPath(target, opts({ confined: false }))).resolves.toBe(target);
+  });
+
+  it('expands a leading ~ for an unconfined caller, as the documented examples assume', async () => {
+    // A tool argument is not passed through a shell, so nothing else expands it, and
+    // path.resolve would have made it `<cwd>/~/Downloads/x.bib`.
+    await expect(resolveCallerPath('~/Downloads/x.bib', opts({ confined: false }))).resolves.toBe(
+      join(homedir(), 'Downloads', 'x.bib'),
+    );
+    await expect(resolveCallerPath('~', opts({ confined: false }))).resolves.toBe(homedir());
+    // Only a leading `~/` is a home reference; `~user` and a `~` inside the path are literal.
+    await expect(resolveCallerPath('~other/x', opts({ confined: false }))).resolves.toBe(resolve('~other/x'));
+    await expect(resolveCallerPath(join(outside, '~', 'x'), opts({ confined: false }))).resolves.toBe(
+      join(outside, '~', 'x'),
+    );
+  });
+
+  it('never expands ~ for a confined caller, whose ~ would be the operator\'s home', async () => {
+    await expect(resolveCallerPath('~/x', opts())).rejects.toBeInstanceOf(CallerPathError);
+    await expect(resolveCallerPath('~/x', opts({ mode: 'write' }))).rejects.toBeInstanceOf(CallerPathError);
   });
 
   it('allows a confined read inside the data directory', async () => {

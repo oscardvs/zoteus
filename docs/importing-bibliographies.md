@@ -22,9 +22,11 @@ you ask for the write.
 { "action": "by_file", "text": "@article{…}" }
 ```
 
-`text` and `path` are alternatives: pass exactly one. `format` (`bibtex`, `ris`, `csljson`)
-overrides the sniffer, which recognises BibTeX by its `@type{` entries, RIS by its `XX  - `
-tag lines, and CSL-JSON by being JSON.
+`text` and `path` are alternatives: pass exactly one. A `path` starting with `~/` is expanded
+to your home directory on a local (stdio) install, where the caller is the operator; on a
+shared or hosted server it is not, because there `~` would name the operator's home. `format`
+(`bibtex`, `ris`, `csljson`) overrides the sniffer, which recognises BibTeX by its `@type{`
+entries, RIS by its `XX  - ` tag lines, and CSL-JSON by being JSON.
 
 The result carries `parsed` (entries in the file), `items` (what would be created, when you
 did not save), `warnings` (what could not be done exactly), `skipped` (entries that were not

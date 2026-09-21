@@ -1,4 +1,5 @@
 import { realpath } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 
 /**
@@ -31,6 +32,22 @@ export interface CallerPathOptions {
 }
 
 /**
+ * `~/Downloads/x.bib` as the operator means it: their own home directory.
+ *
+ * Only the operator's paths are expanded. A shell expands `~` before a program ever sees
+ * it, so a path typed by hand arrives expanded and one passed through a tool argument does
+ * not, and `path.resolve` would have quietly turned the latter into `<cwd>/~/Downloads`.
+ * For a confined caller `~` would name the OPERATOR's home, which is exactly what
+ * confinement exists to keep them out of, so their `~` stays a literal and is refused as
+ * any other path outside the data directory is.
+ */
+function expandHome(raw: string): string {
+  if (raw === '~') return homedir();
+  if (raw.startsWith('~/')) return join(homedir(), raw.slice(2));
+  return raw;
+}
+
+/**
  * Resolve a path a tool caller supplied, refusing it when it escapes the data directory
  * on a deployment where the caller is not the operator.
  *
@@ -39,8 +56,8 @@ export interface CallerPathOptions {
  * the file itself need not exist yet, so its parent directory is what gets resolved.
  */
 export async function resolveCallerPath(raw: string, opts: CallerPathOptions): Promise<string> {
+  if (!opts.confined) return resolve(expandHome(raw));
   const target = resolve(raw);
-  if (!opts.confined) return target;
 
   const root = await realpath(opts.dataDir).catch(() => resolve(opts.dataDir));
 
