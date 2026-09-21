@@ -157,7 +157,17 @@ function noticesSummary(r: NoticeReport): string {
         `${unreached.length === 1 ? 'was' : 'were'} not reached, so part of the check did not run.`,
     );
   } else if (!r.notices.length && !r.isNoticeFor.length && r.openalex?.isRetracted !== true) {
-    parts.push('No update record is deposited for this DOI at either source.');
+    // "At either source" is only true when both had a record to check. A source with no
+    // record of the DOI answered, but it checked nothing, and when that source is Crossref
+    // it is the one where update notices (Retraction Watch's included) are deposited.
+    const missing = r.sources.filter((s) => s.found === false).map((s) => s.name);
+    if (missing.length === 0) {
+      parts.push('No update record is deposited for this DOI at either source.');
+    } else if (missing.includes('crossref')) {
+      parts.push('Crossref had no record for this DOI, and Crossref is where update notices are deposited, so this check covers OpenAlex’s flag alone.');
+    } else {
+      parts.push('OpenAlex had no record for this DOI, so this check covers Crossref’s update records alone.');
+    }
   }
 
   if (r.notices.length || r.isNoticeFor.length || r.openalex?.isRetracted === true) parts.push(NOT_A_VERDICT);

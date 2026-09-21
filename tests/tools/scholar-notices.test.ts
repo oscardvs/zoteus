@@ -225,6 +225,38 @@ describe('zotero_scholar action:"notices" never renders an outage as a clean res
     // Not reached is a different sentence from not found, and only one of them is here.
     expect(summaryOf(res)).not.toMatch(/was not reached/);
   });
+
+  /**
+   * "At either source" is a claim about two checks. When Crossref has no record of the DOI
+   * it answered, but it checked nothing, and Crossref is where the deposited notices live.
+   */
+  it('does not say "at either source" when Crossref had no record to check', async () => {
+    const c = ctx({
+      crossref: () => new Response('not found', { status: 404 }),
+      openalex: () => openalexWork(CLEAN, { is_retracted: false }),
+    });
+    const res = await scholar.handler({ action: 'notices', doi: CLEAN }, c);
+    expect(res.isError).toBeFalsy();
+    const sc = res.structuredContent as any;
+    expect(sc.sources.find((s: any) => s.name === 'crossref')).toMatchObject({ reached: true, found: false, status: 404 });
+    const text = summaryOf(res);
+    expect(text).not.toMatch(/at either source/);
+    expect(text).toMatch(/Crossref had no record for this DOI, and Crossref is where update notices are deposited, so this check covers OpenAlex.s flag alone/);
+    expect(text).toMatch(/OpenAlex sets is_retracted: false/);
+  });
+
+  it('names OpenAlex as the source with no record when it is the one missing', async () => {
+    const c = ctx({
+      crossref: () => crossrefWork({ DOI: CLEAN, title: ['Deep learning'] }),
+      openalex: () => new Response('not found', { status: 404 }),
+    });
+    const res = await scholar.handler({ action: 'notices', doi: CLEAN }, c);
+    expect(res.isError).toBeFalsy();
+    const text = summaryOf(res);
+    expect(text).not.toMatch(/at either source/);
+    expect(text).toMatch(/OpenAlex had no record for this DOI, so this check covers Crossref.s update records alone/);
+    expect(text).toMatch(/Crossref lists no update record/);
+  });
 });
 
 describe('zotero_scholar action:"notices" says when the two sources disagree', () => {
