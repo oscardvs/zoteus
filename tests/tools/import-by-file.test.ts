@@ -16,6 +16,11 @@ const LIB = { type: 'user' as const, id: 19552201 };
 
 let dataDir: string;
 let insideDataDir: string;
+let latin1Path: string;
+let utf16Path: string;
+
+const ACCENTED_BIB =
+  '@article{s1926,\n  title = {Schrödinger and the wave equation},\n  author = {Erwin Schrödinger},\n  year = {1926}\n}\n';
 
 beforeAll(() => {
   dataDir = mkdtempSync(join(tmpdir(), 'zoteus-import-file-'));
@@ -24,6 +29,12 @@ beforeAll(() => {
   insideDataDir = join(dataDir, 'tenants', 'shared', 'inside.bib');
   mkdirSync(join(dataDir, 'tenants', 'shared'), { recursive: true });
   writeFileSync(insideDataDir, BIBTEX_FIXTURE, 'utf8');
+  // The same entry as an older reference manager writes it: one byte per accented letter.
+  latin1Path = join(dataDir, 'latin1.bib');
+  writeFileSync(latin1Path, Buffer.from(ACCENTED_BIB, 'latin1'));
+  // And as a Windows export sometimes writes it: UTF-16 with a byte-order mark.
+  utf16Path = join(dataDir, 'utf16.bib');
+  writeFileSync(utf16Path, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(ACCENTED_BIB, 'utf16le')]));
 });
 
 afterAll(() => {
@@ -319,6 +330,32 @@ describe('zotero_import action:"by_file" and the translation-server', () => {
     const ctx = makeCtx({ translation: { isUp: vi.fn(async () => true), import: vi.fn(async () => []) } });
     const res = await call({ text: RIS_FIXTURE }, ctx);
     expect(res.structuredContent.format).toBe('ris');
+  });
+});
+
+describe('zotero_import action:"by_file" file encodings', () => {
+  it('reads a Latin-1 file as Windows-1252 and says it guessed, instead of saving U+FFFD', async () => {
+    const res = await call({ path: latin1Path }, makeCtx());
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.items[0].title).toBe('Schrödinger and the wave equation');
+    expect(res.structuredContent.items[0].creators[0]).toMatchObject({ lastName: 'Schrödinger' });
+    expect(JSON.stringify(res.structuredContent.items)).not.toMatch(/�/);
+    expect(res.structuredContent.warnings.join(' ')).toMatch(/latin1\.bib is not valid UTF-8, so it was read as Windows-1252/);
+    expect(res.content[0].text).toMatch(/1 warning\(s\); see warnings\./);
+  });
+
+  it('reads UTF-8 with accents without any encoding warning', async () => {
+    const res = await call({ text: ACCENTED_BIB }, makeCtx());
+    expect(res.structuredContent.items[0].title).toBe('Schrödinger and the wave equation');
+    expect(res.structuredContent.warnings).toBeUndefined();
+  });
+
+  it('honours a UTF-16 byte-order mark', async () => {
+    const res = await call({ path: utf16Path }, makeCtx());
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.items[0].title).toBe('Schrödinger and the wave equation');
+    expect(res.structuredContent.warnings).toBeUndefined();
   });
 });
 

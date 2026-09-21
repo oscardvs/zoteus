@@ -957,11 +957,54 @@ function overEntryCap(ctx: ToolContext, count: number): ToolHandlerResult | unde
   );
 }
 
-/** The payload itself, from `text` or from a file the caller is allowed to name. */
+/**
+ * A bibliography's bytes as text, never passing off a mis-decoding as the file.
+ *
+ * `readFile(path, 'utf8')` turns every byte that is not UTF-8 into U+FFFD without a word,
+ * so a Latin-1 or Windows-1252 .bib or .ris, which is what an older reference manager or a
+ * Windows export still writes, saved "Schr�dinger" into the library under a clean
+ * count. The strict decoder refuses such a file instead, and it is then read as
+ * Windows-1252, the superset of Latin-1 that those exports actually use, with a warning
+ * that names the guess so the caller checks the accented names rather than trusting them.
+ * A UTF-16 byte-order mark is honoured too: an export from Windows sometimes carries one,
+ * and read as anything else it is NUL-riddled nonsense that no format sniffer recognises.
+ */
+function decodeBibliographyBytes(bytes: Uint8Array, name: string): { text: string; warning?: string } {
+  const bom = bytes.length >= 2 ? (bytes[0]! << 8) | bytes[1]! : 0;
+  if (bom === 0xfffe || bom === 0xfeff) {
+    try {
+      return { text: new TextDecoder(bom === 0xfffe ? 'utf-16le' : 'utf-16be').decode(bytes) };
+    } catch {
+      // A Node built without full ICU has no big-endian decoder; fall through to the guess.
+    }
+  }
+  try {
+    return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) };
+  } catch {
+    let text: string;
+    try {
+      text = new TextDecoder('windows-1252').decode(bytes);
+    } catch {
+      text = Buffer.from(bytes).toString('latin1');
+    }
+    return {
+      text,
+      warning:
+        `${name} is not valid UTF-8, so it was read as Windows-1252 (Latin-1), the encoding older reference ` +
+        'managers and Windows exports write. Check the accented names and titles in the result; if they are ' +
+        'wrong, save the file as UTF-8 and import it again.',
+    };
+  }
+}
+
+/**
+ * The payload itself, from `text` or from a file the caller is allowed to name, plus any
+ * warning the reading itself earned (a file that had to be decoded by guesswork).
+ */
 async function readBibliographyPayload(
   ctx: ToolContext,
   args: any,
-): Promise<{ text: string } | { error: string }> {
+): Promise<{ text: string; warnings: string[] } | { error: string }> {
   const hasText = typeof args.text === 'string' && args.text.trim().length > 0;
   const hasPath = typeof args.path === 'string' && args.path.trim().length > 0;
   if (hasText && hasPath) {
@@ -978,7 +1021,7 @@ async function readBibliographyPayload(
         error: `\`text\` is ${megabytes(size)}, over the ${megabytes(MAX_PAYLOAD_BYTES)} payload cap. Nothing was parsed. Split it.`,
       };
     }
-    return { text: args.text as string };
+    return { text: args.text as string, warnings: [] };
   }
   if (!hasPath) {
     return {
@@ -1010,11 +1053,14 @@ async function readBibliographyPayload(
   } catch (e) {
     return { error: `${args.path} could not be opened: ${e instanceof Error ? e.message : String(e)}` };
   }
+  let bytes: Uint8Array;
   try {
-    return { text: await readFile(resolved, 'utf8') };
+    bytes = new Uint8Array(await readFile(resolved));
   } catch (e) {
     return { error: `${args.path} could not be read: ${e instanceof Error ? e.message : String(e)}` };
   }
+  const decoded = decodeBibliographyBytes(bytes, String(args.path));
+  return { text: decoded.text, warnings: decoded.warning ? [decoded.warning] : [] };
 }
 
 /**
@@ -1091,7 +1137,7 @@ async function importFromFile(ctx: ToolContext, args: any): Promise<ToolHandlerR
       source: 'translation-server-import',
       format: 'translation-server',
       parsed: viaServer.length,
-      warnings: [],
+      warnings: readWarnings,
       skipped: [],
     });
   }
@@ -1149,7 +1195,7 @@ async function importFromFile(ctx: ToolContext, args: any): Promise<ToolHandlerR
     format,
     parsed: parsed.records.length,
     mapping: tables.origin,
-    warnings: [...parsed.warnings, ...mapped.warnings],
+    warnings: [...readWarnings, ...parsed.warnings, ...mapped.warnings],
     skipped,
   });
 }
