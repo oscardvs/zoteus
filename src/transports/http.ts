@@ -131,21 +131,40 @@ export async function startHttp(
   } else {
     const factory = serverOrFactory;
     const transports = new Map<string, StreamableHTTPServerTransport>();
+    const owners = new Map<string, string>();
+    // Bind sessions to the authenticated account, client, and Zotero credential.
+    // Access-token refresh can retain a session; a different library key cannot.
+    const ownerOf = (auth?: AuthInfo): string => {
+      if (!auth) return 'operator';
+      const extra = auth.extra as { zoteroUserId?: number; zoteroKey?: string } | undefined;
+      return createHash('sha256').update(JSON.stringify([
+        auth.clientId, extra?.zoteroUserId, extra?.zoteroKey,
+        extra?.zoteroKey ? undefined : auth.token,
+      ])).digest('hex');
+    };
     route = async (req, res) => {
       const body = req.method === 'POST' ? req.body : undefined;
       const header = req.headers['mcp-session-id'];
       const sessionId = Array.isArray(header) ? header[0] : header;
 
+      const auth = (req as express.Request & { auth?: AuthInfo }).auth;
+      const owner = ownerOf(auth);
       let transport: StreamableHTTPServerTransport | undefined;
-      if (sessionId && transports.has(sessionId)) {
+      if (sessionId && transports.has(sessionId) && owners.get(sessionId) === owner) {
         transport = transports.get(sessionId);
       } else if (!sessionId && req.method === 'POST' && isInitialize(body)) {
-        transport = makeTransport((sid) => transports.set(sid, transport!));
+        transport = makeTransport((sid) => {
+          transports.set(sid, transport!);
+          owners.set(sid, owner);
+        });
         transport.onclose = () => {
           const sid = transport!.sessionId;
-          if (sid) transports.delete(sid);
+          if (sid) {
+            transports.delete(sid);
+            owners.delete(sid);
+          }
         };
-        const server = await factory((req as express.Request & { auth?: AuthInfo }).auth);
+        const server = await factory(auth);
         await server.connect(transport);
       } else if (sessionId) {
         // A session ID this process does not know: it restarted (any redeploy) or the

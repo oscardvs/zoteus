@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { zoteroObject } from './common-output.js';
 import { resolveCallerPath, CallerPathError } from '../lib/caller-path.js';
+import { callerRoot } from './caller-root.js';
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -58,12 +59,20 @@ const attachment: ToolDefinition = {
   handler: async (args, ctx) => {
     // Caller-supplied paths are resolved first, before any library or network work: on a
     // shared deployment they address the operator's disk, not the caller's.
+    //
+    // The root is the CALLER's subtree, not the whole data directory. Confining to the data
+    // directory keeps a path off the operator's disk but says nothing about the other
+    // tenants sharing it, and `action:"upload"` reads the file it is given: a caller who
+    // named another tenant's path got that tenant's bytes copied into their own library.
+    // Everything Zoteus writes for a caller now lives under their own root (see callerRoot),
+    // so this is the same rule applied to reads that the document writer applies to writes.
+    const root = await callerRoot(ctx);
     let uploadPath = args.file_path;
     let savePath: string | undefined;
     try {
       if (uploadPath) {
         uploadPath = await resolveCallerPath(uploadPath, {
-          dataDir: ctx.config.dataDir,
+          dataDir: root,
           confined: ctx.remoteCaller,
           mode: 'read',
           argName: 'file_path',
@@ -72,7 +81,7 @@ const attachment: ToolDefinition = {
       }
       if (args.save_path) {
         savePath = await resolveCallerPath(args.save_path, {
-          dataDir: ctx.config.dataDir,
+          dataDir: root,
           confined: ctx.remoteCaller,
           mode: 'write',
           argName: 'save_path',
@@ -93,7 +102,7 @@ const attachment: ToolDefinition = {
 
     if (args.action === 'info') {
       if (!args.item_key) return err('`item_key` is required for info.');
-      const library = optionalLibrary(args);
+      const library = optionalLibrary(args, ctx);
       const item = await ctx.router.getItem(args.item_key, { library });
       return ok({ attachment: item }, `Attachment ${args.item_key}: ${item?.data?.filename ?? item?.data?.title ?? '(unnamed)'}.`);
     }
@@ -146,7 +155,10 @@ const attachment: ToolDefinition = {
 
     // download
     if (!args.item_key) return err('`item_key` is required for download.');
-    savePath ??= join(ctx.config.dataDir, 'attachments', args.item_key);
+    // Under the caller's own root, for the same reason the confinement above is: on a shared
+    // deployment two tenants downloading the same item key would otherwise write to, and read
+    // back, one path. On stdio `root` IS the data directory, so this is the previous location.
+    savePath ??= join(root, 'attachments', args.item_key);
     await mkdir(dirname(savePath), { recursive: true });
     const r = await downloadFile(ctx.web, lib, args.item_key, savePath);
     return ok(

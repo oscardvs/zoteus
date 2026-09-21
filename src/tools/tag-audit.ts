@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { readFile } from 'node:fs/promises';
 import { resolveCallerPath, CallerPathError } from '../lib/caller-path.js';
+import { callerRoot } from './caller-root.js';
 import type { ToolContext, ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
 import { libraryArgs } from './common-args.js';
 import { ok, optionalLibrary } from '../registry/registry.js';
@@ -254,8 +255,13 @@ const tagAudit: ToolDefinition = {
     else if (args.vocabulary_path) {
       let vocabPath: string;
       try {
+        // The caller's OWN subtree, not the whole data directory: on a shared deployment
+        // the data directory holds the OAuth token store and every other tenant's files,
+        // and "could not read" against "not valid JSON" against a per-key issue list is an
+        // existence oracle over all of them, plus a reflection of any JSON another tenant
+        // had downloaded. The same root the writes and the other reads are held to.
         vocabPath = await resolveCallerPath(args.vocabulary_path, {
-          dataDir: ctx.config.dataDir,
+          dataDir: await callerRoot(ctx),
           confined: ctx.remoteCaller,
           mode: 'read',
           argName: 'vocabulary_path',
@@ -282,7 +288,7 @@ const tagAudit: ToolDefinition = {
       vocab = parsed.data;
     } else return err('Provide a `vocabulary` object or a `vocabulary_path`.');
 
-    const library: LibraryRef | undefined = optionalLibrary(args);
+    const library: LibraryRef | undefined = optionalLibrary(args, ctx);
     const lib = library ?? ctx.router.defaultLibrary();
     const cap = args.limit ?? 50;
 

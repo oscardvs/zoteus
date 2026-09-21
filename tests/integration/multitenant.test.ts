@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startHttp } from '../../src/transports/http.js';
 import { buildOAuth } from '../../src/auth/router.js';
-import { buildServer, createServer, ContextCache } from '../../src/server.js';
+import { buildServer, createServerFrom, ContextCache } from '../../src/server.js';
 import { loadConfig } from '../../src/config.js';
 
 let httpServer: Server | undefined;
@@ -29,7 +29,18 @@ const KEY_TO_USER: Record<string, { userId: number; username: string }> = {
   KEY_BOB: { userId: 222, username: 'bob' },
 };
 
+/**
+ * Zotero's desktop local API. Nothing in this file may reach it: it is the developer's own
+ * running Zotero, holding the developer's own library, and a hosted deployment (which is
+ * what these cases model) has no desktop app at all.
+ */
+const DESKTOP_LOCAL_API_PORT = 23119;
+
+/** Every URL the mock handed to the real network, so a case can prove where it did not go. */
+let passedThrough: string[] = [];
+
 function installMockZotero(nextReqToken: () => string): void {
+  passedThrough = [];
   const form = (s: string): Response =>
     new Response(s, { status: 200, headers: { 'content-type': 'application/x-www-form-urlencoded' } });
   const stub = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -56,6 +67,7 @@ function installMockZotero(nextReqToken: () => string): void {
       });
     }
     // Everything else (the local /mcp server + MCP client) goes to the real fetch.
+    passedThrough.push(url);
     return realFetch(input as Parameters<typeof fetch>[0], init);
   }) as typeof fetch;
   vi.stubGlobal('fetch', stub);
@@ -144,6 +156,10 @@ describe('multi-tenant: two Zotero users resolve to different libraries', () => 
       ZOTEUS_READ_ONLY: 'true',
       // Keep the test hermetic: no release lookup, no cache write outside the sandbox.
       ZOTEUS_UPDATE_CHECK: 'false',
+      // And no desktop app. Left at the default the operator context built below probes
+      // 127.0.0.1:23119 on startup, which on a developer machine is a real running Zotero
+      // answering out of a real library. A hosted server never has one anyway.
+      ZOTEUS_LOCAL: 'off',
       // Each resolved tenant opens its own index store, so keep those files out of the
       // real data dir.
       ZOTEUS_DATA_DIR: mkdtempSync(join(tmpdir(), 'zoteus-multitenant-')),
@@ -152,7 +168,7 @@ describe('multi-tenant: two Zotero users resolve to different libraries', () => 
     const oauth = await buildOAuth(config);
     const { ctx } = await buildServer(config);
     const cache = new ContextCache(config, ctx);
-    httpServer = await startHttp(async (authInfo) => createServer(await cache.resolve(authInfo)), {
+    httpServer = await startHttp(async (authInfo) => createServerFrom(config, () => cache.resolve(authInfo)), {
       port: 0,
       host: '127.0.0.1',
       oauth,
@@ -170,5 +186,34 @@ describe('multi-tenant: two Zotero users resolve to different libraries', () => 
     expect(idA).toBe(111);
     expect(idB).toBe(222);
     expect(idA).not.toBe(idB);
+
+    // A valid token for Bob must never reuse Alice's initialized MCP session.
+    const alice = new Client({ name: 'session-owner', version: '0.0.0' });
+    const aliceTransport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
+      requestInit: { headers: { Authorization: `Bearer ${tokenA}` } },
+    });
+    await alice.connect(aliceTransport);
+    for (const method of ['POST', 'GET', 'DELETE']) {
+      const stolen = await realFetch(`${base}/mcp`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${tokenB}`,
+          'mcp-session-id': aliceTransport.sessionId!,
+          accept: 'application/json, text/event-stream',
+          'content-type': 'application/json',
+        },
+        ...(method === 'POST' ? { body: JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'tools/list', params: {} }) } : {}),
+      });
+      expect(stolen.status).toBe(404);
+    }
+    const owned = await alice.callTool({ name: 'zotero_whoami', arguments: {} });
+    expect((owned.structuredContent as { userID: number }).userID).toBe(111);
+    await alice.close();
+    await cache.flushIndexes();
+
+    // Nothing here went near the developer's own Zotero. Every request the mock let
+    // through was to this test's own HTTP server on 127.0.0.1; the startup capability
+    // probe used to add two more to the desktop app's port.
+    expect(passedThrough.filter((u) => u.includes(`:${DESKTOP_LOCAL_API_PORT}`))).toEqual([]);
   }, 30_000);
 });
