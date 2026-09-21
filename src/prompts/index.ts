@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { registerEvidenceTablePrompt } from './evidence-table.js';
 
 function userMessage(text: string) {
   return { messages: [{ role: 'user' as const, content: { type: 'text' as const, text } }] };
@@ -105,4 +106,5 @@ export function registerPrompts(server: McpServer): void {
         `Summarize the "${collection}" collection: list its items with zotero_search_items (collectionKey), read key abstracts with zotero_get_item, and produce a thematic overview explicitly labelled as based on abstracts. Retrieve relevant PDF passages with zotero_get_fulltext before making detailed factual claims, and flag unavailable sources.`,
       ),
   );
+  registerEvidenceTablePrompt(server);
 }
