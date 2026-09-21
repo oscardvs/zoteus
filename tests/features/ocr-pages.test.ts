@@ -4,6 +4,7 @@ import {
   ocrPageCap,
   ocrCapNotice,
   ELECTRON_OCR_MAX_PAGES,
+  OCR_PAGE_TIMEOUT_MS,
 } from '../../src/features/ocr/ocr-pages.js';
 import type { OcrEngine, OcrPageImage } from '../../src/features/ocr/engine.js';
 import { renderPdfPages } from '../../src/features/fulltext/pdf-images.js';
@@ -180,6 +181,83 @@ describeRendered('ocrPdfPages', () => {
       ocrPdfPages(pdf, { ...opts, pages: [1], engine: slow() }),
     ]);
     expect(peak).toBe(1);
+  });
+});
+
+/**
+ * A wasm worker that never answers. Before the deadline, one such page held the
+ * serialisation gate forever and every later OCR call in the process queued behind it
+ * with no error: the failure that no amount of page capping bounds.
+ */
+describeRendered('a page whose recognition never finishes', () => {
+  /** An engine that answers every page but `hangOn`, which it never answers. */
+  function hangingEngine(hangOn: number): OcrEngine & { closed: number; seen: number[] } {
+    const engine = {
+      name: 'hung-ocr',
+      closed: 0,
+      seen: [] as number[],
+      readPage(image: OcrPageImage): Promise<string> {
+        engine.seen.push(image.page);
+        return image.page === hangOn ? new Promise<string>(() => {}) : Promise.resolve(`page ${image.page}`);
+      },
+      async close() {
+        engine.closed++;
+      },
+    };
+    return engine;
+  }
+
+  /**
+   * A real, short deadline rather than a faked clock: pdfjs renders through native canvas
+   * code that no fake clock can hurry, and a page that never resolves loses a 20 ms race
+   * as surely as a 60 s one. The default constant is pinned separately, and the tool-level
+   * test in tests/tools/get-fulltext-ocr.test.ts exercises it under fake timers.
+   */
+  const quick = { ...opts, pageTimeoutMs: 20 };
+
+  it('defaults the deadline to a minute per page', () => {
+    expect(OCR_PAGE_TIMEOUT_MS).toBe(60_000);
+  });
+
+  it('gives the page up at the deadline, stops the worker, and reports the cause', async () => {
+    const pdf = book(4);
+    const engine = hangingEngine(2);
+    const res = await ocrPdfPages(pdf, { ...quick, pages: [1, 2, 3, 4], engine });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // Page 1 read; page 2 timed out and is unreadable with the cause named; 3 and 4 were
+    // rendered but never recognised, because the worker they needed was stopped.
+    expect(res.read).toEqual([1]);
+    expect(res.timedOut).toEqual([2]);
+    expect(res.unreadable).toEqual([2]);
+    expect(res.deferred).toEqual([3, 4]);
+    expect(res.pages).toEqual(['page 1', '', '', '']);
+    expect(engine.seen).toEqual([1, 2]);
+    // Terminated exactly once, even though it was injected and would otherwise be left alone.
+    expect(engine.closed).toBe(1);
+  });
+
+  it('releases the gate, so the next OCR call in the process still runs', async () => {
+    const pdf = book(1);
+    const hung = await ocrPdfPages(pdf, { ...quick, pages: [1], engine: hangingEngine(1) });
+    expect(hung.ok && hung.timedOut).toEqual([1]);
+    const after = fakeEngine();
+    const res = await ocrPdfPages(pdf, { ...opts, pages: [1], engine: after });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.read).toEqual([1]);
+    expect(after.seen).toHaveLength(1);
+  });
+
+  it('leaves a page that reads in time alone, and the engine open', async () => {
+    const pdf = book(2);
+    const engine = fakeEngine();
+    const res = await ocrPdfPages(pdf, { ...quick, pages: [1, 2], engine });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.timedOut).toEqual([]);
+    expect(res.read).toEqual([1, 2]);
+    expect(engine.closed).toBe(0);
   });
 });
 

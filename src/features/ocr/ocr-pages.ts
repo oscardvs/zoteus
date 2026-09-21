@@ -51,6 +51,18 @@ export const OCR_DPI = MAX_DPI;
  */
 export const ELECTRON_OCR_MAX_PAGES = 2;
 
+/**
+ * How long one page may take to recognise before the pass gives up on it.
+ *
+ * A wasm worker that never resolves would otherwise hold the `ocrSerialized` gate below
+ * forever, and every later OCR call in the process would queue behind it with no error.
+ * Sixty seconds is several times what a dense 300 dpi page costs tesseract on the slowest
+ * machine this runs on (the 1 GB hosted box), so a page that takes longer is a page that
+ * has hung. When it fires the worker is terminated, because a worker that has stopped
+ * answering cannot be asked for the next page either.
+ */
+export const OCR_PAGE_TIMEOUT_MS = 60_000;
+
 export interface OcrPagesOptions {
   /** 1-based pages wanted, in order. Pages past the end are reported, not read. */
   pages: number[];
@@ -73,6 +85,8 @@ export interface OcrPagesOptions {
   engine?: OcrEngine;
   /** Runtime versions, injectable so the Electron cap can be tested from plain Node. */
   versions?: RuntimeVersions;
+  /** Deadline per page; {@link OCR_PAGE_TIMEOUT_MS} unless a test says otherwise. */
+  pageTimeoutMs?: number;
 }
 
 export interface OcrPagesResult {
@@ -84,10 +98,18 @@ export interface OcrPagesResult {
   read: number[];
   /** Requested pages the document does not have. */
   missing: number[];
-  /** Requested pages the per-call cap left for a later call. */
+  /**
+   * Requested pages left for a later call: the ones past the per-call cap, and the ones
+   * that were rendered but never recognised because the pass stopped on a timed-out page.
+   */
   deferred: number[];
-  /** Pages that were read and came back with no text at all. */
+  /**
+   * Pages that yielded no text: recognised as blank, or given up on. Every page in
+   * `timedOut` is here too; the rest were read to the end and came back empty.
+   */
   unreadable: number[];
+  /** Pages whose recognition had not finished after {@link OCR_PAGE_TIMEOUT_MS}, and stopped the pass. */
+  timedOut: number[];
   /** The engine's own name, for the notice: OCR text must never look like publisher text. */
   engine: string;
   /** Pages the cap allowed, and why it is not the configured number when it is not. */
@@ -147,6 +169,22 @@ export function ocrCapNotice(configured: number, versions?: RuntimeVersions): st
 /** OCR output as one page's worth of text: trailing space stripped, blank lines collapsed. */
 function tidy(text: string): string {
   return text.replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+const TIMED_OUT: unique symbol = Symbol('ocr page timed out');
+
+/**
+ * `promise`, or {@link TIMED_OUT} once `ms` have passed without it settling. The timer is
+ * cleared either way, so a page that reads in a second leaves nothing pending, and a
+ * promise that settles after the deadline is simply ignored: `Promise.race` already
+ * subscribed to it, so a late rejection is handled rather than unhandled.
+ */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -210,20 +248,41 @@ export async function ocrPdfPages(
         };
       }
     }
+    const timeoutMs = opts.pageTimeoutMs ?? OCR_PAGE_TIMEOUT_MS;
+    let closed = false;
+    const close = async (): Promise<void> => {
+      if (closed) return;
+      closed = true;
+      await engine.close().catch(() => {});
+    };
     try {
       const pages: string[] = new Array<string>(drawn.numPages).fill('');
       const read: number[] = [];
       const unreadable: number[] = [];
-      for (const page of drawn.rendered) {
-        const text = tidy(
-          await engine.readPage({
+      const timedOut: number[] = [];
+      /** Rendered pages the pass never got to, because it stopped on a timed-out one. */
+      const abandoned: number[] = [];
+      for (const [i, page] of drawn.rendered.entries()) {
+        const answer = await withDeadline(
+          engine.readPage({
             page: page.page,
             bytes: page.bytes,
             mimeType: page.mimeType,
             width: page.width,
             height: page.height,
           }),
+          timeoutMs,
         );
+        if (answer === TIMED_OUT) {
+          // The worker is terminated whoever started it: one that has stopped answering
+          // cannot be asked for the next page, and left alive it would hold the gate.
+          timedOut.push(page.page);
+          unreadable.push(page.page);
+          abandoned.push(...drawn.rendered.slice(i + 1).map((p) => p.page));
+          await close();
+          break;
+        }
+        const text = tidy(answer);
         pages[page.page - 1] = text;
         read.push(page.page);
         if (!text) unreadable.push(page.page);
@@ -234,8 +293,9 @@ export async function ocrPdfPages(
         numPages: drawn.numPages,
         read,
         missing: drawn.missing,
-        deferred,
+        deferred: [...abandoned, ...deferred],
         unreadable,
+        timedOut,
         engine: engine.name,
         cap,
         capNotice,
@@ -243,7 +303,7 @@ export async function ocrPdfPages(
       };
     } finally {
       // An injected engine belongs to the caller; one this call started does not outlive it.
-      if (ours) await engine.close().catch(() => {});
+      if (ours) await close();
     }
   });
 }

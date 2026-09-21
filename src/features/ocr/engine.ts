@@ -48,7 +48,12 @@ export interface OcrPageImage {
 export interface OcrEngine {
   /** What to call it in a notice, e.g. "tesseract.js (eng)". */
   readonly name: string;
-  /** Text read off one page. Returns '' for a page it could not read; never throws. */
+  /**
+   * Text read off one page. Returns '' for a page it could not read; never throws. It may
+   * also never resolve: a wasm worker can hang, so the caller (ocr-pages.ts) races every
+   * page against OCR_PAGE_TIMEOUT_MS and calls `close` when the deadline fires. Nothing
+   * here has a deadline of its own, so that there is exactly one.
+   */
   readPage(image: OcrPageImage): Promise<string>;
   /** Release the worker and its heap. Called exactly once, and never throws. */
   close(): Promise<void>;

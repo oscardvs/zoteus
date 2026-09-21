@@ -38,7 +38,7 @@ import {
   type ScanReport,
 } from '../features/ocr/scan.js';
 import { missingOcrHint, OCR_MODULE, resolveOcrModule } from '../features/ocr/engine.js';
-import { ocrPageCap, ocrPdfPages, type OcrPagesResult } from '../features/ocr/ocr-pages.js';
+import { ocrPageCap, ocrPdfPages, OCR_PAGE_TIMEOUT_MS, type OcrPagesResult } from '../features/ocr/ocr-pages.js';
 
 function err(text: string): ToolHandlerResult {
   return { content: [{ type: 'text', text }], isError: true };
@@ -187,22 +187,39 @@ function ocrNotice(
       `${textLayer.length === 1 ? 'was' : 'were'} extracted directly from the PDF instead; no page outside ` +
       `those two lists has any text here.`
     : `, and only the pages listed have any text at all here.`;
-  const parts = [
-    ` Pages ${describePages(run.read)} were read by OCR with ${run.engine} in ${(run.ms / 1000).toFixed(1)} s.` +
-      ` OCR text is a machine reading of a picture of the page, not the publisher's text: it carries` +
-      ` recognition mistakes${only}`,
-  ];
-  if (run.deferred.length) {
-    const next = run.deferred[0]!;
-    const last = Math.min(run.deferred[run.deferred.length - 1]!, next + run.cap - 1);
+  const parts: string[] = [];
+  if (run.read.length) {
     parts.push(
-      ` Pages ${describePages(run.deferred)} were not read: OCR reads ${run.cap} page(s) a call` +
-        `${run.cap === maxPages ? ' (ZOTEUS_OCR_MAX_PAGES)' : ''}; call again with page_range:"${next}-${last}".`,
+      ` Pages ${describePages(run.read)} were read by OCR with ${run.engine} in ${(run.ms / 1000).toFixed(1)} s.` +
+        ` OCR text is a machine reading of a picture of the page, not the publisher's text: it carries` +
+        ` recognition mistakes${only}`,
     );
   }
-  if (run.unreadable.length) {
+  if (run.timedOut.length) {
+    // A page the engine never answered for. It is not "recognised as no text": nothing was
+    // recognised, the worker was stopped, and the pages behind it in this call were left.
+    const page = run.timedOut[0]!;
     parts.push(
-      ` Pages ${describePages(run.unreadable)} were rendered and recognised as no text at all: ` +
+      ` Page ${page} was given up on: ${run.engine} had not finished recognising it after ` +
+        `${Math.round(OCR_PAGE_TIMEOUT_MS / 1000)} s, so the engine was stopped and the pass ended there. ` +
+        `A page that dense may read alone with page_range:"${page}", and zotero_pdf_images mode:"pages" ` +
+        `renders it as a picture either way.`,
+    );
+  }
+  if (run.deferred.length) {
+    // The next call's span: the next `cap` deferred pages, which over a mixed file skips
+    // the text-layer pages in between rather than counting them against the cap.
+    const next = run.deferred[0]!;
+    const last = run.deferred[Math.min(run.deferred.length, run.cap) - 1]!;
+    const why = run.timedOut.length
+      ? `the pass stopped when page ${run.timedOut[0]} timed out`
+      : `OCR reads ${run.cap} page(s) a call${run.cap === maxPages ? ' (ZOTEUS_OCR_MAX_PAGES)' : ''}`;
+    parts.push(` Pages ${describePages(run.deferred)} were not read: ${why}; call again with page_range:"${next}-${last}".`);
+  }
+  const blank = run.unreadable.filter((p) => !run.timedOut.includes(p));
+  if (blank.length) {
+    parts.push(
+      ` Pages ${describePages(blank)} were rendered and recognised as no text at all: ` +
         unreadableCause(scan.report, scan.pixelLimit),
     );
   }

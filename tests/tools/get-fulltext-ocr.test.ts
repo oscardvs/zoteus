@@ -6,6 +6,7 @@ import getFulltext from '../../src/tools/get-fulltext.js';
 import { renderPdfPages } from '../../src/features/fulltext/pdf-images.js';
 import { textPagePdf } from '../fixtures/pdf.js';
 import { mixedBookPdf, scannedBookPdf } from '../fixtures/scanned-book.js';
+import { OCR_PAGE_TIMEOUT_MS } from '../../src/features/ocr/ocr-pages.js';
 import type { OcrEngine, OcrPageImage } from '../../src/features/ocr/engine.js';
 
 /**
@@ -18,7 +19,7 @@ import type { OcrEngine, OcrPageImage } from '../../src/features/ocr/engine.js';
 const h = vi.hoisted(() => ({
   installed: true,
   seen: [] as OcrPageImage[],
-  read: (image: OcrPageImage) => `page ${image.page}`,
+  read: ((image: OcrPageImage) => `page ${image.page}`) as (image: OcrPageImage) => string | Promise<string>,
 }));
 
 vi.mock('../../src/features/ocr/engine.js', async (importOriginal) => {
@@ -372,6 +373,58 @@ describeRendered('a scan whose pages are too many pixels for this server to deco
     expect(sc.notice).toContain('recognised as no text at all');
     expect(sc.notice).toContain('ZOTEUS_OCR_LANGS does not name');
     expect(sc.notice).not.toContain('megapixel');
+  });
+});
+
+describeRendered('a page the engine never answers for', () => {
+  /**
+   * Only setTimeout is faked, so the 60 s deadline fires without waiting for it, and the
+   * loop yields to the REAL event loop between advances: pdfjs renders through native
+   * canvas code whose completion no fake clock can hurry, and the deadline is not even
+   * scheduled until that render has finished.
+   */
+  async function withFakeDeadline<T>(work: () => Promise<T>): Promise<T> {
+    const realSetTimeout = setTimeout;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const result = work();
+      let settled = false;
+      void result.then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+      for (let i = 0; i < 2000 && !settled; i++) {
+        await vi.advanceTimersByTimeAsync(OCR_PAGE_TIMEOUT_MS);
+        await new Promise((resolve) => realSetTimeout(resolve, 5));
+      }
+      return await result;
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('is given up on at the deadline and the notice says so, rather than the call hanging', async () => {
+    h.read = (image) => (image.page === 2 ? new Promise<string>(() => {}) : pageText(image.page));
+    {
+      const res = await withFakeDeadline(() =>
+        getFulltext.handler({ item_key: 'PARENT01', ocr: true, max_chars: 600 }, ctx({}, SCANS!.three)),
+      );
+      const sc = res.structuredContent as any;
+      expect(sc.fulltextSource).toBe('ocr');
+      expect(sc.ocrPages).toEqual([1]);
+      expect(sc.notice).toContain('Pages 1 were read by OCR');
+      expect(sc.notice).toContain('Page 2 was given up on');
+      expect(sc.notice).toContain('after 60 s');
+      expect(sc.notice).toContain('the engine was stopped');
+      expect(sc.notice).toContain('Pages 3 were not read: the pass stopped when page 2 timed out');
+      expect(sc.notice).toContain('page_range:"3-3"');
+      // Not "recognised as no text at all": nothing was recognised.
+      expect(sc.notice).not.toContain('recognised as no text');
+    }
+    // The gate was released with the worker: the next call in the process runs.
+    h.read = (image) => pageText(image.page);
+    const next = await getFulltext.handler({ item_key: 'PARENT01', query: 'ribosome', ocr: true }, ctx({}, SCANS!.three));
+    expect((next.structuredContent as any).passages[0].page).toBe(3);
   });
 });
 
