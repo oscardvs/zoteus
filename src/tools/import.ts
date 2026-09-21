@@ -740,16 +740,19 @@ async function saveThroughConnector(
       file = await downloadAttachment(ctx, args.attach_url);
     } catch (e) {
       if (!(e instanceof AttachmentDownloadError)) throw e;
+      // Status 0 is a refusal made before any request went out (a hosted caller's url held to
+      // the public-https bounds); its sentence says why, and "(0)" would say nothing.
+      const why = e.status ? `failed (${e.status})` : `refused: ${e.message}`;
       return ok(
         {
           sessionID,
           resolved: stripped.length,
           source,
           target: 'desktop',
-          warning: `File download failed (${e.status}) for ${args.attach_url}`,
+          warning: `File download ${why} for ${args.attach_url}`,
           ...rejected,
         },
-        `Saved ${stripped.length} item(s) via ${source}; attachment download failed (${e.status}).` + rejectedNote,
+        `Saved ${stripped.length} item(s) via ${source}; attachment download ${why}.` + rejectedNote,
       );
     }
     const contentType = file.contentType ?? 'application/pdf';
