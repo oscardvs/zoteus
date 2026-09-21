@@ -249,7 +249,14 @@ export function embedderIdentity(p: {
   dtype?: EmbeddingDtype;
   pooling?: PoolingMode;
 }): string {
-  const base = p.model ? `${p.name}:${p.model}` : p.name;
+  // One Ollama pull is one embedder, however the user spelled it. `all-minilm`,
+  // `all-minilm:latest` and `registry.ollama.ai/library/all-minilm:latest` are the same
+  // weights on the same daemon, and the readiness probe already treats them as one (see
+  // sameOllamaModel); stamping the raw string made them three identities, so a user who
+  // copied the tagged spelling out of `ollama list` had every stored vector discarded and
+  // paid for a full re-embed with nothing about the model changed. See canonicalOllamaModel.
+  const model = p.name === 'ollama' && p.model ? canonicalOllamaModel(p.model) : p.model;
+  const base = model ? `${p.name}:${model}` : p.name;
   // Full precision stays unsuffixed, and that is a compatibility decision rather than a
   // cosmetic one: `local:Xenova/all-MiniLM-L6-v2` is the identity stamped into every local
   // index ever built, all of them at fp32. Spelling it `...@fp32` now would declare every
@@ -470,9 +477,14 @@ export function missingTransformersHint(config?: Pick<ZoteusConfig, 'dist' | 'tr
   // (see shortCause in index-manager); everything after it is the remedy. Keep it short.
   const cause = `${TRANSFORMERS_MODULE} is not installed.`;
   const searched = searchedHint(config?.transformersPath);
+  // The order is the point: the no-cloud option is named before the two that send library
+  // text off the machine, because this message is read by exactly the user who cannot
+  // install the on-device runtime and would otherwise be told an API is their only choice.
   const fallbacks =
-    `Otherwise set ZOTEUS_EMBEDDINGS=openai or gemini to embed through an API instead (your ` +
-    `library text leaves the machine), or ZOTEUS_EMBEDDINGS=off to accept keyword-only search.`;
+    `Otherwise set ZOTEUS_EMBEDDINGS=ollama to embed through an Ollama daemon on this machine ` +
+    `(nothing leaves it; see docs/ollama.md), ZOTEUS_EMBEDDINGS=openai or gemini to embed through ` +
+    `an API instead (your library text leaves the machine), or ZOTEUS_EMBEDDINGS=off to accept ` +
+    `keyword-only search.`;
   if (bundled) {
     // Deliberately NOT `npm i -g`. Claude Desktop runs the server with its own built-in
     // Node, not the one on the user's PATH, so a global root under a version manager holds
@@ -895,6 +907,100 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
   }
 }
 
+/**
+ * The dials on {@link requestWithBackoff}, plus the two hooks a provider uses to say what
+ * a failure actually means. Everything here is optional, and with all of it omitted the
+ * policy is exactly the one the OpenAI and Gemini paths have always run.
+ */
+export interface EmbedBackoffOptions {
+  /** Retries a rate-limited or 5xx request gets (see DEFAULT_EMBED_MAX_RETRIES). */
+  maxRetries?: number;
+  /** Where the backoff announces itself; without one the waits are silent. */
+  logger?: Logger;
+  /** Injectable jitter source (tests). Defaults to Math.random. */
+  random?: () => number;
+  /**
+   * A network-level failure this provider can explain and knows will not heal, e.g. a
+   * refused socket on loopback. Returning a message ends the attempt there and throws it;
+   * returning undefined keeps the default treatment, which is to retry and finally rethrow
+   * the original error.
+   *
+   * The distinction is worth a hook because the right answer genuinely differs by provider:
+   * a dropped connection to an API on the other side of the internet is transient and worth
+   * riding out, while nothing listening on 127.0.0.1 is a daemon that is not running, and
+   * climbing a 1/2/4/8/16-second ladder before saying so wastes half a minute per batch to
+   * learn something that was already certain on the first attempt.
+   */
+  networkFailure?: (e: unknown) => string | undefined;
+  /**
+   * A response this provider can explain better than the generic "<label> embeddings failed
+   * (404)". Consulted only once the request is being given up on, so it never costs a retry,
+   * and it may read the body, which nothing else has consumed by then.
+   */
+  statusFailure?: (res: Response) => Promise<string | undefined>;
+}
+
+/**
+ * One request, retried through the backoff every provider shares.
+ *
+ * `send` is called afresh per attempt (a Response body is consumed once, and a retry is a
+ * new request, not a replayed one). Everything about *when* to try again lives here, so the
+ * provider bodies stay a URL, a header and a payload shape.
+ *
+ * What is NOT retried is as deliberate as what is: see `retryableEmbedStatus`. A network
+ * error is, because a dropped connection mid-build is the same transient event as a 503 and
+ * the alternative is losing an hours-long build to one flaky second; `networkFailure` is how
+ * a provider whose network errors are not transient opts out of that.
+ */
+export async function requestWithBackoff(
+  label: string,
+  send: () => Promise<Response>,
+  opts: EmbedBackoffOptions = {},
+): Promise<Response> {
+  const retries = Math.max(0, opts.maxRetries ?? DEFAULT_EMBED_MAX_RETRIES);
+  const random = opts.random ?? Math.random;
+  let waited = 0;
+  for (let attempt = 1; ; attempt++) {
+    let res: Response | undefined;
+    let networkError: unknown;
+    try {
+      res = await send();
+      if (res.ok) return res;
+    } catch (e) {
+      networkError = e;
+    }
+    const status = res?.status;
+    // Asked once, before it can decide anything, so the same answer settles both "is this
+    // worth another attempt" and "what do we throw".
+    const written = networkError !== undefined ? opts.networkFailure?.(networkError) : undefined;
+    const fatal = written !== undefined || (res !== undefined && !retryableEmbedStatus(res.status));
+    const wait = embedBackoffMs(attempt, parseRetryAfter(res?.headers.get('retry-after')), random);
+    const spent = waited + wait;
+    if (fatal || attempt > retries || spent > EMBED_RETRY_TOTAL_MS) {
+      if (networkError) throw written ? new Error(written) : networkError;
+      const explained = res ? await opts.statusFailure?.(res) : undefined;
+      if (explained) throw new Error(explained);
+      // The same first sentence this has always thrown, so the one-line embedder label
+      // ("openai requested; OpenAI embeddings failed (429)") reads exactly as before and
+      // anything matching on it keeps working. The remedy is a second sentence.
+      const gaveUp = attempt > 1 ? ` Gave up after ${attempt} attempts over ${seconds(waited)}.` : '';
+      const advice = status === 429 ? ` ${RATE_LIMIT_HINT}` : '';
+      throw new Error(`${label} embeddings failed (${status}).${gaveUp}${advice}`);
+    }
+    // Info rather than warn: a wait that the build then recovers from is progress being
+    // reported, not a problem. It has to be visible all the same, because from the
+    // outside an embedding pass that pauses for 16 seconds is indistinguishable from one
+    // that has hung.
+    const cause = networkError
+      ? `could not be reached (${networkError instanceof Error ? networkError.message : String(networkError)})`
+      : `answered ${status}`;
+    const hint = status === 429 && attempt === 1 ? ` ${RATE_LIMIT_HINT}` : '';
+    opts.logger?.info(`${label} ${cause}; waiting ${seconds(wait)} before retry ${attempt} of ${retries}.${hint}`);
+    await batchPause(wait);
+    waited = spent;
+  }
+}
+
 export interface ApiEmbeddingOptions {
   /** Model to embed with; defaults to the provider's own (see DEFAULT_API_MODELS). */
   model?: string;
@@ -935,57 +1041,9 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
     return out;
   }
 
-  /**
-   * One request, retried through the backoff both providers share.
-   *
-   * `send` is called afresh per attempt (a Response body is consumed once, and a retry is a
-   * new request, not a replayed one). Everything about *when* to try again lives here, so
-   * the two provider bodies below stay a URL, a header and a payload shape.
-   *
-   * What is NOT retried is as deliberate as what is: see `retryableEmbedStatus`. A network
-   * error is, because a dropped connection mid-build is the same transient event as a 503
-   * and the alternative is losing an hours-long build to one flaky second.
-   */
-  private async request(label: string, send: () => Promise<Response>): Promise<Response> {
-    const retries = Math.max(0, this.opts.maxRetries ?? DEFAULT_EMBED_MAX_RETRIES);
-    const random = this.opts.random ?? Math.random;
-    let waited = 0;
-    for (let attempt = 1; ; attempt++) {
-      let res: Response | undefined;
-      let networkError: unknown;
-      try {
-        res = await send();
-        if (res.ok) return res;
-      } catch (e) {
-        networkError = e;
-      }
-      const status = res?.status;
-      const fatal = res !== undefined && !retryableEmbedStatus(res.status);
-      const wait = embedBackoffMs(attempt, parseRetryAfter(res?.headers.get('retry-after')), random);
-      const spent = waited + wait;
-      if (fatal || attempt > retries || spent > EMBED_RETRY_TOTAL_MS) {
-        if (networkError) throw networkError;
-        // The same first sentence this has always thrown, so the one-line embedder label
-        // ("openai requested; OpenAI embeddings failed (429)") reads exactly as before and
-        // anything matching on it keeps working. The remedy is a second sentence.
-        const gaveUp = attempt > 1 ? ` Gave up after ${attempt} attempts over ${seconds(waited)}.` : '';
-        const advice = status === 429 ? ` ${RATE_LIMIT_HINT}` : '';
-        throw new Error(`${label} embeddings failed (${status}).${gaveUp}${advice}`);
-      }
-      // Info rather than warn: a wait that the build then recovers from is progress being
-      // reported, not a problem. It has to be visible all the same, because from the
-      // outside an embedding pass that pauses for 16 seconds is indistinguishable from one
-      // that has hung.
-      const cause = networkError
-        ? `could not be reached (${networkError instanceof Error ? networkError.message : String(networkError)})`
-        : `answered ${status}`;
-      const hint = status === 429 && attempt === 1 ? ` ${RATE_LIMIT_HINT}` : '';
-      this.opts.logger?.info(
-        `${label} ${cause}; waiting ${seconds(wait)} before retry ${attempt} of ${retries}.${hint}`,
-      );
-      await batchPause(wait);
-      waited = spent;
-    }
+  /** One request, retried through {@link requestWithBackoff}, the policy every provider shares. */
+  private request(label: string, send: () => Promise<Response>): Promise<Response> {
+    return requestWithBackoff(label, send, this.opts);
   }
 
   /** One request. Providers reject an oversized batch whole, hence the caller's batching. */
@@ -1016,6 +1074,394 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
     );
     const json = (await res.json()) as any;
     return json.embeddings.map((e: any) => e.values);
+  }
+}
+
+/** Where an Ollama daemon listens unless ZOTEUS_OLLAMA_URL says otherwise. */
+export const DEFAULT_OLLAMA_URL = 'http://127.0.0.1:11434';
+
+/**
+ * The Ollama default: the same weights as the on-device default (`all-MiniLM-L6-v2`), so
+ * switching between the two providers is a change of runtime rather than a change of model
+ * family, and a ~46 MB pull rather than a ~700 MB npm install.
+ *
+ * Chosen over the more popular `nomic-embed-text` on purpose. Nomic's model card requires a
+ * task prefix on every input (`search_document: ` on passages, `search_query: ` on queries)
+ * and Zoteus applies prefixes only to the E5 family (see {@link inputPrefixes}); a model
+ * that needs them and does not get them does not fail, it retrieves worse, silently. A
+ * default nobody can mis-set is worth more than a default that is better only when it is
+ * configured correctly. {@link ollamaPrefixNotice} says so out loud for anyone who names
+ * nomic anyway.
+ */
+export const DEFAULT_OLLAMA_MODEL = 'all-minilm';
+
+/**
+ * Connection failures that mean "this endpoint is not there", as opposed to "the connection
+ * to it had a bad moment". Retrying any of these against a loopback daemon cannot help: the
+ * socket is refused because nothing is listening, or the name does not resolve, and neither
+ * changes between now and sixteen seconds from now.
+ *
+ * ECONNRESET, ETIMEDOUT and EAI_AGAIN are deliberately NOT here. A daemon that is loading a
+ * model can reset or stall a connection and then serve the next one, which is exactly the
+ * transient event the backoff exists for.
+ */
+const CONNECT_FAILURE_CODES = ['ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH'] as const;
+
+/**
+ * The connect-level errno behind a fetch failure, if it is one of the ones that will not
+ * heal. Node's fetch reports these as a bare `TypeError: fetch failed` whose `cause` carries
+ * the code, and a host with several addresses arrives as an AggregateError whose `errors`
+ * do, so both are walked. The message text is the last resort, for a wrapper that kept the
+ * words and dropped the code.
+ */
+export function connectFailureCode(e: unknown): string | undefined {
+  const queue: unknown[] = [e];
+  const seen = new Set<unknown>();
+  while (queue.length > 0) {
+    const cur = queue.shift() as { code?: unknown; cause?: unknown; errors?: unknown } | null;
+    if (!cur || typeof cur !== 'object' || seen.has(cur)) continue;
+    seen.add(cur);
+    const code = cur.code;
+    if (typeof code === 'string' && (CONNECT_FAILURE_CODES as readonly string[]).includes(code)) return code;
+    if (cur.cause) queue.push(cur.cause);
+    if (Array.isArray(cur.errors)) queue.push(...cur.errors);
+  }
+  const text = e instanceof Error ? e.message : String(e);
+  return CONNECT_FAILURE_CODES.find((code) => text.includes(code));
+}
+
+/** An Ollama tag as the daemon spells it: an untagged name means `:latest`, as the CLI's does. */
+function ollamaTag(name: string): string {
+  const trimmed = name.trim();
+  return (trimmed.includes(':') ? trimmed : `${trimmed}:latest`).toLowerCase();
+}
+
+/**
+ * Whether a model the daemon lists is the one that was asked for. Compared on the tag rather
+ * than the raw string because `all-minilm` and `all-minilm:latest` are the same pull, and
+ * loosely on a registry prefix (`hf.co/user/model` vs `user/model`) because the cost of the
+ * two mistakes is not symmetric: a missed match tells a user to pull a model they already
+ * have, which is worse than saying nothing.
+ */
+function sameOllamaModel(pulled: string, wanted: string): boolean {
+  const p = ollamaTag(pulled);
+  const w = ollamaTag(wanted);
+  return p === w || p.endsWith(`/${w}`) || w.endsWith(`/${p}`);
+}
+
+/** The official library, which is where an unqualified `ollama pull` gets its model. */
+const OLLAMA_LIBRARY_PREFIX = /^(?:(?:registry\.ollama\.ai|ollama\.com)\/)?library\//;
+
+/**
+ * The one spelling of an Ollama model that goes into the embedder identity, so that one
+ * pull is one vector space no matter how it was named. `all-minilm`, `ALL-MINILM:latest`
+ * and `registry.ollama.ai/library/all-minilm:latest` all canonicalise to `all-minilm`:
+ * they are the same weights served by the same daemon, and stamping them apart discards
+ * every stored vector and charges a full re-embed for a rename.
+ *
+ * Deliberately stricter than {@link sameOllamaModel}, which the readiness probe uses. That
+ * one also accepts a shared suffix across namespaces (`hf.co/user/model` matching
+ * `user/model`), because there a false match only risks staying quiet about a model that
+ * was not pulled. Here a false match would let one model's vectors answer another model's
+ * queries, which is wrong answers rather than a missing hint, so only the tag that means
+ * "no tag" (`:latest`) and the official library prefix Ollama itself adds are collapsed. A
+ * third-party namespace stays part of the identity.
+ *
+ * Normalising toward the SHORT form is what keeps this free: `ollama:all-minilm` is what
+ * an index built with the default already carries, so no stamp anyone holds changes.
+ */
+export function canonicalOllamaModel(name: string): string {
+  const bare = name.trim().toLowerCase().replace(OLLAMA_LIBRARY_PREFIX, '');
+  const untagged = bare.endsWith(':latest') ? bare.slice(0, -':latest'.length) : bare;
+  // An empty result means the whole string was a prefix or a tag, which is not a model
+  // name at all: keep what the user typed rather than collapsing it onto every other one.
+  return untagged || bare || name.trim();
+}
+
+/** Ollama's error bodies are `{"error":"..."}`; anything else is passed through as text. */
+async function ollamaErrorText(res: Response): Promise<string> {
+  try {
+    const body = await res.text();
+    try {
+      const json = JSON.parse(body) as { error?: unknown };
+      if (typeof json.error === 'string') return json.error.trim();
+    } catch {
+      // Not JSON: gin answers an unknown route with plain text.
+    }
+    return body.trim().slice(0, 200);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Models whose card requires a task prefix Zoteus does not add. One entry, and it is the
+ * most-pulled embedding model on Ollama, which is the reason this exists: someone will set
+ * ZOTEUS_EMBEDDING_MODEL=nomic-embed-text because it is the model every Ollama tutorial
+ * names, and the cost of the missing prefix is invisible.
+ */
+const PREFIX_REQUIRED_MODEL = /(?:^|[/\-_.])nomic-embed-text(?:[/\-_.:]|$)/i;
+
+/**
+ * What to say about a model that wants prefixes Zoteus will not add, or nothing when the
+ * model needs none. A warning rather than a refusal: the model works, it just retrieves
+ * below what it can do, and refusing a model someone deliberately pulled would be worse.
+ */
+export function ollamaPrefixNotice(model: string): string | undefined {
+  if (!PREFIX_REQUIRED_MODEL.test(model)) return undefined;
+  return (
+    `The Ollama model "${model}" is trained with task prefixes on its inputs ("search_document: " ` +
+    `before a passage, "search_query: " before a query) and Zoteus does not add them: only the E5 ` +
+    `family is prefixed automatically (ZOTEUS_EMBEDDING_PREFIXES). Nothing fails, and the index is ` +
+    `internally consistent; retrieval is simply worse than this model can do. ${DEFAULT_OLLAMA_MODEL} ` +
+    `(the default) and any e5 tag need no prefixes.`
+  );
+}
+
+export interface OllamaEmbeddingOptions {
+  /** Base URL of the daemon (ZOTEUS_OLLAMA_URL); unset means {@link DEFAULT_OLLAMA_URL}. */
+  baseUrl?: string;
+  /** Model to embed with; unset means {@link DEFAULT_OLLAMA_MODEL}. */
+  model?: string;
+  /** Texts per request; unset means {@link DEFAULT_EMBED_BATCH_SIZE}. */
+  batchSize?: number;
+  /** Pause between requests in ms (see batchPause). */
+  batchDelayMs?: number;
+  /** Retries a 5xx or rate-limited request gets (see DEFAULT_EMBED_MAX_RETRIES). */
+  maxRetries?: number;
+  /** Input-prefix policy for this model (see inputPrefixes); unset means auto. */
+  prefixes?: PrefixMode;
+  /** Install channel, so a remedy names the place this install's settings actually live. */
+  dist?: string;
+  /** Where the backoff and the prefix notice announce themselves. */
+  logger?: Logger;
+  /** Injectable jitter source (tests). Defaults to Math.random. */
+  random?: () => number;
+}
+
+/**
+ * Embeddings from an Ollama daemon: an HTTP provider whose endpoint is nevertheless the
+ * user's own machine, so library text stays on it.
+ *
+ * It exists for the install that has no other private option. The on-device provider needs
+ * `@huggingface/transformers`, roughly 700 MB resolved and impossible to carry in a
+ * desktop-extension bundle, which leaves a Claude Desktop user choosing between an API that
+ * reads their library and keyword-only search. An Ollama they very likely already run is a
+ * third answer. For a terminal user who has already installed transformers the increment is
+ * smaller: a shared model cache, and the GPU.
+ *
+ * One batch is one `POST /api/embed` with an array `input`, which Ollama embeds
+ * concurrently on its side, and whose `embeddings` come back already L2-normalized.
+ */
+export class OllamaEmbeddingProvider implements EmbeddingProvider {
+  readonly name = 'ollama';
+  readonly model: string;
+  /** Base URL with any trailing slash removed, so the joined paths have exactly one. */
+  private readonly base: string;
+  /** The one-shot reachability probe, shared by every caller that arrives while it runs. */
+  private reachable: Promise<void> | undefined;
+
+  constructor(private readonly opts: OllamaEmbeddingOptions = {}) {
+    this.model = opts.model?.trim() || DEFAULT_OLLAMA_MODEL;
+    this.base = (opts.baseUrl?.trim() || DEFAULT_OLLAMA_URL).replace(/\/+$/, '');
+  }
+
+  /** Where this provider talks to, as every message it writes spells it. */
+  get url(): string {
+    return this.base;
+  }
+
+  /**
+   * What this model wants in front of a query and in front of a passage, or null. Computed
+   * from the model id exactly as the local provider's is, so an E5 checkpoint pulled into
+   * Ollama is prefixed here too and ZOTEUS_EMBEDDING_PREFIXES means the same thing under
+   * both providers. Like there, it never reaches the embedder identity: a prefix is an
+   * argument to the model, not a property of the vectors it returns.
+   */
+  get prefixes(): Readonly<Record<EmbedKind, string>> | null {
+    return inputPrefixes(this.model, this.opts.prefixes ?? 'auto');
+  }
+
+  async embed(texts: string[], kind: EmbedKind = 'passage'): Promise<number[][]> {
+    if (texts.length === 0) return [];
+    await this.ensureReachable();
+    // Unset means a bounded batch, not "one request for everything". That is the local
+    // provider's default rather than the API providers', and for the local provider's
+    // reason: the daemon is this machine, a request carrying every passage in a library
+    // asks it to hold all of them at once, and the answer would be tens of megabytes of
+    // JSON. ZOTEUS_EMBED_BATCH_SIZE overrides it the same way it overrides theirs.
+    const size = Math.max(1, this.opts.batchSize ?? DEFAULT_EMBED_BATCH_SIZE);
+    const prefix = this.prefixes?.[kind] ?? '';
+    const out: number[][] = [];
+    for (let i = 0; i < texts.length; i += size) {
+      const batch = texts.slice(i, i + size);
+      out.push(...(await this.embedBatch(prefix ? batch.map((t) => prefix + t) : batch)));
+      if (i + size < texts.length) await batchPause(this.opts.batchDelayMs);
+    }
+    return out;
+  }
+
+  /**
+   * Ask once, before the first batch, whether there is a daemon and whether it holds the
+   * model. Lazily, at use time, the way the translation-server client probes (see
+   * TranslationServerClient.isUp): `createEmbeddingProvider` is synchronous and everything
+   * that calls it would have to change to make it otherwise.
+   *
+   * The point is the diagnostic, not the check. Without it both failures arrive as the same
+   * thing, an embed request that did not work, and "Ollama is not running" and "the model is
+   * not pulled" have different remedies. A failed probe is not cached, so a user who starts
+   * the daemon and retries is not told it is still down.
+   */
+  private ensureReachable(): Promise<void> {
+    this.reachable ??= this.probe().then(
+      () => undefined,
+      (e) => {
+        this.reachable = undefined;
+        throw e;
+      },
+    );
+    return this.reachable;
+  }
+
+  private async probe(): Promise<void> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.base}/api/tags`, { method: 'GET', headers: { Accept: 'application/json' } });
+    } catch (e) {
+      const code = connectFailureCode(e);
+      // Only the codes that mean "nothing is there". Anything else is a bad moment on the
+      // connection, and the embed request's backoff is the right place for those.
+      if (code) throw new Error(this.unreachableHint(code));
+      return;
+    }
+    // An answer of any kind means something is listening, and a daemon too old or too
+    // unusual to serve this route should not be reported as a missing model.
+    if (!res.ok) return;
+    let models: unknown;
+    try {
+      models = ((await res.json()) as { models?: unknown }).models;
+    } catch {
+      return;
+    }
+    if (!Array.isArray(models)) return;
+    const names = models
+      .map((m) => (m as { model?: unknown; name?: unknown })?.model ?? (m as { name?: unknown })?.name)
+      .filter((n): n is string => typeof n === 'string' && n.length > 0);
+    if (names.some((n) => sameOllamaModel(n, this.model))) return;
+    throw new Error(this.notPulledHint(names));
+  }
+
+  /** One request. Ollama takes the whole batch as an array and answers one vector per text. */
+  private async embedBatch(input: string[]): Promise<number[][]> {
+    const res = await requestWithBackoff(
+      'Ollama',
+      () =>
+        fetch(`${this.base}/api/embed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: this.model, input }),
+        }),
+      {
+        maxRetries: this.opts.maxRetries,
+        ...(this.opts.logger ? { logger: this.opts.logger } : {}),
+        ...(this.opts.random ? { random: this.opts.random } : {}),
+        networkFailure: (e) => {
+          const code = connectFailureCode(e);
+          return code ? this.unreachableHint(code) : undefined;
+        },
+        statusFailure: (r) => this.explainStatus(r),
+      },
+    );
+    const json = (await res.json()) as { embeddings?: unknown };
+    const vectors = json.embeddings;
+    if (!Array.isArray(vectors) || vectors.length !== input.length) {
+      const got = Array.isArray(vectors) ? String(vectors.length) : 'none';
+      throw new Error(
+        `Ollama returned the wrong number of vectors (${got} for ${input.length} texts). ` +
+          `That is not the shape POST /api/embed answers with, so check that ZOTEUS_OLLAMA_URL ` +
+          `("${this.base}") points at an Ollama daemon and not at something else on that port.`,
+      );
+    }
+    const dimension = Array.isArray(vectors[0]) ? vectors[0].length : 0;
+    if (dimension === 0 || vectors.some((vector) =>
+      !Array.isArray(vector) || vector.length !== dimension ||
+      vector.some((value: unknown) => typeof value !== 'number' || !Number.isFinite(value)))) {
+      throw new Error('Ollama returned malformed embeddings: every vector must contain the same positive number of finite numeric values. Nothing from this batch was indexed.');
+    }
+    return vectors as number[][];
+  }
+
+  /**
+   * The failures Ollama reports that deserve better than "Ollama embeddings failed (404)".
+   * Only consulted when the request is being abandoned, so reading the body here costs
+   * nothing on the path that works.
+   */
+  private async explainStatus(res: Response): Promise<string | undefined> {
+    if (res.status !== 404) return undefined;
+    const detail = await ollamaErrorText(res);
+    // Ollama's own answer for an unpulled model names it ("model \"x\" not found, try
+    // pulling it first"); a 404 that says nothing about a model is far likelier to be a
+    // route that does not exist, and telling that user to pull a model would send them the
+    // wrong way entirely.
+    if (detail && !/model/i.test(detail)) {
+      return (
+        `Ollama at ${this.base} has no POST /api/embed endpoint (404: ${detail}). Check that ` +
+        `ZOTEUS_OLLAMA_URL points at an Ollama daemon new enough to serve that route, and not at ` +
+        `another service on that port. Semantic ranking is off; keyword (BM25) search still works.`
+      );
+    }
+    return this.notPulledHint([], detail);
+  }
+
+  /** Cause first, then the one command that fixes it: the label a user sees is sentence one. */
+  private notPulledHint(pulled: string[], detail = ''): string {
+    const said = detail ? ` Ollama answered: ${detail}.` : '';
+    const has =
+      pulled.length > 0
+        ? ` ${this.base} has ${pulled.slice(0, 5).join(', ')}${pulled.length > 5 ? ', and others' : ''}.`
+        : '';
+    return (
+      `The Ollama model "${this.model}" is not pulled. ` +
+      `Pull it with \`ollama pull ${this.model}\`, then run zotero_index action:"build" again.` +
+      `${said}${has} ZOTEUS_EMBEDDING_MODEL names the model of whichever provider is active, and ` +
+      `unset means ${DEFAULT_OLLAMA_MODEL}. Semantic ranking is off until then; keyword (BM25) ` +
+      `search still works.`
+    );
+  }
+
+  /** The same shape, for the daemon itself: short cause, then the command that starts it. */
+  private unreachableHint(code: string): string {
+    const bundled = this.opts.dist === 'mcpb' || this.opts.dist === 'dxt';
+    const cause =
+      code === 'ECONNREFUSED'
+        ? `Ollama is not running at ${this.base}.`
+        : `Ollama is not reachable at ${this.base} (${code}).`;
+    const start =
+      code === 'ECONNREFUSED'
+        ? ` Start it with \`ollama serve\` (or open the Ollama app), then \`ollama pull ${this.model}\`.`
+        : ` Check the host in ZOTEUS_OLLAMA_URL: nothing at that address answered.`;
+    // Where a setting is changed is not the same question on both install channels. A
+    // desktop-extension user has no shell in front of this server and no .env to edit, so
+    // the remedy names the field in the extension's settings pane instead, spelled exactly
+    // as the pane spells it (mcpb/manifest.json user_config.ollama_url). And it is only a
+    // remedy for someone still on the default address: telling a user who already moved it
+    // to move it sends them back to a box they have filled in, so that case reads back the
+    // value the pane is holding, which is what makes a typo in it visible.
+    const where = bundled
+      ? ` Zoteus cannot start Ollama for you: it is a separate application that has to be running on ` +
+        `the machine this server runs on.` +
+        (this.base === DEFAULT_OLLAMA_URL
+          ? ` If your daemon does not listen on ${DEFAULT_OLLAMA_URL}, put its address in the ` +
+            `extension's "Ollama URL" (ZOTEUS_OLLAMA_URL) and restart the app.`
+          : ` The extension's "Ollama URL" (ZOTEUS_OLLAMA_URL) is set to "${this.base}".`)
+      : this.base === DEFAULT_OLLAMA_URL
+        ? ''
+        : ` ZOTEUS_OLLAMA_URL is set to "${this.base}".`;
+    return (
+      `${cause}${start}${where} Semantic ranking is off until then; keyword (BM25) search still ` +
+      `works. Set ZOTEUS_EMBEDDINGS=local to embed on device instead, or ZOTEUS_EMBEDDINGS=off to ` +
+      `accept keyword-only search.`
+    );
   }
 }
 
@@ -1068,8 +1514,31 @@ export function createEmbeddingProvider(config: ZoteusConfig, logger?: Logger): 
         return { provider: null, configured: 'gemini', unavailable };
       }
       return { provider: new ApiEmbeddingProvider('gemini', process.env.GEMINI_API_KEY, api), configured: 'gemini' };
-    case 'local':
-    default: {
+    case 'ollama': {
+      // Returned unconditionally, with no preflight, and that is the deliberate part: the
+      // only honest test of an Ollama daemon is an HTTP request, this function is
+      // synchronous, and a provider is asked for one before anything is embedded. The
+      // provider probes itself instead, on its first embed (see ensureReachable), and a
+      // daemon that is down surfaces through the same degradation path a failing API key
+      // does: the first failure is recorded on the index and reported by zotero_index
+      // action:"status" and zotero_whoami, with the remedy in the reason.
+      const notice = ollamaPrefixNotice(config.embeddingModel?.trim() || DEFAULT_OLLAMA_MODEL);
+      if (notice) logger?.warn(notice);
+      return {
+        provider: new OllamaEmbeddingProvider({
+          baseUrl: config.ollamaUrl,
+          ...(config.embeddingModel ? { model: config.embeddingModel } : {}),
+          ...(config.embedBatchSize !== undefined ? { batchSize: config.embedBatchSize } : {}),
+          batchDelayMs: config.embedBatchDelayMs,
+          ...(config.embedMaxRetries !== undefined ? { maxRetries: config.embedMaxRetries } : {}),
+          prefixes: config.embeddingPrefixes,
+          ...(config.dist ? { dist: config.dist } : {}),
+          ...(logger ? { logger } : {}),
+        }),
+        configured: 'ollama',
+      };
+    }
+    case 'local': {
       if (!resolveTransformers(config.transformersPath)) {
         logger?.warn(
           `ZOTEUS_EMBEDDINGS=local but ${TRANSFORMERS_MODULE} is not installed` +
@@ -1103,4 +1572,21 @@ export function createEmbeddingProvider(config: ZoteusConfig, logger?: Logger): 
       };
     }
   }
+  // Every ZOTEUS_EMBEDDINGS value has a case above, and this is what keeps it that way.
+  // The switch used to end `case 'local': default:`, which meant a value added to the enum
+  // and forgotten here compiled clean and ran the ON-DEVICE model while reporting itself as
+  // `local`: worse than being refused, because nothing anywhere said so. With the default
+  // gone, `config.embeddings` narrows to `never` here, so the next provider that forgets
+  // its case fails to compile instead. It is still a return rather than a throw, because no
+  // setting may stop the server from starting (see src/config.ts): the unreachable runtime
+  // path degrades to keyword-only and says which value it could not honour.
+  const unhandled: never = config.embeddings;
+  return {
+    provider: null,
+    configured: unhandled,
+    unavailable:
+      `ZOTEUS_EMBEDDINGS=${String(unhandled)} has no embedding provider in this build. ` +
+      'No vectors are produced; keyword (BM25) search still works. Set ZOTEUS_EMBEDDINGS to a ' +
+      'provider this version supports (local, ollama, openai, gemini) or to off.',
+  };
 }

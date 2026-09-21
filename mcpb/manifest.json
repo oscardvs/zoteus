@@ -33,6 +33,7 @@
         "ZOTEUS_LOCAL": "${user_config.local}",
         "ZOTEUS_UPDATE_CHECK": "${user_config.update_check}",
         "ZOTEUS_EMBEDDINGS": "${user_config.embeddings}",
+        "ZOTEUS_OLLAMA_URL": "${user_config.ollama_url}",
         "ZOTEUS_EMBEDDING_MODEL": "${user_config.embedding_model}",
         "ZOTEUS_EMBEDDING_DTYPE": "${user_config.embedding_dtype}",
         "ZOTEUS_EMBED_BATCH_SIZE": "${user_config.embed_batch_size}",
@@ -63,8 +64,14 @@
     "embeddings": {
       "type": "string",
       "title": "Semantic-search embeddings",
-      "description": "Search by meaning needs an active embedding provider. local (default setting) requires a separate @huggingface/transformers install and Local embeddings path below; the bundle does not include it. openai or gemini needs an API key and may incur separate costs. off keeps keyword-only ranking. Check zotero_index status after setup.",
+      "description": "Search by meaning needs an active embedding provider. local (default setting) requires a separate @huggingface/transformers install and Local embeddings path below; the bundle does not include it. ollama needs no install inside this extension: run the Ollama app, pull a model (ollama pull all-minilm), and set the Ollama URL below; your text stays on your machine. openai or gemini needs an API key and may incur separate costs. off keeps keyword-only ranking. Check zotero_index status after setup.",
       "default": "local",
+      "required": false
+    },
+    "ollama_url": {
+      "type": "string",
+      "title": "Ollama URL",
+      "description": "Where the Ollama daemon listens, used only when the provider above is ollama. Leave empty for http://127.0.0.1:11434, which is the address Ollama uses out of the box; set it only when the daemon runs on another port (OLLAMA_HOST), in a container with a published port, or on another machine. Pointing this at another machine sends your library text to that machine; on the default loopback address it never leaves this one. Start the daemon yourself (`ollama serve`, or open the Ollama app) and `ollama pull all-minilm` first: this extension cannot start it for you.",
       "required": false
     },
     "embedding_model": {
