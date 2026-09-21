@@ -313,8 +313,16 @@ function decode(raw: string, depth: number): string {
  * Both callers need this and both break without it: `author = {{Institute of Physics} and
  * Ada Lovelace}` is two authors, not three, and `{Smith, Jr., John}` is one name whose
  * commas matter.
+ *
+ * Whitespace is collapsed to single spaces first. The separator the name splitter passes is
+ * `\s+and\s+`, and a greedy `\s+` against a long run of spaces backtracks once per space
+ * for every start position, which is quadratic: 20,000 spaces took half a second and
+ * 80,000 took 28 s, and `author = {` plus two megabytes of spaces is inside the payload
+ * cap. Nothing downstream wants the run anyway; every value is whitespace-collapsed by
+ * `decodeLatex` before it is stored.
  */
 export function splitTopLevel(raw: string, separator: RegExp | string): string[] {
+  raw = raw.replace(/\s+/g, ' ');
   const depth: number[] = new Array(raw.length).fill(0);
   let d = 0;
   for (let i = 0; i < raw.length; i++) {

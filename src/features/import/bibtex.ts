@@ -112,6 +112,11 @@ interface GroupRead {
  * The cost of the boundary is that a braced value containing a line of its own that looks
  * exactly like an entry opener ends there and is reported as unclosed. Nothing an exporter
  * writes looks like that, and the alternative is silence about real losses.
+ *
+ * It is computed ONCE per entry and handed down to every value reader. Computing it per
+ * value looked the same and was not: each call scans forward to the next entry, so an entry
+ * with many small values cost fields times distance-to-next-entry, and one 240 KB entry of
+ * 40,000 fields took 3.5 s, a 2 MB one minutes, with the event loop blocked throughout.
  */
 function nextEntryStart(s: string, from: number): number {
   const re = /\n[ \t]*@[A-Za-z]+[ \t]*[{(]/g;
@@ -120,12 +125,19 @@ function nextEntryStart(s: string, from: number): number {
   return m ? m.index + m[0].lastIndexOf('@') : -1;
 }
 
-/** The body of a `{...}` or `(...)` group starting at `i`, and the index past its closer. */
-function readDelimited(s: string, i: number, open: string, close: string): GroupRead {
+/** Where a value starting inside the entry that opens at `from` may run to, at most. */
+function entryEnd(s: string, from: number): number {
+  const boundary = nextEntryStart(s, from + 1);
+  return boundary < 0 ? s.length : boundary;
+}
+
+/**
+ * The body of a `{...}` or `(...)` group starting at `i`, and the index past its closer.
+ * `end` is the entry boundary the group may not run past; see {@link nextEntryStart}.
+ */
+function readDelimited(s: string, i: number, open: string, close: string, end: number): GroupRead {
   let depth = 0;
   const start = i;
-  const boundary = nextEntryStart(s, start + 1);
-  const end = boundary < 0 ? s.length : boundary;
   for (; i < end; i++) {
     const c = s[i];
     if (c === '\\') {
@@ -144,11 +156,9 @@ function readDelimited(s: string, i: number, open: string, close: string): Group
 }
 
 /** A `"..."` value. Braces still nest inside it, so a quote inside `{}` does not end it. */
-function readQuoted(s: string, i: number): GroupRead {
+function readQuoted(s: string, i: number, end: number): GroupRead {
   let depth = 0;
   const start = ++i;
-  const boundary = nextEntryStart(s, start);
-  const end = boundary < 0 ? s.length : boundary;
   for (; i < end; i++) {
     const c = s[i];
     if (c === '\\') {
@@ -171,8 +181,11 @@ interface FieldRead {
   unclosed?: '{' | '"';
 }
 
-/** `name = value`, with `#` concatenation and `@string` macro substitution. */
-function readField(s: string, i: number, macros: Record<string, string>): FieldRead | null {
+/**
+ * `name = value`, with `#` concatenation and `@string` macro substitution. `end` is the
+ * boundary of the entry the field belongs to, past which no value may run.
+ */
+function readField(s: string, i: number, macros: Record<string, string>, end: number): FieldRead | null {
   i = skipSpace(s, i);
   const nameStart = i;
   while (i < s.length && !/[=,\s{}()]/.test(s[i]!)) i++;
@@ -186,7 +199,7 @@ function readField(s: string, i: number, macros: Record<string, string>): FieldR
     i = skipSpace(s, i);
     const c = s[i];
     if (c === '{' || c === '"') {
-      const g = c === '{' ? readDelimited(s, i, '{', '}') : readQuoted(s, i);
+      const g = c === '{' ? readDelimited(s, i, '{', '}', end) : readQuoted(s, i, end);
       parts.push(g.body);
       i = g.next;
       // Nothing after an unclosed delimiter can be read as part of this field, so stop here
@@ -256,9 +269,11 @@ export function parseBibtex(text: string): BibtexParseResult {
     const open = text[i];
     if (open !== '{' && open !== '(') continue; // a stray "@" in a value or a comment
     const close = open === '{' ? '}' : ')';
+    // One scan to the next entry, shared by every value in this one.
+    const end = entryEnd(text, i);
 
     if (type === 'comment' || type === 'preamble') {
-      const block = readDelimited(text, i, open, close);
+      const block = readDelimited(text, i, open, close, end);
       if (!block.closed) {
         warnings.push(`An @${type} block opens a "${open}" that is never closed; reading resumed at the next entry.`);
       }
@@ -266,8 +281,8 @@ export function parseBibtex(text: string): BibtexParseResult {
       continue;
     }
     if (type === 'string') {
-      const body = readDelimited(text, i, open, close);
-      const field = readField(body.body, 0, macros);
+      const body = readDelimited(text, i, open, close, end);
+      const field = readField(body.body, 0, macros, body.body.length);
       if (field && !field.unclosed) macros[field.name.toLowerCase()] = field.value;
       else warnings.push('An @string definition could not be read and was skipped.');
       i = body.next;
@@ -289,7 +304,7 @@ export function parseBibtex(text: string): BibtexParseResult {
       i = skipSpace(text, i);
       if (text[i] === close) break; // a trailing comma before the closing brace
       const fieldAt = i;
-      const field = readField(text, i, macros);
+      const field = readField(text, i, macros, end);
       if (!field) break;
       if (field.unclosed) {
         // The value is not a value, it is the rest of the entry and possibly of the file.

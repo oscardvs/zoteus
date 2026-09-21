@@ -4,6 +4,7 @@ import { cslJsonToRecords } from '../../src/features/import/csl-json.js';
 import { decodeLatex } from '../../src/features/import/latex.js';
 import { mappingTables, toZoteroItems } from '../../src/features/import/mapping.js';
 import { parseBibliography, sniffFormat } from '../../src/features/import/parse.js';
+import { parseBibtexNames } from '../../src/features/import/record.js';
 import { risToRecords } from '../../src/features/import/ris.js';
 
 /**
@@ -197,4 +198,64 @@ describe('a LaTeX value that nests accent groups without end', () => {
     expect(records.map((r) => r.label)).toEqual(['deep', 'ok']);
     expect(records[1]!.fields.title).toBe('Fine');
   }, 60_000);
+});
+
+describe('one entry that carries very many values', () => {
+  it('does not rescan to the next entry once per value', () => {
+    // Every braced or quoted value used to look for the next entry opener on its own, so an
+    // entry of N small fields cost N scans to the end of the file: 40,000 fields took 3.5 s
+    // and a 2 MB entry minutes, with the event loop blocked throughout. The boundary is now
+    // found once per entry.
+    const fields = Array.from({ length: 40_000 }, (_unused, i) => `f${i} = {${i}}`).join(',\n  ');
+    const text = `@misc{k,\n  ${fields}\n}\n`;
+    const started = performance.now();
+    const { entries, warnings } = parseBibtex(text);
+    const elapsed = performance.now() - started;
+    expect(entries).toHaveLength(1);
+    expect(Object.keys(entries[0]!.fields)).toHaveLength(40_000);
+    expect(entries[0]!.fields.f39999).toBe('39999');
+    expect(warnings).toEqual([]);
+    expect(elapsed).toBeLessThan(500);
+  }, 60_000);
+
+  it('still stops a runaway value at the next entry when the entry has many fields', () => {
+    const fields = Array.from({ length: 2_000 }, (_unused, i) => `f${i} = "${i}"`).join(', ');
+    const text = `@misc{a, ${fields}, title = {Unclosed {brace}\n@misc{b, title = {B}}\n`;
+    const { entries, warnings } = parseBibtex(text);
+    expect(entries.map((e) => e.key)).toEqual(['a', 'b']);
+    expect(entries[0]!.fields.f1999).toBe('1999');
+    expect(entries[1]!.fields.title).toBe('B');
+    expect(warnings.join(' ')).toMatch(/the value of "title" opens a brace that is never closed/);
+  });
+});
+
+describe('a creator field that is mostly whitespace', () => {
+  const spaces = ' '.repeat(200_000);
+
+  it('splits the names in linear time', () => {
+    // `\s+and\s+` against a run of spaces backtracks once per space at every position:
+    // 20,000 spaces took half a second, 80,000 took 28 s, and `author = {` plus two
+    // megabytes of them is inside the payload cap.
+    const started = performance.now();
+    const names = parseBibtexNames(`Ada${spaces}Lovelace`, 'author');
+    const elapsed = performance.now() - started;
+    expect(names).toEqual([{ cslName: 'author', family: 'Lovelace', given: 'Ada' }]);
+    expect(elapsed).toBeLessThan(500);
+  }, 60_000);
+
+  it('reaches the same answer through a whole .bib entry', () => {
+    const started = performance.now();
+    const { records, warnings } = bibtexToRecords(`@article{k,\n  author = {Ada${spaces}Lovelace},\n  title = {T}\n}\n`);
+    const elapsed = performance.now() - started;
+    expect(records[0]!.creators).toEqual([{ cslName: 'author', family: 'Lovelace', given: 'Ada' }]);
+    expect(warnings).toEqual([]);
+    expect(elapsed).toBeLessThan(1000);
+  }, 60_000);
+
+  it('still splits on " and " and still respects braces once the whitespace is collapsed', () => {
+    expect(parseBibtexNames('Ada  \n  Lovelace \t and\n{Smith and Sons}', 'author')).toEqual([
+      { cslName: 'author', family: 'Lovelace', given: 'Ada' },
+      { cslName: 'author', literal: 'Smith and Sons' },
+    ]);
+  });
 });
