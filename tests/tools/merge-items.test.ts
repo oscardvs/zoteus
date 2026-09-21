@@ -397,6 +397,145 @@ describe('zotero_merge_items conflicts', () => {
   });
 });
 
+describe('zotero_merge_items expect_versions', () => {
+  const VERSIONS = { master: 3, duplicates: { D1: 5 }, children: { C1: 7 } };
+
+  it('reports the versions the preview was computed from, and says to pass them back', async () => {
+    const res: any = await mergeItems.handler({ master_key: 'K1', duplicate_keys: ['D1'] }, makeCtx());
+    expect(res.structuredContent.versions).toEqual(VERSIONS);
+    expect(res.content[0].text).toMatch(/pass `versions` back as `expect_versions`/);
+  });
+
+  it('writes nothing when the master moved since the preview, and hands back the plan as it now stands', async () => {
+    const preview: any = await mergeItems.handler({ master_key: 'K1', duplicate_keys: ['D1'] }, makeCtx());
+    expect(preview.structuredContent.plan.fields.abstractNote.after).toBe('An abstract the master is missing.');
+    // Between the preview and the write the user edits the master in Zotero: the abstract the
+    // preview promised to fill is now theirs, and nothing in the write's own read would notice.
+    const ctx = makeCtx({}, (items) => {
+      items.K1.version = 9;
+      items.K1.data.abstractNote = "THE USER'S OWN ABSTRACT";
+    });
+    const res: any = await mergeItems.handler(
+      { master_key: 'K1', duplicate_keys: ['D1'], dry_run: false, expect_versions: preview.structuredContent.versions },
+      ctx,
+    );
+
+    expect(res.isError).toBeFalsy();
+    expect(ctx.web.patchItem).not.toHaveBeenCalled();
+    expect(ctx.web.writeItems).not.toHaveBeenCalled();
+    const sc = res.structuredContent;
+    expect(sc.dryRun).toBe(true);
+    expect(sc.applied).toBeUndefined();
+    expect(sc.changed).toEqual([{ key: 'K1', role: 'master', expected: 3, actual: 9 }]);
+    // The fresh plan, not the approved one: the abstract is no longer on offer.
+    expect(sc.plan.fields.abstractNote).toBeUndefined();
+    expect(sc.plan.fields.DOI.after).toBe('10.1/kalman');
+    expect(sc.versions).toEqual({ ...VERSIONS, master: 9 });
+    expect(res.content[0].text).toMatch(/^Nothing was written: 1 record\(s\) changed since the preview \(K1 \(master\): version 3 is now 9\)/);
+    expect(res.content[0].text).toMatch(/pass its `versions` back as `expect_versions`/);
+  });
+
+  it('names a duplicate that was edited and a child that appeared since the preview', async () => {
+    const ctx = makeCtx({}, (items) => {
+      items.D1.version = 6;
+    });
+    // A note moved under the duplicate after the preview was shown; trashing D1 now would
+    // move a child the caller never saw in the plan.
+    const n2 = { key: 'N2', version: 8, data: { key: 'N2', itemType: 'note', note: '<p>moved here</p>', parentItem: 'D1' } };
+    const listChildren = ctx.web.getItemChildren;
+    ctx.web.getItemChildren = vi.fn(async (lib: any, key: string, opts: any) => {
+      const page = await listChildren(lib, key, opts);
+      return key === 'D1' ? { ...page, data: [...page.data, n2] } : page;
+    });
+    const res: any = await mergeItems.handler(
+      { master_key: 'K1', duplicate_keys: ['D1'], dry_run: false, expect_versions: VERSIONS },
+      ctx,
+    );
+
+    expect(ctx.web.patchItem).not.toHaveBeenCalled();
+    expect(ctx.web.writeItems).not.toHaveBeenCalled();
+    expect(res.structuredContent.changed).toEqual([
+      { key: 'D1', role: 'duplicate', expected: 5, actual: 6 },
+      { key: 'N2', role: 'child', actual: 8 },
+    ]);
+    expect(res.content[0].text).toMatch(/D1 \(duplicate\): version 5 is now 6/);
+    expect(res.content[0].text).toMatch(/N2 \(child\): appeared under a duplicate since the preview/);
+  });
+
+  it('names a duplicate that can no longer be read, and a child that has left', async () => {
+    const ctx = makeCtx();
+    const readItem = ctx.web.getItem;
+    ctx.web.getItem = vi.fn(async (lib: any, key: string) => {
+      if (key === 'D2') throw new ZoteroApiError({ status: 404, message: 'gone' });
+      return readItem(lib, key);
+    });
+    const res: any = await mergeItems.handler(
+      { master_key: 'K1', duplicate_keys: ['D1', 'D2'], dry_run: false, expect_versions: { master: 3, duplicates: { D1: 5, D2: 5 } } },
+      ctx,
+    );
+    // D1 alone would still make a plan, and without expect_versions it would run; with it,
+    // the duplicate the preview counted on is a change.
+    expect(ctx.web.patchItem).not.toHaveBeenCalled();
+    expect(res.structuredContent.changed).toEqual([{ key: 'D2', role: 'duplicate', expected: 5 }]);
+    expect(res.content[0].text).toMatch(/D2 \(duplicate\): could not be read, or is no longer a mergeable item/);
+    expect(res.structuredContent.failed.some((f: any) => f.key === 'D2')).toBe(true);
+
+    const moved = makeCtx({}, (items) => {
+      items.C1.data.parentItem = 'ELSEWHERE';
+    });
+    const res2: any = await mergeItems.handler(
+      { master_key: 'K1', duplicate_keys: ['D1'], dry_run: false, expect_versions: VERSIONS },
+      moved,
+    );
+    expect(moved.web.patchItem).not.toHaveBeenCalled();
+    expect(res2.structuredContent.changed).toEqual([{ key: 'C1', role: 'child', expected: 7 }]);
+    expect(res2.content[0].text).toMatch(/C1 \(child\): no longer hangs off a duplicate/);
+  });
+
+  it('writes when every version still matches, and says nothing about changes', async () => {
+    const ctx = makeCtx();
+    const res: any = await mergeItems.handler(
+      { master_key: 'K1', duplicate_keys: ['D1'], dry_run: false, expect_versions: VERSIONS },
+      ctx,
+    );
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.dryRun).toBe(false);
+    expect(res.structuredContent.changed).toBeUndefined();
+    expect(res.structuredContent.applied.trashed).toEqual(['D1']);
+    expect(ctx.web.patchItem).toHaveBeenCalled();
+  });
+
+  it('checks only what the caller asserted, so a partial block still guards the master', async () => {
+    const ctx = makeCtx({}, (items) => {
+      items.D1.version = 6;
+    });
+    const res: any = await mergeItems.handler(
+      { master_key: 'K1', duplicate_keys: ['D1'], dry_run: false, expect_versions: { master: 3 } },
+      ctx,
+    );
+    expect(res.structuredContent.applied.trashed).toEqual(['D1']);
+
+    const stale = makeCtx({}, (items) => {
+      items.K1.version = 4;
+    });
+    const res2: any = await mergeItems.handler(
+      { master_key: 'K1', duplicate_keys: ['D1'], dry_run: false, expect_versions: { master: 3 } },
+      stale,
+    );
+    expect(res2.structuredContent.changed).toEqual([{ key: 'K1', role: 'master', expected: 3, actual: 4 }]);
+    expect(stale.web.patchItem).not.toHaveBeenCalled();
+  });
+
+  it('still writes without expect_versions, as before, whatever a preview once showed', async () => {
+    const ctx = makeCtx({}, (items) => {
+      items.K1.version = 9;
+    });
+    const res: any = await mergeItems.handler({ master_key: 'K1', duplicate_keys: ['D1'], dry_run: false }, ctx);
+    expect(res.structuredContent.dryRun).toBe(false);
+    expect(res.structuredContent.applied.trashed).toEqual(['D1']);
+  });
+});
+
 describe('zotero_merge_items preview and apply agree', () => {
   /**
    * A desktop that is ahead of the cloud, which is the ordinary state of a local install:

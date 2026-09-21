@@ -228,6 +228,75 @@ async function fieldRules(
   }
 }
 
+/** The versions a plan was computed from: what a caller hands back to approve exactly that plan. */
+interface PlanVersions {
+  master?: number;
+  duplicates: Record<string, number>;
+  children: Record<string, number>;
+}
+
+/** What the caller asserted the versions were; every part optional, checked only when given. */
+interface ExpectedVersions {
+  master?: number;
+  duplicates?: Record<string, number>;
+  children?: Record<string, number>;
+}
+
+interface VersionChange {
+  key: string;
+  role: 'master' | 'duplicate' | 'child';
+  expected?: number;
+  actual?: number;
+}
+
+function planVersions(master: ItemRecord, duplicates: ItemRecord[], children: ChildRecord[]): PlanVersions {
+  const known = (records: Array<{ key: string; version?: number }>): Record<string, number> =>
+    Object.fromEntries(records.flatMap((r) => (r.version == null ? [] : [[r.key, r.version]])));
+  return { master: master.version, duplicates: known(duplicates), children: known(children) };
+}
+
+/**
+ * Every record that is not where the caller's preview left it.
+ *
+ * The plan the write computes is built from a fresh read, and nothing else ties that read
+ * to the preview the caller approved: a duplicate edited in between is trashed with the
+ * edits, a note moved under it in between is moved again, and the answer's `plan` differs
+ * from the preview with no flag. The intra-call 412 handling cannot see any of that, because
+ * the write's own read already reflects it. So the caller's copy of the versions is the tie,
+ * and any record it names that has moved, or any child that has come or gone, stops the
+ * write before it starts.
+ */
+function staleSince(expected: ExpectedVersions, actual: PlanVersions, masterKey: string): VersionChange[] {
+  const changed: VersionChange[] = [];
+  if (expected.master !== undefined && expected.master !== actual.master) {
+    changed.push({ key: masterKey, role: 'master', expected: expected.master, actual: actual.master });
+  }
+  for (const [key, version] of Object.entries(expected.duplicates ?? {})) {
+    if (actual.duplicates[key] !== version) changed.push({ key, role: 'duplicate', expected: version, actual: actual.duplicates[key] });
+  }
+  if (expected.children) {
+    for (const [key, version] of Object.entries(expected.children)) {
+      if (actual.children[key] !== version) changed.push({ key, role: 'child', expected: version, actual: actual.children[key] });
+    }
+    for (const [key, version] of Object.entries(actual.children)) {
+      if (!(key in expected.children)) changed.push({ key, role: 'child', actual: version });
+    }
+  }
+  return changed;
+}
+
+function describeChange(c: VersionChange): string {
+  const what =
+    c.expected !== undefined && c.actual !== undefined
+      ? `version ${c.expected} is now ${c.actual}`
+      : c.expected === undefined
+        ? 'appeared under a duplicate since the preview'
+        : c.role === 'child'
+          ? 'no longer hangs off a duplicate'
+          : 'could not be read, or is no longer a mergeable item';
+  return `${c.key} (${c.role}): ${what}`;
+}
+
 const plannedField = z
   .object({
     before: z.unknown().describe('Value the master carries now: always empty, since nothing else is touched.'),
@@ -247,7 +316,7 @@ const mergeItems: ToolDefinition = {
   name: 'zotero_merge_items',
   title: 'Merge duplicate items',
   description:
-    'Merge one or more duplicate items into a master item: fields the master is MISSING are filled from the duplicates, their tags, collections and relations are unioned onto it, their child notes and attachments are reparented to it, and the emptied duplicates are moved to the trash (recoverable). A field the master already has is never overwritten, and nothing is ever deleted outright. PREVIEWS BY DEFAULT: with `dry_run` unset or true nothing is written and the answer is the exact plan, field by field, so the caller can see what would change before it changes. Pass `dry_run:false` to execute. The writing path uses the Zotero cloud Web API and needs ZOTERO_API_KEY, because only that API takes a versioned PATCH, and the preview reads the same cloud records the write will act on so the two cannot describe different merges; on a desktop-only install the preview instead describes the desktop app\'s copy and says so (`readFrom`), since no merge can be applied there at all. If the master changes on the server between the plan and the write, the plan is rebuilt against the record as it then is rather than replayed, and the answer says so (`replanned`), because replaying it would overwrite exactly what changed. Find candidates with zotero_import `check_duplicates:true`, or by comparing records yourself with zotero_search_items and zotero_get_item. The master keeps its own key, so citations already pointing at it stay valid; the duplicates keep theirs in the trash until it is emptied, and the master records a dc:replaces relation naming each item it absorbed, which is the same relation Zotero\'s own merge writes. Put a duplicate back with zotero_trash_items action:"restore"; to edit one item rather than fold two together, use zotero_update_item.',
+    'Merge one or more duplicate items into a master item: fields the master is MISSING are filled from the duplicates, their tags, collections and relations are unioned onto it, their child notes and attachments are reparented to it, and the emptied duplicates are moved to the trash (recoverable). A field the master already has is never overwritten, and nothing is ever deleted outright. PREVIEWS BY DEFAULT: with `dry_run` unset or true nothing is written and the answer is the exact plan, field by field, so the caller can see what would change before it changes. Pass `dry_run:false` to execute. The writing path uses the Zotero cloud Web API and needs ZOTERO_API_KEY, because only that API takes a versioned PATCH, and the preview reads the same cloud records the write will act on so the two cannot describe different merges; on a desktop-only install the preview instead describes the desktop app\'s copy and says so (`readFrom`), since no merge can be applied there at all. The preview also reports `versions` (the master\'s, each duplicate\'s and each child\'s): pass that block back as `expect_versions` with dry_run:false and the write runs only if every record is still at that version, otherwise NOTHING is written and the answer is the plan as it now stands, as a dry run, with `changed` naming what moved. Without `expect_versions` the write plans from the records as they are at call time. If the master changes on the server between the read and the PATCH inside one call, the plan is rebuilt against the record as it then is rather than replayed, and the answer says so (`replanned`), because replaying it would overwrite exactly what changed. Find candidates with zotero_import `check_duplicates:true`, or by comparing records yourself with zotero_search_items and zotero_get_item. The master keeps its own key, so citations already pointing at it stay valid; the duplicates keep theirs in the trash until it is emptied, and the master records a dc:replaces relation naming each item it absorbed, which is the same relation Zotero\'s own merge writes. Put a duplicate back with zotero_trash_items action:"restore"; to edit one item rather than fold two together, use zotero_update_item.',
   inputSchema: {
     master_key: z.string().describe('8-character key of the item to keep. It keeps its key, so existing citations to it stay valid.'),
     duplicate_keys: z
@@ -259,6 +328,22 @@ const mergeItems: ToolDefinition = {
       .optional()
       .describe('Preview the plan without writing anything. DEFAULT TRUE: pass false to actually merge.'),
     confirm: z.boolean().optional().describe('Required when merging more items at once than this server\'s bulk-write threshold allows.'),
+    expect_versions: z
+      .object({
+        master: z.number().int().nonnegative().optional().describe("The master's version as the preview reported it (`versions.master`)."),
+        duplicates: z
+          .record(z.number().int().nonnegative())
+          .optional()
+          .describe("Each duplicate's version as the preview reported it (`versions.duplicates`)."),
+        children: z
+          .record(z.number().int().nonnegative())
+          .optional()
+          .describe('Each child item the preview planned to move, with its version (`versions.children`). A child that has since appeared under a duplicate, or left one, counts as a change.'),
+      })
+      .optional()
+      .describe(
+        'The `versions` block of the preview being approved. With it, dry_run:false writes only if every record named is still at that version; otherwise NOTHING is written and the answer is the plan as it now stands, as a dry run, with `changed` naming what moved. Without it the write plans from the records as they are at call time, so pass it whenever a preview was shown to someone before the write.',
+      ),
     ...libraryArgs,
   },
   outputSchema: z
@@ -305,6 +390,28 @@ const mergeItems: ToolDefinition = {
         .boolean()
         .optional()
         .describe('True when the master changed on the server between the read and the write: the plan was rebuilt against the record as it then was, so `plan` is what was actually written rather than what a preview showed.'),
+      versions: z
+        .object({
+          master: z.number().optional().describe("The master's version the plan was computed from."),
+          duplicates: z.record(z.number()).describe("Each duplicate's version the plan was computed from."),
+          children: z.record(z.number()).describe('Each child item the plan would move, with the version it was read at.'),
+        })
+        .passthrough()
+        .optional()
+        .describe('The record versions this plan was computed from. Pass the block back as `expect_versions` with dry_run:false so the write runs only against these exact records.'),
+      changed: z
+        .array(
+          z
+            .object({
+              key: z.string().describe('The record that is not at the version the caller expected.'),
+              role: z.string().describe('"master", "duplicate" or "child".'),
+              expected: z.number().optional().describe('The version the caller expected; absent for a child that has appeared since the preview.'),
+              actual: z.number().optional().describe('The version it is at now; absent for a duplicate that could not be read or a child that has left.'),
+            })
+            .passthrough(),
+        )
+        .optional()
+        .describe('Present, with dryRun:true and nothing written, when `expect_versions` did not match what the library holds now.'),
       readFrom: z
         .string()
         .optional()
@@ -437,6 +544,10 @@ const mergeItems: ToolDefinition = {
       }
     }
 
+    // What the plan is computed from, so a caller can hand it back and approve THIS plan and
+    // not whatever a later read produces.
+    const versions = planVersions(master, duplicates, children);
+
     const rules = await fieldRules(ctx, master.data.itemType);
     const planFor = (m: ItemRecord): { plan: MergePlan; patch: Record<string, unknown> } =>
       buildMergePlan({
@@ -465,16 +576,46 @@ const mergeItems: ToolDefinition = {
           master_key: masterKey,
           dryRun: true,
           plan,
+          versions,
           readFrom: previewFromDesktop ? 'local' : 'cloud',
           note,
           failed: failed.length ? failed : undefined,
         },
         `Dry run: merging ${duplicates.length} item(s) into ${masterKey} would fill ${filled()}, ` +
           `move ${plan.childrenToMove.length} child item(s), and trash ${plan.duplicatesToTrash.length} item(s). ` +
-          'Nothing was written.' +
+          'Nothing was written. To run exactly this plan, pass `versions` back as `expect_versions` with dry_run:false.' +
           (plan.fieldsSkipped.length ? ` ${plan.fieldsSkipped.length} value(s) would be left behind; see plan.fieldsSkipped.` : '') +
           (failed.length ? ` ${failed.length} item(s) could not be planned in full; see failed.` : '') +
           (note ? ` ${note}` : ''),
+      );
+    }
+
+    // The plan that was approved is the plan that runs, and this is what makes that true
+    // across two calls: the write is refused, and the fresh plan handed back as a preview,
+    // when any record the caller's preview was computed from has moved since.
+    const changed = args.expect_versions ? staleSince(args.expect_versions as ExpectedVersions, versions, masterKey) : [];
+    if (changed.length) {
+      const note =
+        'Nothing was written: the library moved since the preview that `expect_versions` describes, so that plan ' +
+        'is no longer the plan. This answer is the plan as it now stands; review it and pass its `versions` as ' +
+        '`expect_versions` to run it.';
+      return okLibraryContent(
+        {
+          master_key: masterKey,
+          dryRun: true,
+          plan,
+          versions,
+          changed,
+          readFrom: 'cloud',
+          note,
+          failed: failed.length ? failed : undefined,
+        },
+        `Nothing was written: ${changed.length} record(s) changed since the preview (${changed.map(describeChange).join('; ')}). ` +
+          `Merging ${duplicates.length} item(s) into ${masterKey} would NOW fill ${filled()}, ` +
+          `move ${plan.childrenToMove.length} child item(s), and trash ${plan.duplicatesToTrash.length} item(s); ` +
+          'review this plan and pass its `versions` back as `expect_versions` to run it.' +
+          (plan.fieldsSkipped.length ? ` ${plan.fieldsSkipped.length} value(s) would be left behind; see plan.fieldsSkipped.` : '') +
+          (failed.length ? ` ${failed.length} item(s) could not be planned in full; see failed.` : ''),
       );
     }
 

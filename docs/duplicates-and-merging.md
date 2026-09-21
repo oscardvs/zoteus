@@ -60,11 +60,30 @@ returns the plan:
 - `plan.tagsAdded`, `plan.collectionsAdded`, `plan.relationsAdded`
 - `plan.childrenToMove`: the child notes and attachments that would be reparented
 - `plan.duplicatesToTrash`
+- `versions`: the master's, each duplicate's and each child's version the plan was computed
+  from, which is how you approve **this** plan rather than a later one (below).
 
 Pass `dry_run:false` to run it, in this order: one PATCH on the master carrying the unioned
 fields, tags, collections and relations; one PATCH per child setting `parentItem` to the
 master; then the duplicates are **trashed** (`deleted:1`), never deleted outright, so the
 Zotero trash is the undo.
+
+**Pass the preview's `versions` block back as `expect_versions`** on that call:
+
+```json
+{"master_key":"ABCD1234","duplicate_keys":["EFGH5678"],"dry_run":false,
+ "expect_versions":{"master":3,"duplicates":{"EFGH5678":5},"children":{"IJKL9012":7}}}
+```
+
+The write is computed from a fresh read, and without `expect_versions` nothing ties that
+read to the preview: if someone edited a duplicate in between, it is trashed with the edits;
+if they moved a note under it, the note is moved again; and the answer's `plan` differs from
+the preview with no flag. With `expect_versions`, any named record that is not at that
+version, and any child that has appeared under a duplicate or left one, stops the write
+before it starts: nothing is written, the answer is the plan as it now stands (`dryRun:true`),
+and `changed` names each record that moved. Review it and pass its `versions` back to run it.
+Without `expect_versions` the write behaves as before and plans from the records as they are
+at call time.
 
 If a step fails, the answer says exactly what landed. A master that could not be updated
 stops the merge before anything is trashed. A child that could not be reparented keeps its
