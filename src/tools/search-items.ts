@@ -99,7 +99,7 @@ const searchItems: ToolDefinition = {
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const detailed = args.response_format === 'detailed';
-    const library = optionalLibrary(args);
+    const library = optionalLibrary(args, ctx);
     // A collection key the library does not have would otherwise be answered with the whole
     // library by the desktop app, so a scoped search would report every item in the library
     // as the collection's contents. Checked only when a key was given.

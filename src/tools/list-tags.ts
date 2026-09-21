@@ -31,7 +31,7 @@ const listTags: ToolDefinition = {
     .passthrough(),
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
-    const lib = optionalLibrary(args) ?? ctx.router.defaultLibrary();
+    const lib = optionalLibrary(args, ctx) ?? ctx.router.defaultLibrary();
     const r = await ctx.router.listTags({ library: lib, q: args.q, limit: args.limit ?? 100 });
     const tags = r.data.map((t: any) =>
       typeof t === 'string'

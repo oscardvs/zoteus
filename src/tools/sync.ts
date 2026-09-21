@@ -65,7 +65,7 @@ const sync: ToolDefinition = {
     .passthrough(),
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
-    const lib = optionalLibrary(args) ?? ctx.router.defaultLibrary();
+    const lib = optionalLibrary(args, ctx) ?? ctx.router.defaultLibrary();
     const since = args.since ?? 0;
     const types = (args.types ?? SYNC_TYPES) as readonly (typeof SYNC_TYPES)[number][];
 

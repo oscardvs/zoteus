@@ -52,7 +52,7 @@ const fulltext: ToolDefinition = {
     .passthrough(),
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
-    const readLib = optionalLibrary(args) ?? ctx.router.defaultLibrary();
+    const readLib = optionalLibrary(args, ctx) ?? ctx.router.defaultLibrary();
     if (args.action === 'get') {
       if (!args.item_key) return err('`item_key` is required for get.');
       const ft = await ctx.router.getFullText(args.item_key, { library: readLib });

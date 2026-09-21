@@ -34,7 +34,7 @@ const getItem: ToolDefinition = {
     .passthrough(),
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
-    const library = optionalLibrary(args);
+    const library = optionalLibrary(args, ctx);
     // Both were accepted and neither was forwarded, so every style rendered the same (#58).
     // The alias table turns "Chicago" into an id; a bare id or a URL passes through.
     // Zotero REPLACES the representation when `include` is set: `include=bib` answers with

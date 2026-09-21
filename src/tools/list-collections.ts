@@ -22,7 +22,7 @@ const listCollections: ToolDefinition = {
     .passthrough(),
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
-    const library = optionalLibrary(args);
+    const library = optionalLibrary(args, ctx);
     const r = await ctx.router.listCollections({ top: args.top, library });
     const collections = r.data.map((c: any) => ({
       key: c.key ?? c.data?.key,

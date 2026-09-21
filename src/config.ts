@@ -31,7 +31,9 @@ export interface ZoteusConfig {
    */
   zoteroDeadlineMs?: number;
   translationServerUrl: string;
-  embeddings: 'local' | 'openai' | 'gemini' | 'off';
+  embeddings: 'local' | 'openai' | 'gemini' | 'ollama' | 'off';
+  /** Base URL of the Ollama daemon an `ollama` embedder talks to (ZOTEUS_OLLAMA_URL). */
+  ollamaUrl: string;
   /** Model for the active embedder, local included (unset = that provider's own default). */
   embeddingModel?: string;
   /** Whether embedding inputs carry E5's `query: `/`passage: ` markers (see embeddings.ts). */
@@ -48,6 +50,14 @@ export interface ZoteusConfig {
   embedMaxRetries: number;
   /** Where to resolve @huggingface/transformers from when the install cannot see it itself. */
   transformersPath?: string;
+  /** Whether a PDF with no text layer may be read by OCR: `off`, or `auto` when an engine resolves. */
+  ocr: 'off' | 'auto';
+  /** Where to resolve the OCR engine from when the install cannot see it itself. */
+  ocrPath?: string;
+  /** Pages one OCR call may read before it stops and tells the caller to ask for the rest. */
+  ocrMaxPages: number;
+  /** Tesseract language codes for OCR, `+`-separated (e.g. "eng+deu"). */
+  ocrLangs: string;
   /** Index attachment full text (PDF bodies) alongside metadata. Opt-in: it is costly. */
   indexFulltext: boolean;
   /** Index child notes and PDF annotations as extra passages (ZOTEUS_INDEX_OWN_WORDS). */
@@ -67,6 +77,8 @@ export interface ZoteusConfig {
    * legacy JSON file), or `auto` to take SQLite whenever the runtime provides it.
    */
   indexBackend: 'auto' | 'sqlite' | 'memory';
+  /** Library indexes one context keeps open at once before closing the least recently used. */
+  indexMaxOpen: number;
   /**
    * Two-stage vector search on the SQLite backend: binary codes scanned first, then an
    * exact cosine rescore of the candidates. False forces the exact scan of every vector.
@@ -82,6 +94,10 @@ export interface ZoteusConfig {
   /** Floor on that candidate set, so a small page still rescores a real neighbourhood. */
   indexAnnMinCandidates: number;
   scholarProviders: string[];
+  /** Whether open-access discovery may download bytes, or only report the link it found. */
+  oaFetch: boolean;
+  /** Ceiling on entries accepted from one bibliographic file import. */
+  importMaxEntries: number;
   dataDir: string;
   /**
    * The ZOTERO desktop app's data directory, whose `storage/<key>/` folders hold the
@@ -237,7 +253,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
           .max(600_000)
           .optional(),
         ZOTEUS_TRANSLATION_SERVER_URL: z.string().url().default('http://127.0.0.1:1969'),
-        ZOTEUS_EMBEDDINGS: z.enum(['local', 'openai', 'gemini', 'off']).default('local'),
+        ZOTEUS_EMBEDDINGS: z.enum(['local', 'openai', 'gemini', 'ollama', 'off']).default('local'),
+        // Where an `ollama` provider reaches its daemon. Ollama serves embeddings from the
+        // same port as everything else, and it is loopback by default, so this is only ever
+        // changed to point at another machine on the network.
+        ZOTEUS_OLLAMA_URL: z.string().url().default('http://127.0.0.1:11434'),
         ZOTEUS_EMBEDDING_MODEL: z.string().min(1).optional(),
         ZOTEUS_EMBEDDING_PREFIXES: z.enum(['auto', 'off', 'e5']).default('auto'),
         // Local only: an API provider's precision is decided on the provider's hardware.
@@ -255,6 +275,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
           .nonnegative()
           .default(DEFAULT_EMBED_MAX_RETRIES),
         ZOTEUS_TRANSFORMERS_PATH: z.string().min(1).optional(),
+        // Optical character recognition for PDFs with no text layer. `off` by default,
+        // because the engine is an optional runtime dependency this package does not ship:
+        // `auto` means "use it when it resolves, and say so clearly when it does not".
+        ZOTEUS_OCR: z.enum(['off', 'auto']).default('off'),
+        // Where to resolve the OCR engine from when the install cannot see it itself; the
+        // same escape hatch ZOTEUS_TRANSFORMERS_PATH is for the embedding runtime.
+        ZOTEUS_OCR_PATH: z.string().min(1).optional(),
+        // Pages one OCR call may read. OCR is orders of magnitude slower than reading a
+        // text layer, so an unbounded call would look like a hang to every MCP client.
+        ZOTEUS_OCR_MAX_PAGES: z.coerce.number().int().positive().default(8),
+        // Tesseract language codes, `+`-separated, e.g. "eng" or "eng+deu". Each one is a
+        // separate trained-data file the engine has to have locally.
+        ZOTEUS_OCR_LANGS: z.string().min(1).default('eng'),
         ZOTEUS_INDEX_FULLTEXT: bool(false),
         // On by default, unlike full text: the whole corpus is one paged crawl of text the
         // reader wrote by hand, orders of magnitude smaller than the attachment bodies it
@@ -272,6 +305,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
         // install that still sets it is simply not read; unknown variables are ignored.
         ZOTEUS_INDEX_MAX_ITEMS: z.coerce.number().int().positive().default(DEFAULT_INDEX_MAX_ITEMS),
         ZOTEUS_INDEX_BACKEND: z.enum(['auto', 'sqlite', 'memory']).default('auto'),
+        // How many library indexes one context keeps open at once. Each open index costs a
+        // SQLite handle and its cached pages, so a user who reaches many group libraries
+        // should not accumulate one per group forever; the least recently used is closed.
+        ZOTEUS_INDEX_MAX_OPEN: z.coerce.number().int().positive().default(4),
         // Query-side accent expansion: an unaccented keyword-search term also matches the
         // accented spellings that dominate the library's vocabulary. On by default — it
         // compensates the recall that keeping diacritics in the index removed for
@@ -290,6 +327,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
           .positive()
           .default(DEFAULT_ANN_MIN_CANDIDATES),
         ZOTEUS_SCHOLAR_PROVIDERS: z.string().default('openalex'),
+        // Whether open-access discovery may DOWNLOAD from the host it finds. Finding and
+        // reporting an OA link is always allowed; fetching bytes from a URL a model chose
+        // is egress to an arbitrary host, which an operator of a shared deployment may not
+        // want. Discovery still reports the link when this is off, so nothing goes silent.
+        ZOTEUS_OA_FETCH: bool(true),
+        // Ceiling on entries accepted from one bibliographic file import, so a pasted
+        // 5,000-entry .bib becomes a refusal that names the cap rather than a bulk write.
+        ZOTEUS_IMPORT_MAX_ENTRIES: z.coerce.number().int().positive().default(200),
         ZOTEUS_DATA_DIR: z.string().min(1).optional(),
         ZOTERO_DATA_DIR: z.string().min(1).optional(),
         ZOTEUS_CONTACT_EMAIL: z.string().email().optional(),
@@ -481,6 +526,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
     zoteroDeadlineMs: parsed.ZOTEUS_ZOTERO_DEADLINE_MS,
     translationServerUrl: parsed.ZOTEUS_TRANSLATION_SERVER_URL,
     embeddings: parsed.ZOTEUS_EMBEDDINGS,
+    ollamaUrl: parsed.ZOTEUS_OLLAMA_URL,
     embeddingModel: parsed.ZOTEUS_EMBEDDING_MODEL?.trim() || undefined,
     embeddingPrefixes: parsed.ZOTEUS_EMBEDDING_PREFIXES,
     embeddingDtype: parsed.ZOTEUS_EMBEDDING_DTYPE,
@@ -489,12 +535,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
     embedBatchDelayMs: parsed.ZOTEUS_EMBED_BATCH_DELAY_MS,
     embedMaxRetries: parsed.ZOTEUS_EMBED_MAX_RETRIES,
     transformersPath: parsed.ZOTEUS_TRANSFORMERS_PATH?.trim() || undefined,
+    ocr: parsed.ZOTEUS_OCR,
+    ocrPath: parsed.ZOTEUS_OCR_PATH?.trim() || undefined,
+    ocrMaxPages: parsed.ZOTEUS_OCR_MAX_PAGES,
+    ocrLangs: parsed.ZOTEUS_OCR_LANGS,
     indexFulltext: parsed.ZOTEUS_INDEX_FULLTEXT,
     indexOwnWords: parsed.ZOTEUS_INDEX_OWN_WORDS,
     indexFulltextMaxChars: parsed.ZOTEUS_INDEX_FULLTEXT_MAX_CHARS,
     indexFulltextConcurrency: parsed.ZOTEUS_INDEX_FULLTEXT_CONCURRENCY,
     indexMaxItems: parsed.ZOTEUS_INDEX_MAX_ITEMS,
     indexBackend: parsed.ZOTEUS_INDEX_BACKEND,
+    indexMaxOpen: parsed.ZOTEUS_INDEX_MAX_OPEN,
     indexAnn: parsed.ZOTEUS_INDEX_ANN,
     accentExpansion: parsed.ZOTEUS_ACCENT_EXPANSION,
     indexAnnOversample: parsed.ZOTEUS_INDEX_ANN_OVERSAMPLE,
@@ -506,6 +557,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
     zoteroDataDir: parsed.ZOTERO_DATA_DIR ?? defaultZoteroDataDir(env),
     contactEmail: parsed.ZOTEUS_CONTACT_EMAIL,
     openalexApiKey: parsed.ZOTEUS_OPENALEX_API_KEY,
+    oaFetch: parsed.ZOTEUS_OA_FETCH,
+    importMaxEntries: parsed.ZOTEUS_IMPORT_MAX_ENTRIES,
     allowDelete: parsed.ZOTEUS_ALLOW_DELETE,
     readOnly: parsed.ZOTEUS_READ_ONLY,
     confirmBulkWrites: parsed.ZOTEUS_CONFIRM_BULK_WRITES,

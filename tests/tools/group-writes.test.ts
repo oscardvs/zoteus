@@ -103,6 +103,44 @@ describe('a group is addressed by id, never by library_type alone (#74)', () => 
     expect(resolveLibrary(ctx, {})).toEqual(USER);
   });
 
+  it('honors an explicit personal library for reads and writes on a group-default install', async () => {
+    const { ctx, web } = makeCtx();
+    ctx.config.libraryType = 'group';
+    ctx.config.libraryId = GROUP_ID;
+    expect(resolveLibrary(ctx, {})).toEqual(GROUP);
+    expect(resolveLibrary(ctx, { library_type: 'user' })).toEqual(USER);
+    await listCollections.handler({ library_type: 'user' }, ctx);
+    expect(web.listCollections.mock.calls[0][0]).toEqual(USER);
+    await createItems.handler({ items: [{ itemType: 'book', title: 'Personal reference' }], library_type: 'user' }, ctx);
+    expect(web.writeItems.mock.calls[0][0]).toEqual(USER);
+  });
+
+  it('routes the explicit personal library locally when the configured default is a group', async () => {
+    const { ctx, web } = makeCtx();
+    ctx.config.libraryType = 'group';
+    ctx.config.libraryId = GROUP_ID;
+    ctx.config.local = 'auto';
+    ctx.capabilities.localApi = true;
+    const local = { listCollections: vi.fn(async () => ({ data: [], totalResults: 0 })) };
+    ctx.router = new LibraryRouter({ config: ctx.config, capabilities: ctx.capabilities, web: web as any, local: local as any });
+    await listCollections.handler({ library_type: 'user' }, ctx);
+    expect(local.listCollections).toHaveBeenCalled();
+    expect(web.listCollections).not.toHaveBeenCalled();
+    expect(ctx.router.servesLocally({ type: 'user', id: GROUP_ID })).toBe(false);
+  });
+
+  it('keeps a configured personal library local when no cloud key is installed', () => {
+    const { ctx, web } = makeCtx({ access: null });
+    ctx.config.libraryType = 'user';
+    ctx.config.libraryId = KEY_USER_ID;
+    ctx.config.local = 'auto';
+    ctx.capabilities.localApi = true;
+    const router = new LibraryRouter({ config: ctx.config, capabilities: ctx.capabilities, web: web as any, local: {} as any });
+    expect(router.servesLocally()).toBe(true);
+    expect(router.servesLocally({ type: 'user', id: 0 })).toBe(true);
+    expect(router.servesLocally({ type: 'user', id: GROUP_ID })).toBe(false);
+  });
+
   it('takes the id when one is given, group or user', () => {
     expect(optionalLibrary({ library_type: 'group', library_id: GROUP_ID })).toEqual(GROUP);
     expect(optionalLibrary({ library_id: GROUP_ID })).toEqual(GROUP);

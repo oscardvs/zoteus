@@ -53,7 +53,7 @@ const manageCollections: ToolDefinition = {
       // personal library's collections for a call that named a group handed the model
       // collection keys that do not exist there, and the create that followed failed or
       // landed in the wrong place (#74).
-      const r = await ctx.router.listCollections({ library: optionalLibrary(args) });
+      const r = await ctx.router.listCollections({ library: optionalLibrary(args, ctx) });
       const collections = r.data.map((c: any) => ({
         key: c.key ?? c.data?.key,
         name: c.data?.name,

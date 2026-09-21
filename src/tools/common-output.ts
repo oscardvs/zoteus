@@ -96,6 +96,15 @@ export const indexStatus = {
   embedderConfigured: z.string().optional().describe('The requested ZOTEUS_EMBEDDINGS value, whether or not it works.'),
   embedderActive: z.boolean().optional().describe('True only while that provider is genuinely producing vectors.'),
   embedderReason: z.string().optional().describe('Why the configured embedder is not active, and what to do about it.'),
+  library: z
+    .string()
+    .optional()
+    .describe(
+      'Which library\'s rows this index holds: "user" for the personal library, or "group:<id>" for a group. ' +
+        'One index file holds one library, so a build or update for a different one is refused rather than ' +
+        'allowed to erase these rows. Absent on an index built before this stamp existed, which guards nothing ' +
+        'because there is no way to know whose rows it holds.',
+    ),
   libraryVersion: z.number().optional().describe('Zotero library version this index was last built or updated from.'),
   libraryBackend: z.string().optional().describe('Which API issued that version: "local" or "cloud" (the two sequences are not comparable).'),
   fulltextEnabled: z.boolean().optional().describe('Whether attachment body text was indexed.'),

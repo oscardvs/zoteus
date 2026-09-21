@@ -19,6 +19,45 @@ export function describeLibraryToken(library: string): string {
 }
 
 /**
+ * The filesystem-safe form of a canonical library token.
+ *
+ * `canonicalLibraryToken` emits `group:4523`, and a colon is illegal in a Windows
+ * filename, so the raw token can never go into a path. `group-4523` is the spelling that
+ * goes on disk; `user` needs no change and cannot collide with it.
+ */
+export function libraryPathSegment(library: string): string {
+  return library === 'user' ? 'user' : library.replace(/^group:/, 'group-');
+}
+
+/** The token a path segment came from, or undefined when the segment is not one. */
+export function libraryOfPathSegment(segment: string): string | undefined {
+  if (segment === 'user') return 'user';
+  const group = /^group-(\d+)$/.exec(segment);
+  return group ? `group:${group[1]}` : undefined;
+}
+
+/**
+ * Whether this token's file name can be read back as this token.
+ *
+ * The two functions above must be inverses, because the index registry finds a library's
+ * index by parsing its file name: `group:-1` spells `group--1`, which the reverse match
+ * cannot read, so the store it created was permanently invisible to
+ * `zotero_index action:"libraries"` while sitting on the operator's disk. The tool layer
+ * asks this first, to refuse in the caller's own vocabulary; the registry asks it again on
+ * the way to a path, so no code path can write such a file whatever the tools do.
+ *
+ * Here rather than beside the registry that consumes it: this is a property of the TOKEN
+ * vocabulary, and the tools that must ask it cannot import the registry (index-manager
+ * imports build.ts, so build.ts importing the registry closes an import cycle).
+ */
+export function isAddressableLibrary(library: string): boolean {
+  if (library === 'user') return true;
+  const match = /^group:([1-9]\d*)$/.exec(library);
+  return Boolean(match && Number.isSafeInteger(Number(match[1]))) &&
+    libraryOfPathSegment(libraryPathSegment(library)) === library;
+}
+
+/**
  * Store an index lives in. `memory` is the original in-memory + JSON implementation:
  * fastest for small libraries and the only one available before Node 22.13. `sqlite`
  * keeps passages, vectors and the keyword index in a SQLite file (FTS5) and is the only
@@ -55,6 +94,24 @@ export interface SearchHit {
   score: number;
   /** Present when the snippet came from something other than the item's own metadata. */
   source?: PassageSource;
+  /**
+   * Canonical token of the library this hit came from (`user`, or `group:<id>`).
+   *
+   * Set ONLY by a search that fanned out over more than one index, and set by that search
+   * rather than by any store: one store holds one library's rows, so a single-index answer
+   * has nothing to disambiguate and the result names its library once instead. It matters
+   * in a combined answer because item keys repeat across libraries, so without it two hits
+   * with the same `itemKey` are indistinguishable.
+   */
+  library?: string;
+  /**
+   * This hit's 1-based rank within its OWN library's answer, present alongside `library`.
+   *
+   * A combined answer is ordered by this, not by `score`: two indexes score on scales that
+   * are not comparable (different corpus statistics, and possibly different embedders), so
+   * fusing the raw numbers would invent a comparability that does not exist.
+   */
+  libraryRank?: number;
 }
 
 /** One stored passage: the unit both the keyword index and the vector store rank. */

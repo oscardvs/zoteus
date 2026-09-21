@@ -244,7 +244,7 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
     .passthrough(),
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
-    const library: LibraryRef | undefined = optionalLibrary(args);
+    const library: LibraryRef | undefined = optionalLibrary(args, ctx);
     const mode: 'pages' | 'figures' = args.mode;
     const wantInline: boolean = args.inline ?? true;
     const shared = Boolean(ctx.remoteCaller);
@@ -445,7 +445,7 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
     const scannedPages = new Set(scans.map((img) => img.page));
     if (processed.length && processed.every((p) => scannedPages.has(p))) {
       notices.push(
-        `Every page here is one full-page image: this is a scanned PDF. mode:"pages" shows the same picture at a resolution you choose, and zotero_get_fulltext has no text for it unless Zotero has OCRed the file.`,
+        `Every page here is one full-page image: this is a scanned PDF. mode:"pages" shows the same picture at a resolution you choose, and zotero_get_fulltext has no text for it unless Zotero has OCRed the file, or this server has an OCR engine configured (ZOTEUS_OCR, off by default) and you pass ocr:true.`,
       );
     } else if (scans.length) {
       notices.push(
@@ -466,7 +466,7 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
     if (result.bitmapTextPages.length) {
       const total = result.bitmapTextPages.reduce((n, p) => n + p.masks, 0);
       notices.push(
-        `Pages ${describePages(result.bitmapTextPages.map((p) => p.page))} paint their text as ${total} small stencil bitmaps (a scan stored letter by letter, with no text layer); those are not figures and were left out. mode:"pages" shows the page, and zotero_get_fulltext has no text for it unless Zotero has OCRed the file.`,
+        `Pages ${describePages(result.bitmapTextPages.map((p) => p.page))} paint their text as ${total} small stencil bitmaps (a scan stored letter by letter, with no text layer); those are not figures and were left out. mode:"pages" shows the page, and zotero_get_fulltext has no text for it unless Zotero has OCRed the file, or this server has an OCR engine configured (ZOTEUS_OCR, off by default) and you pass ocr:true.`,
       );
     }
     if (result.skipped.tiny)

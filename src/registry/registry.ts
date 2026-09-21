@@ -15,6 +15,7 @@ import { classifyError, describeShape, type UsageRecorder } from '../lib/usage/e
 import type { StyleResolver } from '../features/citation/styles.js';
 import type { TranslationServerClient } from '../features/citation/translation-server.js';
 import type { SearchIndex } from '../features/search/backend.js';
+import type { SearchIndexRegistry } from '../features/search/index-registry.js';
 import type { ScholarGraph } from '../features/scholar/graph.js';
 import type { RateLimitedFetcher } from '../api/http.js';
 import type { UpdateChecker } from '../lib/update-check.js';
@@ -46,6 +47,8 @@ export interface ToolContext {
    * operator context, stdio, and any no-auth deployment.
    */
   zoteroUserId?: number;
+  /** A credential replacement retired this context; existing sessions must reconnect. */
+  invalidated?: boolean;
   /**
    * Whether the caller is someone other than the operator, i.e. any OAuth/HTTP deployment
    * and every per-user context. Tools that take a filesystem path from the caller confine
@@ -73,6 +76,23 @@ export interface ToolContext {
    */
   reopenSearchIndex(): Promise<SearchIndex>;
   /**
+   * Every library's search index, not just the default one's.
+   *
+   * One store holds ONE library's rows: passage ids are `${itemKey}#${n}` with no library
+   * component and Zotero item keys repeat across libraries, so a second library is a
+   * second file. This registry owns which library maps to which file, which of them are
+   * open, and which is closed when there are too many (ZOTEUS_INDEX_MAX_OPEN).
+   *
+   * `search` above stays: it is the default library's index, it is what every tool that
+   * does not address a library reads, and it is the entry this registry never closes to
+   * make room. So `ctx.search` and `ctx.indexes.open(defaultLibrary)` are the same object.
+   *
+   * Optional because a hand-built test context (and the deferred-startup fake) supplies
+   * `search` alone; where it is absent everything falls back to that single index, which
+   * is exactly the behaviour before this existed.
+   */
+  indexes?: SearchIndexRegistry;
+  /**
    * Keeps `capabilities.localApi` live rather than frozen at what the startup probe saw.
    * Optional so a hand-built test context need not supply one; where it is absent the
    * capability simply stays as it was set.
@@ -91,8 +111,14 @@ export interface ToolContext {
  */
 export type ToolContextSource = ToolContext | (() => Promise<ToolContext>);
 
-export function resolveContext(source: ToolContextSource): Promise<ToolContext> {
-  return typeof source === 'function' ? source() : Promise.resolve(source);
+/** What a call on a retired context, or with a retired credential, is told. */
+export const SESSION_RETIRED_MESSAGE =
+  'Zotero authorization changed or the session expired. Reconnect to start a new session.';
+
+export async function resolveContext(source: ToolContextSource): Promise<ToolContext> {
+  const ctx = await (typeof source === 'function' ? source() : Promise.resolve(source));
+  if (ctx.invalidated) throw new Error(SESSION_RETIRED_MESSAGE);
+  return ctx;
 }
 
 /** A text block, which is what every result carries: a summary line and a JSON mirror. */
@@ -201,7 +227,10 @@ export interface LibraryArgs {
  * wrote to) the personal library and reported success (#74). Saying so is the whole fix:
  * the id is one `zotero_groups` call away.
  */
-export function optionalLibrary(args?: LibraryArgs): LibraryRef | undefined {
+export function optionalLibrary(
+  args?: LibraryArgs,
+  ctx?: Pick<ToolContext, 'capabilities'>,
+): LibraryRef | undefined {
   if (args?.library_id) return { type: args.library_type ?? 'group', id: args.library_id };
   if (args?.library_type === 'group') {
     throw new Error(
@@ -210,6 +239,7 @@ export function optionalLibrary(args?: LibraryArgs): LibraryRef | undefined {
         '(Without an id this would have used the personal library instead.)',
     );
   }
+  if (args?.library_type === 'user') return { type: 'user', id: ctx?.capabilities?.cloud?.userID ?? 0 };
   return undefined;
 }
 
@@ -329,7 +359,7 @@ export function writeResult(
  * (ZOTERO_LIBRARY_TYPE / ZOTERO_LIBRARY_ID), otherwise the key's own personal library.
  */
 export function resolveLibrary(ctx: ToolContext, args?: LibraryArgs): LibraryRef {
-  return optionalLibrary(args) ?? ctx.router.defaultLibrary();
+  return optionalLibrary(args, ctx) ?? ctx.router.defaultLibrary();
 }
 
 /**

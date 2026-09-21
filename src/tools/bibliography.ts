@@ -44,7 +44,7 @@ const bibliography: ToolDefinition = {
     .passthrough(),
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
-    const lib = optionalLibrary(args) ?? ctx.router.defaultLibrary();
+    const lib = optionalLibrary(args, ctx) ?? ctx.router.defaultLibrary();
     const style = args.style ? ctx.styles.resolveId(args.style) : undefined;
     // Routed, not ctx.web: in key-free local mode the default library is users/0, which
     // only the desktop app can answer, and it renders format=bib just as the cloud does.

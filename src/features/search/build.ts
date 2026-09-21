@@ -1,7 +1,8 @@
-import type { ToolContext } from '../../registry/registry.js';
+import type { LibraryArgs, ToolContext } from '../../registry/registry.js';
+import { optionalLibrary } from '../../registry/registry.js';
 import type { LibraryRef } from '../../api/web-client.js';
-import type { EmbedRate, IndexBuildStatus, VersionBackend } from './backend.js';
-import { canonicalLibraryToken } from './backend.js';
+import type { EmbedRate, IndexBuildStatus, SearchIndex, VersionBackend } from './backend.js';
+import { canonicalLibraryToken, describeLibraryToken, isAddressableLibrary } from './backend.js';
 import { createFulltextSource, type FulltextSource } from './fulltext-source.js';
 import { createOwnWordsSource, fetchChildVersions, type OwnWordsSource } from './own-words-source.js';
 import {
@@ -278,6 +279,102 @@ export function localApiNotice(s: IndexBuildStatus): string {
   );
 }
 
+/**
+ * Which library's rows this index holds, in human words.
+ *
+ * Said on every status because until now the only way to learn it was to trip the
+ * cross-library refusal: a user whose index holds a group and who asks about their
+ * personal library got an answer from the wrong rows with nothing in it saying so.
+ *
+ * Silent for an index built before the stamp existed. That index guards nothing and
+ * nothing is known about whose rows it holds, so claiming a library here would be a
+ * guess, and a refusal built on it would be wrong.
+ */
+export function libraryNotice(s: IndexBuildStatus): string {
+  if (!s.library) return '';
+  return ` This index holds ${describeLibraryToken(s.library)}; one index file holds one library.`;
+}
+
+/** Resolve explicit library arguments through the same helper used by every tool. */
+export function namedLibrary(ctx: ToolContext, args?: LibraryArgs): LibraryRef | undefined {
+  return optionalLibrary(args, ctx);
+}
+
+/**
+ * Why this library cannot be addressed at all, or null when it can.
+ *
+ * A library's index file is named after its token, and `discover()` finds an index by
+ * reading that name back: `group:-1` spells `group--1`, which the reverse match cannot
+ * parse, so the store it created sat on the operator's disk permanently invisible to
+ * `action:"libraries"` (whose own description promises it lists every index here). Asked
+ * in the tool layer so the caller gets their own vocabulary back; the registry asks it
+ * again on the way to a path, so no code path can write such a file whatever the tools do.
+ */
+export function unaddressableLibrary(lib?: LibraryRef): string | null {
+  if (!lib || isAddressableLibrary(canonicalLibraryToken(lib))) return null;
+  return (
+    `${JSON.stringify(String(lib.id))} is not a library id this server can use: a group is addressed by its ` +
+    'POSITIVE numeric id. Call zotero_groups to list the groups you can reach, then use the `id` it returns. ' +
+    'Nothing was created.'
+  );
+}
+
+/**
+ * Why this caller cannot reach `lib` at all, or null when nothing here says they cannot.
+ *
+ * Asked BEFORE a store is opened for a caller-named group, because opening one CREATES it:
+ * a hosted tenant naming a group id they have never been able to read left a permanent,
+ * unreclaimed index file in the operator's shared data directory, once per id, for a
+ * question the Zotero API was about to answer with a 403. The check is the read-side twin
+ * of `missingWriteAccess`: the same `/keys/current` access map, asking about `library`
+ * rather than `write`.
+ *
+ * Deliberately silent wherever the answer is unknown rather than no: no key at all (a
+ * local-only install, where the desktop serves groups key-free), a key that reported no
+ * access map, or a `groups.all` entry, which covers every group its owner belongs to and
+ * so cannot rule an id out. Evidence, not a schema, exactly as the write-side check
+ * documents.
+ */
+export function unreachableLibrary(ctx: ToolContext, lib?: LibraryRef): string | null {
+  if (!lib) return null;
+  if (lib.type === 'user') {
+    const ownId = ctx.capabilities?.cloud?.userID;
+    if (lib.id !== 0 && ownId !== undefined && lib.id !== ownId) {
+      return `The personal search index belongs to user ${ownId} and cannot index or search user ${lib.id}. Use library_type:"user" without library_id to address your own library.`;
+    }
+    if (ctx.capabilities?.localApi) return null;
+    const user = ctx.capabilities?.cloud?.access?.user as { library?: boolean } | undefined;
+    return user?.library === false
+      ? 'This API key cannot read the personal library. Give the key library access at https://www.zotero.org/settings/keys.'
+      : null;
+  }
+  // A group the running desktop app holds is readable with no cloud key at all, so the
+  // key's map has nothing to say about it.
+  if ((ctx.capabilities?.localGroupIds ?? []).includes(lib.id)) return null;
+  const access = ctx.capabilities?.cloud?.access as
+    | { user?: unknown; groups?: Record<string, { library?: boolean }> }
+    | undefined;
+  if (!access || typeof access !== 'object' || Object.keys(access).length === 0) return null;
+  const groups = access.groups;
+  if (groups && typeof groups === 'object') {
+    const entry = groups[String(lib.id)] ?? groups.all;
+    if (entry && entry.library !== false) return null;
+  }
+  return (
+    `This API key cannot read group ${lib.id}, so there is nothing here to index or search and no index was ` +
+    'created for it. Call zotero_groups to list the groups you can reach, then use the `id` it returns; if that ' +
+    'group should be in the list, give the key access to it at https://www.zotero.org/settings/keys.'
+  );
+}
+
+/** Check a persisted index against the current key before returning cached content. */
+export function unreachableIndexLibrary(ctx: ToolContext, library: string | undefined): string | null {
+  if (!library) return null;
+  return unreachableLibrary(ctx, library === 'user'
+    ? { type: 'user', id: ctx.capabilities?.cloud?.userID ?? 0 }
+    : { type: 'group', id: Number(library.slice('group:'.length)) });
+}
+
 /** Human summary of a build/status snapshot. */
 export function statusSummary(s: IndexBuildStatus): string {
   const job = s.operation === 'update' ? 'update' : 'build';
@@ -285,6 +382,7 @@ export function statusSummary(s: IndexBuildStatus): string {
     ? ' Index work is paused; queries remain available. Call zotero_index action:"resume" before starting more work.'
     : '';
   const notice =
+    libraryNotice(s) +
     embedderNotice(s) +
     staleVectorsNotice(s) +
     unembeddedNotice(s) +
@@ -356,8 +454,13 @@ export interface BuildFulltextOptions {
 /**
  * Kick off the incremental background index build used by zotero_index and by
  * zotero_semantic_search's auto-build. Fire-and-forget: the build runs on the
- * server event loop; callers poll `ctx.search.buildStatus()` for progress.
+ * server event loop; callers poll the returned index's `buildStatus()` for progress.
  * Throws if a build is already running.
+ *
+ * `index` is which store the rows go into, and it defaults to `ctx.search`, the default
+ * library's. A caller indexing a SECOND library passes that library's own index (see
+ * index-registry.ts): one store holds one library's rows, so a group build must never be
+ * pointed at the personal library's store.
  *
  * Whether a page came from the desktop app or the cloud never changes the identity of
  * what is indexed: item keys are the same in both APIs, and the index store is keyed by
@@ -391,14 +494,24 @@ export function startIndexBuild(
   lib?: LibraryRef,
   maxItems?: number,
   opts: BuildFulltextOptions = {},
+  index: SearchIndex = ctx.search,
 ): IndexBuildStatus {
-  if (ctx.search.isPaused) {
+  if (index.isPaused) {
     throw new Error('Index work is paused. Call zotero_index action:"resume" before build, refresh, or update.');
   }
   // Synchronously, before the fire-and-forget job below: a refusal thrown inside the job
   // would only reach the logger, and the tool caller would see a build that "started".
-  const library = canonicalLibraryToken(lib);
-  ctx.search.assertLibrary(library);
+  //
+  // `lib ?? defaultLibrary()`, not `lib`, because the crawl below resolves an omitted
+  // library the same way (library-router.ts: `library ?? this.defaultLibrary()`). Stamping
+  // `canonicalLibraryToken(undefined)` = "user" while the router followed a configured
+  // group is what made a ZOTERO_LIBRARY_TYPE=group install stamp the wrong library, then
+  // falsely refuse that same group and accept a `library_type:"user"` build that erased
+  // its rows. The optional call is deliberate: a few fixtures hand this function a stub
+  // router with `servesLocally` and nothing else, and an absent default means exactly what
+  // it meant before, the personal library.
+  const library = canonicalLibraryToken(lib ?? ctx.router.defaultLibrary?.());
+  index.assertLibrary(library);
   // No Electron gate here any more. 1.12.0 refused a full-text build under Electron because
   // the pass took the process down with no error at all; the cause turned out to be the
   // local embedder asking Chromium's allocator for a block it will not serve, and capping
@@ -424,16 +537,16 @@ export function startIndexBuild(
 
   // The index persists itself (JSON file or SQLite commit), and a failure to do so is
   // recorded on the build status rather than swallowed here: see persistNotice.
-  const job = ctx.search.buildIncremental(fetchPage, {
+  const job = index.buildIncremental(fetchPage, {
     maxItems: cap,
     versionBackend: backend,
     ...(opts.fresh ? { fresh: true } : {}),
     library,
-    ...crawlOptions(ctx, lib, opts, backend),
+    ...crawlOptions(ctx, lib, opts, backend, index),
   });
-  watchLocalApi(ctx, backend, job);
+  watchLocalApi(ctx, backend, job, index);
   job.catch((e) => ctx.logger.error(`Index build crashed: ${e instanceof Error ? e.message : String(e)}`));
-  return ctx.search.buildStatus();
+  return index.buildStatus();
 }
 
 /**
@@ -450,10 +563,14 @@ export function startIndexBuild(
  * build runs is therefore also what makes this fire, which is a happy coincidence rather
  * than a dependency: any tool call does it.
  */
-function watchLocalApi(ctx: ToolContext, backend: VersionBackend, job: Promise<unknown>): void {
+function watchLocalApi(
+  ctx: ToolContext,
+  backend: VersionBackend,
+  job: Promise<unknown>,
+  index: SearchIndex,
+): void {
   if (backend !== 'local' || !ctx.localStatus) return;
-  const search = ctx.search;
-  const off = ctx.localStatus.onDegraded((at) => search.noteLocalApiDegraded(at));
+  const off = ctx.localStatus.onDegraded((at) => index.noteLocalApiDegraded(at));
   void job.then(off, off);
 }
 
@@ -470,29 +587,37 @@ export function startIndexUpdate(
   lib?: LibraryRef,
   maxItems?: number,
   opts: BuildFulltextOptions = {},
+  index: SearchIndex = ctx.search,
 ): IndexBuildStatus {
-  if (ctx.search.isPaused) {
+  if (index.isPaused) {
     throw new Error('Index work is paused. Call zotero_index action:"resume" before build, refresh, or update.');
   }
   const backend: VersionBackend = ctx.router.servesLocally(lib) ? 'local' : 'cloud';
   // Same synchronous guard as startIndexBuild, and for the same reason: the version stamp
   // this update would diff against belongs to the library the index holds, not to `lib`.
-  const library = canonicalLibraryToken(lib);
-  ctx.search.assertLibrary(library);
-  const blocker = ctx.search.updateBlocker(backend);
+  // Same default resolution too, so the stamp names the library the delta actually reads.
+  const library = canonicalLibraryToken(lib ?? ctx.router.defaultLibrary?.());
+  index.assertLibrary(library);
+  const blocker = index.updateBlocker(backend);
   if (blocker) {
-    return startIndexBuild(ctx, lib, maxItems, {
-      ...opts,
-      note:
-        `An incremental update was not possible (${blocker}), so a full build is running instead. It picks up ` +
-        'where an interrupted build left off when one is on disk, and records a version stamp, so the next ' +
-        'action:"update" is a cheap delta.',
-    });
+    return startIndexBuild(
+      ctx,
+      lib,
+      maxItems,
+      {
+        ...opts,
+        note:
+          `An incremental update was not possible (${blocker}), so a full build is running instead. It picks up ` +
+          'where an interrupted build left off when one is on disk, and records a version stamp, so the next ' +
+          'action:"update" is a cheap delta.',
+      },
+      index,
+    );
   }
 
   const configured = ctx.config.indexMaxItems;
   const cap = maxItems === undefined ? configured : Math.min(maxItems, configured);
-  const since = ctx.search.buildStatus().libraryVersion;
+  const since = index.buildStatus().libraryVersion;
   const fetchChanged = async (start: number) => {
     // The same routed, top-level crawl a build does, narrowed by `?since=`: on a library
     // where nothing moved this is a single request that returns an empty page.
@@ -517,17 +642,17 @@ export function startIndexUpdate(
     return keys;
   };
 
-  const job = ctx.search.updateIncremental({
+  const job = index.updateIncremental({
     backend,
     fetchChanged,
     liveKeys,
     maxItems: cap,
     library,
-    ...crawlOptions(ctx, lib, opts, backend),
+    ...crawlOptions(ctx, lib, opts, backend, index),
   });
-  watchLocalApi(ctx, backend, job);
+  watchLocalApi(ctx, backend, job, index);
   job.catch((e) => ctx.logger.error(`Index update crashed: ${e instanceof Error ? e.message : String(e)}`));
-  return ctx.search.buildStatus();
+  return index.buildStatus();
 }
 
 /**
@@ -545,6 +670,7 @@ function crawlOptions(
   lib: LibraryRef | undefined,
   opts: BuildFulltextOptions,
   backend: VersionBackend,
+  index: SearchIndex,
 ) {
   const wantFulltext = opts.fulltext ?? ctx.config.indexFulltext;
   const wantOwnWords = opts.ownWords ?? ctx.config.indexOwnWords;
@@ -557,11 +683,11 @@ function crawlOptions(
   const openSource = (): Promise<FulltextSource> =>
     (source ??= createFulltextSource(ctx, lib, { maxChars, backend }).then((src) => {
       opened = src;
-      if (src.unavailable) ctx.search.noteFulltextUnavailable(src.unavailable);
+      if (src.unavailable) index.noteFulltextUnavailable(src.unavailable);
       // A map missing part of the library is reported like one missing all of it: the items
       // it never reached look exactly like items with no extracted text, and indexing that
       // answer would erase body text an earlier run indexed (#67).
-      else if (src.incomplete) ctx.search.noteFulltextUnavailable(src.incomplete);
+      else if (src.incomplete) index.noteFulltextUnavailable(src.incomplete);
       else ctx.logger.info(`Full-text indexing: ${src.attachments} attachment(s) over ${src.items} item(s).`);
       return src;
     }));
@@ -618,8 +744,8 @@ function crawlOptions(
       // A census missing part of the library is reported the same way as one missing all
       // of it: what it does not hold looks exactly like "this item has no own words", and
       // indexing that answer would erase text an earlier run indexed (#63).
-      if (src.unavailable) ctx.search.noteOwnWordsUnavailable(src.unavailable);
-      else if (src.incomplete) ctx.search.noteOwnWordsUnavailable(src.incomplete);
+      if (src.unavailable) index.noteOwnWordsUnavailable(src.unavailable);
+      else if (src.incomplete) index.noteOwnWordsUnavailable(src.incomplete);
       else ctx.logger.info(`Own words: ${src.notes} note(s) and ${src.annotations} annotation(s) over ${src.items} item(s).`);
       return src;
     }));

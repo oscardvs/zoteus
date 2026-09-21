@@ -21,6 +21,11 @@ export const libraryArgs = {
   library_id: z
     .number()
     .int()
+    // Positive, so that a negative or zero id is refused by the schema for every
+    // library-addressable tool rather than by each one separately. A library id is a Zotero
+    // account or group number and is never either; the index registry derives a FILE NAME
+    // from one, so a value that is not a real id has no business travelling further.
+    .positive()
     .optional()
     .describe(
       'Numeric id of the library to address, e.g. 5234875 for a group (zotero_groups lists the ids you can reach). ' +

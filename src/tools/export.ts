@@ -131,7 +131,7 @@ const exportTool: ToolDefinition = {
     .passthrough(),
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
-    const lib = optionalLibrary(args) ?? ctx.router.defaultLibrary();
+    const lib = optionalLibrary(args, ctx) ?? ctx.router.defaultLibrary();
     // A collection key this library does not have would otherwise be exported as the whole
     // library by the desktop app. Checked only when a key was given.
     const unknownCollection = await refuseUnknownCollection(ctx, args.collection_key, lib, 'exported');

@@ -51,7 +51,7 @@ npm install @huggingface/transformers
 
 In the extension's **Configure** screen, set **Local embeddings path** to the absolute `node_modules` folder you just created, for example `/Users/you/.zoteus-deps/node_modules` or `C:\Users\you\.zoteus-deps\node_modules`. For a manually configured server, set `ZOTEUS_TRANSFORMERS_PATH` to that path. Do not use a global npm install: the extension runs on Claude's bundled Node runtime. Restart Claude, then check readiness again. The dependency tree is roughly 700 MB, with model weights downloaded separately on first use.
 
-Alternatively choose `openai` or `gemini` and configure that provider's API key on your own server. Embedding text and queries then go to that provider and may incur separate charges. Your ChatGPT or Claude subscription does not supply an embedding API key. Use `off` to deliberately keep keyword-only ranking. See [provider configuration](./configuration.md).
+You can also use a locally running [Ollama service](./ollama.md) with `ZOTEUS_EMBEDDINGS=ollama`. Alternatively choose `openai` or `gemini` and configure that provider's API key on your own server. Embedding text and queries then go to that provider and may incur separate charges. Your ChatGPT or Claude subscription does not supply an embedding API key. Use `off` to deliberately keep keyword-only ranking. See [provider configuration](./configuration.md).
 
 For multilingual libraries, the existing local model choice `Xenova/multilingual-e5-small` with `ZOTEUS_EMBEDDING_DTYPE=q8` downloads about 129 MB of weights; this is not a total RAM estimate. Changing models requires rebuilding vectors. Test with a known passage in each language before relying on cross-language retrieval. [Detailed model reference](https://github.com/oscardvs/zoteus/blob/main/docs/semantic-search.md).
 
@@ -59,11 +59,13 @@ For multilingual libraries, the existing local model choice `Xenova/multilingual
 
 The server operator controls embeddings and indexing caps. A software default does not establish a hosted allowance. If semantic PDF coverage is essential to your purchase, [ask support to confirm the active provider, included usage and coverage for your library](https://zoteus.com/pricing/#before-you-pay). After connecting, use the readiness check above. Do not paste an embedding API key into a research chat.
 
-## One indexed library at a time
+## Multiple indexed libraries
 
-One data directory holds one library index, scoped per authenticated user in hosted mode. Ordinary tool calls can address different permitted groups, but that does not create multiple persistent semantic indexes or combined search. A build for a different library is refused to protect the existing index.
+One data directory can hold separate persistent indexes for your personal library and each permitted group. Hosted indexes are also scoped to the authenticated account. Build each library explicitly with `zotero_index action:"build"`, passing `library_type:"group"` and its `library_id` for a group, or `library_type:"user"` for your personal library.
 
-For local use, run a separate Zoteus instance with a different `ZOTEUS_DATA_DIR` for the second library. Keep the original index. Hosted users should agree on the intended indexed library with support before subscribing, especially for a personal-plus-group workflow.
+Use `zotero_index action:"libraries"` to list them. Search one with the same library arguments, or use `zotero_semantic_search libraries:["user","group:123"]` for a combined search. Each combined hit names its library. Results are combined by rank because scores from separate indexes are not directly comparable.
+
+Existing separate data directories still work. Keep their files when upgrading; a new library receives its own file instead of replacing an existing library's index. See [multiple-library indexing](./multiple-library-indexes.md).
 
 ## When search misses something
 
@@ -75,6 +77,6 @@ For local use, run a separate Zoteus instance with a different `ZOTEUS_DATA_DIR`
 | A passage inside a PDF is absent | Check opt-in body indexing, available extracted text, text cap and partial coverage. Try reading its page directly |
 | The PDF cannot be read | Follow [missing PDFs](./missing-pdfs.md): attachment bytes, local-only files, WebDAV, permissions or scanned pages |
 | A build stops or is rate-limited | Read the error; `build` resumes persisted work. `refresh` starts over and can repeat API costs |
-| Another library is already indexed | Use a separate data directory locally, or contact the hosted operator; do not delete your existing index as a routine fix |
+| Another library is already indexed | Build the second library by its explicit type and ID, then check `action:"libraries"`; keep the existing index |
 
 [Continue to a verified passage](./first-research-task.md) · [Advanced search reference](./semantic-search.md)

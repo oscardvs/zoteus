@@ -73,7 +73,7 @@ async function connect() {
 }
 
 describe('Zoteus server (in-process)', () => {
-  it('lists all thirty-one tools', async () => {
+  it('lists every registered tool', async () => {
     const { client } = await connect();
     const { tools: listed } = await client.listTools();
     const names = listed.map((t) => t.name).sort();
@@ -85,6 +85,7 @@ describe('Zoteus server (in-process)', () => {
       'zotero_bibliography',
       'zotero_create_items',
       'zotero_delete_items',
+      'zotero_evidence_table',
       'zotero_export',
       'zotero_format_bibliography',
       'zotero_fulltext',
@@ -97,6 +98,7 @@ describe('Zoteus server (in-process)', () => {
       'zotero_list_tags',
       'zotero_manage_collections',
       'zotero_manage_tags',
+      'zotero_merge_items',
       'zotero_pdf_images',
       'zotero_saved_searches',
       'zotero_schema',
@@ -109,6 +111,7 @@ describe('Zoteus server (in-process)', () => {
       'zotero_trash_items',
       'zotero_update_item',
       'zotero_whoami',
+      'zotero_word_document',
     ]);
   });
 
@@ -150,7 +153,8 @@ describe('Zoteus server (in-process)', () => {
     const names = prompts.map((p) => p.name).sort();
     expect(names).toContain('zotero-literature-review');
     expect(names).toContain('zotero-cite');
-    expect(prompts.length).toBe(7);
+    expect(names).toContain('zotero-evidence-table');
+    expect(prompts.length).toBe(8);
   });
 
   it('renders a prompt with arguments', async () => {

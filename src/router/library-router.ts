@@ -89,9 +89,10 @@ export class LibraryRouter {
     // decision rather than making a new one.
     if (pinned) return pinned === 'local';
     if (!this.local || !this.capabilities.localApi || this.config.local === 'off') return false;
-    const def = this.defaultLibrary();
+    const personalId = this.capabilities.cloud?.userID ??
+      (this.config.libraryType === 'user' ? this.config.libraryId : undefined) ?? 0;
     // users/0 maps to the desktop's own personal library, whatever its cloud id.
-    if (library.type === 'user') return library.id === def.id || library.id === 0;
+    if (library.type === 'user') return library.id === personalId || library.id === 0;
     // A group only if this desktop holds it; otherwise the read belongs to the cloud.
     // Capabilities is a published interface: an older caller may hand us a literal with
     // no localGroupIds at all, and a missing field must route to the cloud, not throw.
@@ -121,8 +122,9 @@ export class LibraryRouter {
    * personal-library test in `useLocal`.
    */
   private librarySlot(library: LibraryRef): string {
-    const def = this.defaultLibrary();
-    if (library.type === 'user' && (library.id === def.id || library.id === 0)) return 'user:default';
+    const personalId = this.capabilities.cloud?.userID ??
+      (this.config.libraryType === 'user' ? this.config.libraryId : undefined) ?? 0;
+    if (library.type === 'user' && (library.id === personalId || library.id === 0)) return 'user:default';
     return `${library.type}:${library.id}`;
   }
 

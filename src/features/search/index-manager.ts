@@ -1200,7 +1200,13 @@ export abstract class SearchIndexBase implements SearchIndex {
     // identity of the library it belongs to, so even an interrupted build stays guarded.
     // After the resume branch above, so a continued build restamps the identity it was
     // already asserted against rather than leaving a resumed store unstamped.
-    this.library = opts.library;
+    //
+    // Only when one was given, which is what updateIncremental already does. A bare
+    // assignment wrote `undefined` over an existing stamp, so a caller that omitted the
+    // option both skipped assertLibrary above AND disarmed the guard (and the vector
+    // salvage refusal, which reads the same stamp) for everyone after it. Every caller in
+    // src supplies one; leaving the stamp alone is the safe reading of "not stated".
+    if (opts.library) this.library = opts.library;
     this.vectorEmbedderId = this.embedderId;
 
     const embedBatchSize = opts.embedBatchSize ?? DEFAULT_EMBED_BATCH_SIZE;
