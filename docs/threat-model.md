@@ -13,7 +13,7 @@ These are real, enforced in code, and tested.
 
 | Boundary | Where |
 |---|---|
-| A stdio caller is the machine owner, so filesystem paths are unconfined. An HTTP caller is not, so caller-supplied paths are confined to `dataDir`. | `ctx.remoteCaller`, `src/lib/caller-path.ts` |
+| A stdio caller is the machine owner, so filesystem paths are unconfined. An HTTP caller is not, so every caller-supplied path, read or write, is confined to that caller's own subtree of `dataDir` (`tenants/<zoteroUserId>`, or `tenants/shared` for a caller with no per-user identity); the bare `dataDir`, which holds the OAuth store and every tenant's files, is never a caller's root. | `ctx.remoteCaller`, `src/tools/caller-root.ts`, `src/lib/caller-path.ts` |
 | Per-tenant contexts carry their own Zotero key and their own index file. One user's context never reads another's. | `buildContext` overrides in `src/server.ts` |
 | SQL is parameterised throughout; FTS5 terms are quoted from `\p{L}\p{N}` tokens only. | `src/features/search/sqlite-index.ts` |
 | Attachment parsing is capped: a byte ceiling before any fetch, `isEvalSupported:false` on the PDF path, a bounded EPUB inflate that rejects zip64. | `src/features/fulltext/`, `src/features/attachments/` |

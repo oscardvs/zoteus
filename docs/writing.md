@@ -18,7 +18,7 @@ Writes to your **personal** library go straight to the running Zotero desktop ap
 | `zotero_annotate` | Add or delete PDF annotations — highlights, underlines, notes — the same objects the Zotero PDF reader creates. Resolves the PDF attachment from any parent item, or takes an attachment key directly. `delete` needs local-API writes or a cloud key (the connector protocol cannot delete). | desktop → cloud | non-destructive; `delete` **trashes** (reversible) |
 | `zotero_attach_file` | Store a file (`url`, or `path` on the Zoteus machine) as a stored attachment under an existing item. Returns the new attachment key. | desktop → cloud | non-destructive |
 
-`zotero_import` with `save_to_library:true` also saves through the desktop app (both desktop paths), including `attach_url` to stream a PDF into the same save session and `collection_key` targeting — see [`citations.md`](./citations.md). Without a reachable desktop it saves through the cloud, and `attach_url` goes up through Zotero file storage there.
+`zotero_import` with `save_to_library:true` also saves through the desktop app (both desktop paths), including `attach_url` to stream a PDF into the same save session and `collection_key` targeting — see [`citations.md`](./citations.md). When the local API answers but rejects every item of a save (Zotero 10.0.3 does this for creates, see #88), the same items go through the connector protocol instead and the result says so (`target` is `"desktop"`, `localApiRejected` carries the rejections); a partial success is never re-sent, because that would duplicate the items that did save. Without a reachable desktop it saves through the cloud, and `attach_url` goes up through Zotero file storage there.
 
 ## Group libraries
 

@@ -18,7 +18,13 @@ All notable changes to Zoteus are documented here. The format is based on
   scores against its own library's statistics, so scores from two libraries are not one scale,
   and the answer says so rather than implying a comparability it does not have. Open indexes
   are bounded by `ZOTEUS_INDEX_MAX_OPEN` (default 4), which bounds memory and file handles,
-  not how many libraries may be indexed.
+  not how many libraries may be indexed. **Upgrading a group-default install:** an index built
+  by 1.20.x or earlier with `ZOTERO_LIBRARY_TYPE=group` holds the group's rows under the
+  personal library's stamp, and this release cannot tell that file from a genuine
+  personal-library index. A plain `zotero_index` build or update there is therefore refused,
+  naming both ways out (delete the index file and build again, which restamps it, or name the
+  group explicitly to build a second index beside it), rather than silently crawling and
+  embedding the group a second time.
 - **Open-access PDF discovery and attachment.** `zotero_scholar action:"lookup"` reports an
   open-access copy when OpenAlex knows one, and `zotero_attach_file` can find and attach it
   from the item's DOI. The version is recorded and surfaced, because a green open-access
@@ -32,13 +38,18 @@ All notable changes to Zoteus are documented here. The format is based on
   not earn. The new `zotero_merge_items` folds duplicates into a master item: it PREVIEWS BY
   DEFAULT, fills only fields the master is missing, unions tags, collections and relations,
   reparents child notes and attachments, and trashes the emptied duplicates (recoverable).
-  The preview reads the same records the write will act on, so the plan that is approved is
-  the plan that runs.
+  The preview reads the same records the write will act on and reports their `versions`; pass
+  them back as `expect_versions` and the write runs only against those exact records, so the
+  plan that is approved is the plan that runs.
 - **An evidence-table workflow.** A `zotero-evidence-table` prompt walks retrieval (resolve
   studies, retrieve one passage each, classify coverage from what the tool actually returned)
   and `zotero_evidence_table` renders the gathered rows as Markdown or CSV deterministically,
   so a quotation cannot drift from the passage it cites. Coverage counts are computed rather
-  than claimed, and a row that contradicts its own evidence is named in a warning.
+  than claimed, and a row that contradicts its own evidence is named in a warning: a locator
+  with no quotation, a claimed passage with no quotation, a quotation on a source marked
+  unavailable, or any verdict other than "unverified" on a row with no retrieved passage. In
+  CSV, a cell a spreadsheet would run as a formula is written with a leading apostrophe and
+  named in `warnings`. The tool can write a file (`save_path`), so it is not marked read-only.
 - **Word documents with live Zotero citation fields.** `zotero_word_document` writes a .docx
   whose citations are Word field codes carrying CSL data, not plain text. See the note under
   Known limitations: that the fields REFRESH in Word has not been verified by anyone here.
@@ -49,15 +60,23 @@ All notable changes to Zoteus are documented here. The format is based on
   is a free preview of what would be created. `ZOTEUS_IMPORT_MAX_ENTRIES` (default 200) caps
   one file.
 - **OCR for scanned PDFs.** `zotero_get_fulltext` detects a PDF with no text layer and says so
-  precisely instead of calling it "scanned or corrupt", and with `ocr:true` reads it through an
-  OCR engine, preserving page locators. The engine is an optional runtime dependency this
-  package does not ship, resolved the way the embedding runtime is: `ZOTEUS_OCR`,
-  `ZOTEUS_OCR_PATH`, `ZOTEUS_OCR_MAX_PAGES` and `ZOTEUS_OCR_LANGS`.
+  precisely instead of calling it "scanned or corrupt", and a PDF whose text layer covers only
+  some pages (an OCR'd cover page, a "Scanned by" stamp) names the pages that lack one instead
+  of passing as a complete extraction. With `ocr:true` it reads the pages that have no text
+  layer through an OCR engine, merges them with the text layer of the rest, preserves page
+  locators, and says which pages are the publisher's text and which are a machine reading of a
+  picture (`fulltextSource` "ocr" or "pdf+ocr", plus `ocrPages`). A page is given up on after
+  60 s and the worker stopped, so a hung engine cannot block every later OCR call in the
+  process. The engine is an optional runtime dependency this package does not ship, resolved
+  the way the embedding runtime is: `ZOTEUS_OCR`, `ZOTEUS_OCR_PATH`, `ZOTEUS_OCR_MAX_PAGES` and
+  `ZOTEUS_OCR_LANGS`.
 - **An Ollama embedding provider.** `ZOTEUS_EMBEDDINGS=ollama` embeds through a local Ollama
   daemon (`ZOTEUS_OLLAMA_URL`), so semantic search needs neither an API key nor a
   `@huggingface/transformers` install and the text stays on the machine. The default model is
   `all-minilm`; `nomic-embed-text` expects task prefixes Zoteus does not send and retrieves
-  worse without them, so selecting it is warned about rather than left to fail silently.
+  worse without them, so selecting it is warned about rather than left to fail silently. A
+  refusal from the daemon is reported in its own words (a generation model on `/api/embed`,
+  say), not as a bare status code.
 - **Retraction and correction notices.** `zotero_scholar` reports update notices for a DOI from
   Crossref (which carries the Retraction Watch data) and OpenAlex. It reports RECORDS, never a
   verdict: there is no "not retracted" answer, a source that did not respond is reported as a
@@ -69,33 +88,113 @@ All notable changes to Zoteus are documented here. The format is based on
   group has a search index.
 - **A command line.** `zoteus --version` and `zoteus --help` print and exit instead of starting
   a server, and `zoteus index build|status` runs a headless index build, which the docs have
-  long recommended and which had no command. A bare invocation, the HTTP flags and an
-  unrecognised flag all behave exactly as before.
+  long recommended and which had no command (`zoteus index <action> --help` prints the usage
+  too). A bare invocation, the HTTP flags and an unrecognised flag all behave exactly as before.
+
+### Changed
+- **Per-user context caching on a hosted server.** Evicting a context now closes its search
+  indexes (checkpointing the write-ahead log) instead of leaving the handles open; eviction
+  skips a context with a build running or a search in flight, and at shutdown running builds
+  are cancelled and given up to five seconds to commit before their stores close. A session
+  resolves its context on every call rather than binding it at `initialize`, so an account
+  whose context was evicted gets a fresh one on its next call instead of every later call
+  failing until the connector is reconnected by hand. A key the account has since replaced is
+  refused with that "reconnect" answer rather than rebuilding the old context.
+- A per-user context whose Zotero key zotero.org did not confirm for that account is refused
+  at connect, and tried again on the next call, rather than built without cloud access.
+- An MCP session is bound to the account, client and Zotero credential that opened it. A
+  request presenting a known session id under a different credential is answered 404, which
+  makes the client start a session of its own, instead of being served the existing one.
+- `zotero_index action:"libraries"` lists an index whose library this key can no longer read,
+  with the reason, instead of omitting it; `action:"pause"` on a library with no index answers
+  without creating one.
 
 ### Fixed
+- **`zotero_pdf_images` works on Windows again (#84).** pdf.js accepts an asset directory only
+  if the string ends with a forward slash; Zoteus built the directories with the platform
+  separator, so on Windows every call failed inside `getDocument` with `Invalid factory url:
+  "...\cmaps\" must include trailing slash` before a byte of the file was parsed. The
+  directories now use forward slashes and end in `/` on every platform. That failure is also
+  no longer reported as "the file is not a readable PDF": a rejected asset directory is a
+  Zoteus setup fault and is reported as one, with a request to file an issue.
+- **The server no longer dies at boot when Node's bundled undici asserts on the desktop app
+  closing a connection (#85).** On Node 24.20.0 (undici 7.29.0) the local-API capability probe
+  ended the process with an uncatchable `assert(!this.paused)` thrown from a socket event
+  handler: Zotero closes the connection right after its response, and undici's HTTP/1 parser,
+  paused under body backpressure, asserted when the FIN arrived (nodejs/undici#5360). Every
+  client that speaks to the desktop app (the local API reads and their liveness probe, local-API
+  and connector writes, Better BibTeX) now goes over a small `node:http` transport that keeps
+  fetch's contract for what those clients use: `Connection: close`, no redirect following,
+  streamed bodies, and `TypeError('fetch failed')` with the original error as `cause` on a
+  connection failure. The shared fetcher keeps its concurrency cap and time budgets; the cloud
+  Web API, OpenAlex, Crossref and open-access downloads are unchanged. On a Node whose undici is
+  known to carry the assertion, startup logs one warning naming what is routed around it, what
+  is not, and the Node to upgrade to (24.21.0, which bundles undici 7.29.1).
+- **`zotero_import` with `save_to_library` saves through the connector protocol when the
+  desktop app's local API rejects every item, instead of returning "Nothing succeeded" (#88).**
+  Zotero 10.0.3 answers every create on `POST /api/users/0/items` with a per-item 400,
+  `'primaryData' not loaded for item (null/1/<key>)`, while updates and deletes on the same
+  endpoint and the connector protocol's `saveItems` still work. The endpoint answers 200 with
+  per-item failures, so the "local writes unavailable" check rightly did not fire and the
+  documented connector fallback never ran. The same items are now sent through the connector
+  protocol, with the existing `collection_key` and `attach_url` handling, and the result says
+  so: `target` is `"desktop"`, a new `localApiRejected` field carries the local API's
+  rejections, and the summary names the rejection and quotes its first message. A partial
+  success is left alone, since re-sending would duplicate the items that did save; without the
+  connector protocol (older Zotero) the result is unchanged; and if the connector save fails
+  too, both refusals are reported.
 - **A group-default install could lose its index.** With `ZOTERO_LIBRARY_TYPE=group`, a build
   crawled the group but stamped the index as the personal library. Naming that same group
   afterwards was then falsely refused, and an explicit `library_type:"user"` build passed the
   guard and ERASED the group's rows. The stamp now names the library actually crawled.
-- A per-user context evicted from the cache closed its search index even when a build was
-  running in it, which on a non-default library aborted the build and discarded the checkpoint
-  that lets the next one resume. Eviction now skips a context with any index building, and the
-  shutdown flush cancels running builds and lets them commit before closing.
-- `zotero_attachment` confined a caller-supplied path to the whole data directory, which on a
-  multi-tenant deployment is shared: a caller naming another tenant's path had those bytes
-  copied into their own library. Paths are now confined to the caller's own subtree, as
-  documents already are.
+- `zotero_attachment` and `zotero_tag_audit` confined a caller-supplied path to the whole data
+  directory, which on a multi-tenant deployment is shared: a caller naming another tenant's
+  path had those bytes copied into their own library through `zotero_attachment`, and
+  `zotero_tag_audit vocabulary_path` answered with three distinguishable errors over that
+  directory, an existence oracle on every other tenant's files and a reflection of the OAuth
+  store's key names. Every caller-supplied path, read or write, is now confined to the caller's
+  own subtree, and a remote caller with no identity of its own (passcode mode) gets a
+  `tenants/shared` subtree rather than the bare data directory.
 - A `Backoff` header from any host stalled every subsequent request in the process and reported
   it as Zotero throttling. Back-off is now tracked per origin, so a repository can only slow
   down traffic to itself.
 - A bibliographic file over about a megabyte froze the server for tens of minutes in a
-  quadratic format-sniffing regex.
+  quadratic format-sniffing regex, and a single entry with many fields or a whitespace-padded
+  creator field did the same in the BibTeX value reader and the name splitter: every braced or
+  quoted value scanned forward to the next entry on its own (40,000 fields took 3.5 s, and the
+  2 MB cap allowed minutes), and the name splitter backtracked quadratically on runs of spaces
+  (200,000 spaces took 55 s). All three are linear now; the same inputs take milliseconds.
 - One unbalanced brace in a BibTeX file silently discarded every entry after it while still
-  reporting a confident count. Unparseable input is now reported rather than dropped.
+  reporting a confident count. Unparseable input is now reported rather than dropped, in the
+  text summary as well as in `warnings` and `skipped`; the summary also says when a library
+  item already matched and the save went ahead on `allow_duplicate`.
+- A `.bib` or `.ris` file that is not UTF-8 (Latin-1 or Windows-1252, as older reference
+  managers write) imported "Schr\uFFFDdinger" with no warning. Such a file is now read as
+  Windows-1252 and the answer says so; a UTF-16 byte-order mark is honoured.
+- A title-only duplicate match with no year on either side needs a title of at least four words
+  or a shared creator surname, and says which, so a year-less "Introduction" no longer refuses
+  the save against every "Introduction" in the library.
+- `path: "~/Downloads/x.bib"`, as the docs showed, now works on a local install; a remote
+  caller's `~` is still refused.
 - A DOI containing a fragment character truncated the Crossref batch request and voided the
   retraction check for the rest of that batch, which then reported clean.
 - An open-access download had no bound on the response body, so a slow host could hang the
   call indefinitely.
+- `zotero_attach_file url` and `zotero_import attach_url` on a hosted deployment are now held to
+  the same bounds as an open-access download: https only, public hosts only, every redirect hop
+  re-checked and pinned to a vetted address, a 64 MB cap enforced while streaming and a clock
+  on the body. A tenant could previously point `url` at `http://169.254.169.254/...` or
+  `http://127.0.0.1:<port>/...` and have the bytes stored in their library. A local, stdio
+  Zoteus keeps fetching `url` from wherever its user points it. `ZOTEUS_OA_FETCH` was never an
+  all-egress switch, and the docs now say so.
+- Open-access downloads try every address the host resolves to rather than only the first, so
+  a dual-stack host or one dead A record no longer fails the download, and a connection that
+  fails on every address is reported as a sentence naming the host and the error code instead
+  of a bare `ENETUNREACH` or `CERT_*`.
+- The pinned HTTPS transport no longer pushes an already-buffered body into a stream the caller
+  has cancelled, which threw `Invalid state: Controller is already closed` outside any handler.
+- `zotero_scholar action:"notices"` no longer ends with "no update record at either source"
+  when one source had no record of the DOI; it names which source had nothing to check.
 - `zotero_word_document` wrote into a shared directory readable by other tenants, and the
   evidence-table CSV did not neutralise spreadsheet formula injection in quotations taken from
   PDFs.

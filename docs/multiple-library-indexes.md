@@ -38,6 +38,24 @@ In hosted mode every path keeps the `<zoteroUserId>` segment. Two tenants who bo
 group 4523 index it through different Zotero keys and may see different subsets of it, so
 they never share a file, and neither can list or open the other's.
 
+## Upgrading a group-default install
+
+An index built by Zoteus 1.20.x or earlier on a server configured with
+`ZOTERO_LIBRARY_TYPE=group` crawled the group but stamped the file as the personal library.
+This release cannot tell that file from a genuine personal-library index, and on such a data
+directory the configured group has no index of its own yet. A plain `zotero_index`
+`action:"build"`, `"update"` or `"refresh"` is therefore refused rather than started, because
+one of the two cases would pay for a second crawl and embedding of the whole group while the
+finished index sat beside it. The refusal names both ways out:
+
+1. The original index was built for the group. Delete `search-index.json` (and its SQLite
+   neighbours) and run `zotero_index action:"build"` again, which restamps it.
+2. It really is the personal library's index. Run the action again with
+   `library_type:"group" library_id:<id>`, which builds the group's own index beside it.
+
+Until one of those is done, a plain `zotero_semantic_search` keeps answering from the
+original index, as it did before, and `action:"libraries"` lists both files.
+
 ## Building a second library
 
 ```
