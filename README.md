@@ -26,6 +26,7 @@ For most clients there is nothing to download: the client fetches Zoteus with `n
 |---|---|
 | **Claude Desktop** | Download the bundle for your system from the [latest release](https://github.com/oscardvs/zoteus/releases/latest), `zoteus-macos.mcpb`, `zoteus-windows.mcpb` or `zoteus-linux.mcpb`, and double-click it. |
 | **Claude Code** | `claude mcp add --transport stdio zoteus -- npx -y @oscardvs/zoteus` |
+| **Claude Code, as a plugin** | `/plugin marketplace add oscardvs/zoteus`, then `/plugin install zoteus@zoteus`. The same server, plus four research skills that teach Claude to quote passages with pages, build evidence tables, cite, and tidy the library. See [`plugins/zoteus`](./plugins/zoteus). |
 | **Cursor, VS Code, Zed, Codex, Gemini CLI, any MCP client** | `npx add-mcp @oscardvs/zoteus`, or add `npx -y @oscardvs/zoteus` as a stdio server by hand. |
 | **claude.ai in the browser** | Add a custom connector pointing at a [hosted Zoteus](https://zoteus.com/pricing) or at [your own remote instance](./docs/remote-oauth.md). |
 | **ChatGPT (web)** | Needs Developer mode on a paid ChatGPT plan (**Settings → Security and login**). Then **Plugins → Create app**, with the server URL of a [hosted Zoteus](https://zoteus.com/pricing) (`https://mcp.zoteus.com/mcp`) or of [your own remote instance](./docs/remote-oauth.md#connect-from-chatgpt), and OAuth as the authentication. ChatGPT only connects to remote servers, so the `npx` install does not apply. |

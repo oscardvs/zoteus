@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "zoteus": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@oscardvs/zoteus@1.21.0"],
+      "env": {
+        "ZOTERO_API_KEY": "${user_config.zotero_api_key}"
+      }
+    }
+  }
+}
