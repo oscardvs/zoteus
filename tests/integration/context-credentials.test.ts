@@ -18,7 +18,13 @@ function auth(key: string, user = 111): any {
   return { extra: { zoteroUserId: user, zoteroKey: key } };
 }
 
-async function setup(maxEntries = 50) {
+/** Keys zotero.org now refuses, and whether it answers at all. Reset by every setup(). */
+let revoked = new Set<string>();
+let outage = false;
+
+async function setup(maxEntries = 50, recheckAfterMs?: number) {
+  revoked = new Set();
+  outage = false;
   const dir = mkdtempSync(join(tmpdir(), 'zoteus-credentials-'));
   dirs.push(dir);
   const config = loadConfig({
@@ -28,13 +34,25 @@ async function setup(maxEntries = 50) {
   const operator = await buildContext(config, { telemetry: { logger } });
   const probe = vi.fn(async (_url: unknown, init?: RequestInit) => {
     const key = (init?.headers as Record<string, string>)?.['Zotero-API-Key'];
+    // What zotero.org really answers a revoked key, measured 2026-09-27.
+    if (key && revoked.has(key)) return new Response('Invalid key', { status: 403 });
+    if (outage) return new Response('Bad Gateway', { status: 502 });
     return new Response(JSON.stringify({
       userID: key?.startsWith('foreign') ? 222 : 111, username: 'fixture',
       access: { user: { library: true, write: key === 'broad' } },
     }), { headers: { 'content-type': 'application/json' } });
   });
   vi.stubGlobal('fetch', probe);
-  return { cache: new ContextCache(config, operator, maxEntries, { logger }), config, probe };
+  return { cache: new ContextCache(config, operator, maxEntries, { logger }, recheckAfterMs), config, probe };
+}
+
+async function connectClient(config: any, cache: ContextCache, key: string) {
+  const server = createServerFrom(config, () => cache.resolve(auth(key)));
+  const client = new Client({ name: `client-${key}`, version: '1' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  return { client, server };
 }
 
 describe('context credential isolation', () => {
@@ -164,6 +182,83 @@ describe('context credential isolation', () => {
     await client.close();
     await server.close();
     await cache.flushIndexes();
+  });
+
+  // With a context per key nothing retires a key any more, and a tool that never reaches
+  // zotero.org would otherwise keep answering a key Zotero had revoked for as long as it
+  // stayed cached. zotero_whoami answers from the cached probe, so it is such a tool.
+  it('cuts off a key Zotero has revoked once it is due a re-check, even for a tool that never reaches zotero.org', async () => {
+    const { cache, config } = await setup(50, 0);
+    const { client, server } = await connectClient(config, cache, 'broad');
+    expect((await client.callTool({ name: 'zotero_whoami', arguments: {} })).isError).toBeFalsy();
+    revoked.add('broad');
+    const after: any = await client.callTool({ name: 'zotero_whoami', arguments: {} });
+    expect(after.isError).toBe(true);
+    expect(after.content[0].text).toContain('Reconnect');
+    await client.close();
+    await server.close();
+    await cache.flushIndexes();
+  });
+
+  it("retires only the revoked key, leaving the account's other key and its indexes alone", async () => {
+    const { cache } = await setup(50, 0);
+    const kept = await cache.resolve(auth('broad'));
+    const gone = await cache.resolve(auth('limited'));
+    const closed = vi.spyOn(kept.indexes!, 'closeAll');
+    revoked.add('limited');
+    expect((await cache.resolve(auth('limited'))).invalidated).toBe(true);
+    expect(gone.invalidated).toBe(true);
+    const still = await cache.resolve(auth('broad'));
+    expect(still).toBe(kept);
+    expect(still.invalidated).toBeFalsy();
+    expect(closed).not.toHaveBeenCalled();
+    // Removed, so its next call asks Zotero from scratch and is refused there.
+    await expect(cache.resolve(auth('limited'))).rejects.toThrow('did not confirm this key');
+    await cache.flushIndexes();
+  });
+
+  it("keeps an account's last revoked key retired, and hands its indexes to the next key", async () => {
+    const { cache } = await setup(50, 0);
+    const old = await cache.resolve(auth('broad'));
+    const closed = vi.spyOn(old.indexes!, 'closeAll');
+    revoked.add('broad');
+    expect((await cache.resolve(auth('broad'))).invalidated).toBe(true);
+    // Retired, not rebuilt: the same object, still refusing.
+    expect(await cache.resolve(auth('broad'))).toBe(old);
+    const next = await cache.resolve(auth('limited'));
+    expect(next.invalidated).toBeFalsy();
+    expect(next.indexes).toBe(old.indexes);
+    expect(closed).not.toHaveBeenCalled();
+    await expect(cache.resolve(auth('broad'))).rejects.toThrow('did not confirm this key');
+    await cache.flushIndexes();
+  });
+
+  it('keeps serving a cached key while zotero.org is not answering', async () => {
+    const { cache } = await setup(50, 0);
+    const ctx = await cache.resolve(auth('broad'));
+    outage = true;
+    const during = await cache.resolve(auth('broad'));
+    expect(during).toBe(ctx);
+    expect(during.invalidated).toBeFalsy();
+    await cache.flushIndexes();
+  });
+
+  it('asks zotero.org once per interval, and once for every call that finds the key due', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { cache, probe } = await setup(50, 60_000);
+      await cache.resolve(auth('broad'));
+      await Promise.all(Array.from({ length: 5 }, () => cache.resolve(auth('broad'))));
+      expect(probe).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(Date.now() + 61_000);
+      await Promise.all(Array.from({ length: 5 }, () => cache.resolve(auth('broad'))));
+      expect(probe).toHaveBeenCalledTimes(2);
+      await cache.resolve(auth('broad'));
+      expect(probe).toHaveBeenCalledTimes(2);
+      await cache.flushIndexes();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('never opens an account context when its key belongs to another user', async () => {
