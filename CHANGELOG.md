@@ -4,6 +4,16 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`npx @oscardvs/zoteus` no longer installs the test and build tools.** 1.22.1 shipped
+  the whole lockfile as `npm-shrinkwrap.json`, and npm installs every entry a dependency's
+  shrinkwrap lists, so the first launch fetched vitest, typescript, esbuild and eslint with
+  the server: 278 packages and 228 MB. The shipped shrinkwrap now leaves the dev-only
+  entries out: 99 packages and 132 MB on Linux, every one at the version this release was
+  tested with.
+
 ## [1.22.1] - 2026-09-27
 
 ### Changed
