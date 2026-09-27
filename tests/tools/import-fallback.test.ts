@@ -16,6 +16,9 @@ const KEY_INFO = { userID: 4242, username: 'tester', access: { user: { library: 
 /** Every URL the fake transport was handed, newest last. Reset before each test. */
 let requested: string[] = [];
 
+/** Bodies the fake transport answers for URLs other than the key probe. Reset before each test. */
+let canned = new Map<string, unknown>();
+
 /**
  * The whole network, faked, installed before `buildServer` builds anything.
  *
@@ -32,6 +35,7 @@ let requested: string[] = [];
  */
 function fakeZoteroTransport(): void {
   requested = [];
+  canned = new Map();
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: unknown): Promise<Response> => {
@@ -40,6 +44,12 @@ function fakeZoteroTransport(): void {
       requested.push(url);
       if (url === KEY_PROBE) {
         return new Response(JSON.stringify(KEY_INFO), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (canned.has(url)) {
+        return new Response(JSON.stringify(canned.get(url)), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
@@ -126,6 +136,44 @@ describe('zotero_import built-in fallback', () => {
       itemType: 'journalArticle',
       title: 'A Scholarly Work',
       publicationTitle: 'Nature',
+    });
+  });
+
+  // #89, end to end through the real scholar graph: OpenAlex had volume, issue, pages, the
+  // full date and the ISSN, and the imported item kept the year and the journal.
+  it('keeps the citation details OpenAlex reports for a DOI', async () => {
+    canned.set('https://api.openalex.org/works/doi:10.1038/s41586-021-03819-2', {
+      id: 'https://openalex.org/W3177828909',
+      doi: 'https://doi.org/10.1038/s41586-021-03819-2',
+      display_name: 'Highly accurate protein structure prediction with AlphaFold',
+      publication_year: 2021,
+      publication_date: '2021-07-15',
+      type: 'article',
+      authorships: [{ author: { display_name: 'John Jumper' } }],
+      biblio: { volume: '596', issue: '7873', first_page: '583', last_page: '589' },
+      primary_location: {
+        landing_page_url: 'https://doi.org/10.1038/s41586-021-03819-2',
+        source: { display_name: 'Nature', type: 'journal', issn_l: '0028-0836', issn: ['0028-0836', '1476-4687'] },
+      },
+    });
+    const { client } = await connect();
+    const res: any = await client.callTool({
+      name: 'zotero_import',
+      arguments: { action: 'by_identifier', identifier: '10.1038/s41586-021-03819-2' },
+    });
+    expect(res.isError).toBeFalsy();
+    const content = JSON.parse(res.content[1]!.text);
+    expect(content.source).toBe('scholar');
+    expect(content.items[0]).toMatchObject({
+      itemType: 'journalArticle',
+      title: 'Highly accurate protein structure prediction with AlphaFold',
+      publicationTitle: 'Nature',
+      date: '2021-07-15',
+      volume: '596',
+      issue: '7873',
+      pages: '583-589',
+      ISSN: '0028-0836, 1476-4687',
+      DOI: '10.1038/s41586-021-03819-2',
     });
   });
 

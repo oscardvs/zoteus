@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { OpenAlexClient } from '../../src/features/scholar/openalex.js';
 import { ScholarGraph, markInLibrary } from '../../src/features/scholar/graph.js';
+import { crossrefDate } from '../../src/features/scholar/crossref.js';
 import { RateLimitedFetcher } from '../../src/api/http.js';
 
 function fetcher(fetchImpl: any) {
@@ -159,6 +160,100 @@ describe('ScholarGraph', () => {
     });
     const g = new ScholarGraph({ fetcher: fetcher(fetchImpl) });
     expect(await g.lookup('1234-5678')).toBeNull();
+  });
+});
+
+/**
+ * The AlphaFold paper as OpenAlex and Crossref really return it (10.1038/s41586-021-03819-2,
+ * fetched 2026-09-27), trimmed to the fields the lookup reads. #89 reported the volume,
+ * issue, pages, full date and ISSN all dropped on the way to the imported item.
+ */
+const ALPHAFOLD_OPENALEX = {
+  id: 'https://openalex.org/W3177828909',
+  doi: 'https://doi.org/10.1038/s41586-021-03819-2',
+  display_name: 'Highly accurate protein structure prediction with AlphaFold',
+  publication_year: 2021,
+  publication_date: '2021-07-15',
+  type: 'article',
+  authorships: [{ author: { display_name: 'John Jumper' } }],
+  biblio: { volume: '596', issue: '7873', first_page: '583', last_page: '589' },
+  primary_location: {
+    landing_page_url: 'https://doi.org/10.1038/s41586-021-03819-2',
+    source: { display_name: 'Nature', type: 'journal', issn_l: '0028-0836', issn: ['0028-0836', '1476-4687'] },
+  },
+};
+
+const ALPHAFOLD_CROSSREF = {
+  status: 'ok',
+  'message-type': 'work',
+  message: {
+    DOI: '10.1038/s41586-021-03819-2',
+    title: ['Highly accurate protein structure prediction with AlphaFold'],
+    author: [{ given: 'John', family: 'Jumper' }],
+    'container-title': ['Nature'],
+    volume: '596',
+    issue: '7873',
+    page: '583-589',
+    ISSN: ['0028-0836', '1476-4687'],
+    URL: 'https://doi.org/10.1038/s41586-021-03819-2',
+    issued: { 'date-parts': [[2021, 7, 15]] },
+  },
+};
+
+const ALPHAFOLD_BIBLIO = {
+  date: '2021-07-15',
+  volume: '596',
+  issue: '7873',
+  pages: '583-589',
+  ISSN: '0028-0836, 1476-4687',
+};
+
+describe('the citation details a DOI lookup carries (#89)', () => {
+  it('reads volume, issue, pages, the full date and the ISSNs off the OpenAlex work', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(ALPHAFOLD_OPENALEX), { status: 200 }));
+    const r = await new ScholarGraph({ fetcher: fetcher(fetchImpl) }).lookup('10.1038/s41586-021-03819-2');
+    // No url: the landing page OpenAlex has for this work is the DOI resolver, which is the
+    // DOI field a second time.
+    expect(r?.biblio).toEqual(ALPHAFOLD_BIBLIO);
+  });
+
+  it('reads the same details off Crossref when OpenAlex does not answer', async () => {
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.includes('openalex.org')
+        ? new Response('err', { status: 500 })
+        : new Response(JSON.stringify(ALPHAFOLD_CROSSREF), { status: 200 }),
+    );
+    const r = await new ScholarGraph({ fetcher: fetcher(fetchImpl) }).lookup('10.1038/s41586-021-03819-2');
+    expect(r?.oaChecked).toBe(false);
+    expect(r?.biblio).toEqual(ALPHAFOLD_BIBLIO);
+  });
+
+  it("does not file a work under a repository's ISSN, and keeps a real landing page", () => {
+    const c = new OpenAlexClient(fetcher(vi.fn()));
+    const b = c.biblio({
+      publication_year: 2020,
+      biblio: { first_page: '12', last_page: '12' },
+      primary_location: {
+        landing_page_url: 'https://www.biorxiv.org/content/10.1101/2020.01.01.000001v1',
+        source: { display_name: 'bioRxiv', type: 'repository', issn_l: '2692-8205', issn: ['2692-8205'] },
+      },
+    });
+    expect(b).toEqual({ date: '2020', pages: '12', url: 'https://www.biorxiv.org/content/10.1101/2020.01.01.000001v1' });
+  });
+
+  it('reports nothing rather than empty strings when the provider has nothing', () => {
+    const c = new OpenAlexClient(fetcher(vi.fn()));
+    expect(c.biblio({ biblio: { volume: null, issue: '', first_page: null, last_page: null } })).toBeUndefined();
+  });
+
+  it('keeps a Crossref date to the precision Crossref has', () => {
+    expect(crossrefDate({ 'date-parts': [[2013, 8]] })).toBe('2013-08');
+    expect(crossrefDate({ 'date-parts': [[2013]] })).toBe('2013');
+    expect(crossrefDate({ 'date-parts': [[null]] })).toBeUndefined();
+  });
+
+  it('leaves search results without the details, as before', () => {
+    expect(new OpenAlexClient(fetcher(vi.fn())).normalize(ALPHAFOLD_OPENALEX).biblio).toBeUndefined();
   });
 });
 

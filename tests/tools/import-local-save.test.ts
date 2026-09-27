@@ -521,7 +521,9 @@ describe('zotero_import saves through the connector when the local API rejects e
       },
       router: {
         defaultLibrary: () => ({ type: 'user', id: 0 }),
-        listCollections: vi.fn(async () => ({ data: [{ key: 'COLLKEY1', data: { key: 'COLLKEY1', name: 'Reading' } }] })),
+        getCollection: vi.fn(async (key: string) =>
+          key === 'COLLKEY1' ? { key: 'COLLKEY1', data: { key: 'COLLKEY1', name: 'Reading' } } : null,
+        ),
       },
     });
     const res = await importTool.handler({ ...save, collection_key: 'COLLKEY1' }, ctx);

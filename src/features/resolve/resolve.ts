@@ -1,3 +1,5 @@
+import type { WorkBiblio } from '../scholar/openalex.js';
+
 /** Known identifier families; `(string & {})` keeps literal autocomplete while allowing extras. */
 export type IdentifierType = 'doi' | 'arxiv' | 'pmid' | 'isbn' | 'bibcode' | (string & {});
 
@@ -293,7 +295,6 @@ export function foldSpec(spec: Record<string, unknown> | null | undefined, item:
   item.extra = [item.extra, `resolved:${src}`].filter(Boolean).join('\n');
 }
 
-/** Map an OpenAlex/Crossref scholar work to a draft Zotero item (DOI lookups). */
 /**
  * OpenAlex work types that have an unambiguous Zotero counterpart.
  *
@@ -319,21 +320,57 @@ const SCHOLAR_ITEM_TYPES: Record<string, string> = {
   letter: 'letter',
 };
 
+/**
+ * The field each type names its container in: a conference paper's venue is its
+ * `proceedingsTitle` and a chapter's is its `bookTitle`, and Zotero refuses `publicationTitle`
+ * on either. A type absent here has no container field, so the venue is left out.
+ */
+const CONTAINER_FIELD: Record<string, string> = {
+  journalArticle: 'publicationTitle',
+  conferencePaper: 'proceedingsTitle',
+  bookSection: 'bookTitle',
+  // OpenAlex's venue for a preprint is the server that holds it ("arXiv (Cornell University)").
+  preprint: 'repository',
+};
+
+/**
+ * The {@link WorkBiblio} fields each type accepts, read off Zotero's schema (version 42).
+ * `date` and `url` are valid on every type here and are not listed. Anything else a type
+ * does not accept is dropped rather than sent, because Zotero refuses the whole item over one
+ * unknown field (the lesson of #77).
+ */
+const BIBLIO_FIELDS: Record<string, ReadonlyArray<'volume' | 'issue' | 'pages' | 'ISSN'>> = {
+  journalArticle: ['volume', 'issue', 'pages', 'ISSN'],
+  conferencePaper: ['volume', 'issue', 'pages', 'ISSN'],
+  bookSection: ['volume', 'pages', 'ISSN'],
+  book: ['volume', 'ISSN'],
+  report: ['pages', 'ISSN'],
+  thesis: ['ISSN'],
+};
+
+/** Map an OpenAlex/Crossref scholar work to a draft Zotero item (DOI lookups). */
 export function fromScholarWork(
-  w: { title?: string; authors?: string[]; year?: number; venue?: string; type?: string },
+  w: { title?: string; authors?: string[]; year?: number; venue?: string; type?: string; biblio?: WorkBiblio },
   doi: string,
 ): ResolvedItem {
   // OpenAlex's declared type wins where we can map it; a venue is the next best signal, and
   // `document` carries the honest unknown rather than inventing a shape for the record.
   const mapped = w.type ? SCHOLAR_ITEM_TYPES[w.type] : undefined;
+  const b = w.biblio ?? {};
   const item: ResolvedItem = {
     itemType: mapped ?? (w.venue ? 'journalArticle' : 'document'),
     title: w.title ?? `DOI ${bareDoi(doi)}`,
     creators: (w.authors ?? []).map((a) => ({ creatorType: 'author' as const, ...nameParts(a) })),
-    date: w.year ? String(w.year) : undefined,
+    // The full date when the provider has one; the year alone was all this kept until #89.
+    date: b.date ?? (w.year ? String(w.year) : undefined),
     DOI: bareDoi(doi),
     extra: 'source:scholar',
   };
-  if (w.venue) item.publicationTitle = w.venue;
+  const container = CONTAINER_FIELD[item.itemType];
+  if (w.venue && container) item[container] = w.venue;
+  for (const field of BIBLIO_FIELDS[item.itemType] ?? []) {
+    if (b[field]) item[field] = b[field];
+  }
+  if (b.url) item.url = b.url;
   return item;
 }

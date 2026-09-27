@@ -36,7 +36,8 @@ export function registerResources(server: McpServer, source: ToolContextSource):
       // Resources route through the same library router as tools, so they need the same
       // live answer about the desktop app; they do not pass through registerAllTools (#22).
       await ctx.localStatus?.ensure();
-      const result = await ctx.router.listCollections({});
+      // Every page: one listCollections call is the first 25 to 100 and nothing more (#90).
+      const result = await ctx.router.listAllCollections({});
       return {
         contents: [
           { uri: uri.href, mimeType: 'application/json', text: JSON.stringify(result.data) },

@@ -260,7 +260,7 @@ Two new read-only tools surface information that was previously only accessible 
 Lists tags in a Zotero library with usage counts and an `auto` flag (`true` for Zotero-applied tags, `false` for manual). Supports an optional `q` substring filter and `limit`. Available under `ZOTEUS_READ_ONLY=true`.
 
 ### `zotero_list_collections`
-Lists collections with key, name, parent collection key, and item count. Optional `top: true` returns only top-level collections. Collection keys can be passed to `zotero_search_items` (`collectionKey`) or `zotero_tag_audit` (`scope.collection_keys`). Available under `ZOTEUS_READ_ONLY=true`.
+Lists collections with key, name, parent collection key, and item count, sorted by name. Optional `top: true` returns only top-level collections. Every collection in the library is read, however many pages Zotero serves them in, and then `q` (a case-insensitive name filter), `start` and `limit` (default 200, at most 1000) choose what comes back. `totalResults` counts every match, and the summary says "Showing 1-200 of 1460" when there is more, so a large library is never mistaken for its first page (#90). `zotero_manage_collections action:"list"` takes the same three arguments. Collection keys can be passed to `zotero_search_items` (`collectionKey`) or `zotero_tag_audit` (`scope.collection_keys`). Available under `ZOTEUS_READ_ONLY=true`.
 
 ---
 

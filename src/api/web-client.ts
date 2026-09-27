@@ -275,6 +275,17 @@ export class WebApiClient {
     return this.toListResult(json, headers);
   }
 
+  /** One collection by key (`{ key, version, data, meta }`), or null on 404. */
+  async getCollection(lib: LibraryRef, key: string): Promise<any | null> {
+    try {
+      const { json } = await this.getJson(this.prefix(lib) + `/collections/${encodeURIComponent(key)}`);
+      return json;
+    } catch (e) {
+      if (e instanceof ZoteroApiError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
   async listTags(
     lib: LibraryRef,
     query: { q?: string; limit?: number; start?: number } = {},

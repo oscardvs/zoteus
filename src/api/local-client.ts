@@ -578,11 +578,16 @@ export class LocalApiClient {
    * the `/items` sub-route directly and needs no such question.
    */
   async collectionExists(key: string, lib?: LibraryRef): Promise<boolean> {
+    return (await this.getCollection(key, lib)) !== null;
+  }
+
+  /** One collection by key, in the cloud's `{ key, version, data, meta }` shape, or null on 404. */
+  async getCollection(key: string, lib?: LibraryRef): Promise<any | null> {
     try {
-      await this.getJson(`${localLibraryPrefix(lib)}/collections/${encodeURIComponent(key)}`);
-      return true;
+      const { json } = await this.getJson(`${localLibraryPrefix(lib)}/collections/${encodeURIComponent(key)}`);
+      return json;
     } catch (e) {
-      if (e instanceof LocalApiError && e.status === 404) return false;
+      if (e instanceof LocalApiError && e.status === 404) return null;
       throw e;
     }
   }

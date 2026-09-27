@@ -13,6 +13,12 @@ import type { LocalApiClient, SyncObjectType } from '../api/local-client.js';
 import type { VersionBackend } from '../features/search/backend.js';
 import { PendingCloudWrites, type PendingWrite } from './pending-writes.js';
 
+/** The largest page either API serves for /collections. */
+const COLLECTION_PAGE = 100;
+
+/** Where a collection crawl stops: 100 pages. The answer then says it stopped. */
+export const MAX_COLLECTIONS = 10_000;
+
 /**
  * Keys per `?itemKey=` request. Both APIs cap that list at 50, so a full page of 100
  * results is two requests rather than one refusal.
@@ -409,13 +415,72 @@ export class LibraryRouter {
     return this.web.deleted(lib, since);
   }
 
+  /** ONE page of collections. Use {@link listAllCollections} for "every collection". */
   async listCollections(
     opts: ReadOpts & { top?: boolean; limit?: number; start?: number } = {},
   ): Promise<ListResult> {
-    const { library, ...rest } = opts;
+    const { library, backend, ...rest } = opts;
     const lib = library ?? this.defaultLibrary();
-    if (await this.route(lib)) return this.local!.listCollections(rest, lib);
+    if (await this.route(lib, backend)) return this.local!.listCollections(rest, lib);
     return this.web.listCollections(lib, rest);
+  }
+
+  /**
+   * Every collection in a library, a page at a time, up to `cap`.
+   *
+   * Both APIs serve /collections in pages (the cloud's default page is 25 and its largest
+   * 100), so one listCollections call is the first page and says nothing about the rest.
+   * On a library of 1,460 collections that read as "the collection is gone", and a lookup
+   * by name created a duplicate of one that was on page two (#90).
+   *
+   * The crawl stops on a short page or a page with no new key, never on Total-Results
+   * alone: a missing header falls back to the page length, and stopping on it would be
+   * the same silent first page again. The header is used for the report only. It is
+   * pinned to the API that served its first page, so a desktop app that goes away halfway
+   * fails the read instead of splicing two APIs' pages. `complete` is false when `cap`
+   * stopped the crawl or Zotero reported more than it served.
+   */
+  async listAllCollections(
+    opts: ReadOpts & { top?: boolean } = {},
+    cap = MAX_COLLECTIONS,
+  ): Promise<{ data: any[]; totalResults: number; complete: boolean }> {
+    const lib = opts.library ?? this.defaultLibrary();
+    const backend: VersionBackend = opts.backend ?? ((await this.route(lib)) ? 'local' : 'cloud');
+    const byKey = new Map<string, any>();
+    let reported = 0;
+    let capped = false;
+    for (;;) {
+      const page = await this.listCollections({
+        library: lib,
+        backend,
+        top: opts.top,
+        limit: COLLECTION_PAGE,
+        start: byKey.size,
+      });
+      reported = Math.max(reported, page.totalResults);
+      const before = byKey.size;
+      for (const c of page.data) {
+        const key = c?.key ?? c?.data?.key;
+        if (typeof key === 'string' && !byKey.has(key)) byKey.set(key, c);
+      }
+      if (page.data.length < COLLECTION_PAGE || byKey.size === before) break;
+      if (byKey.size >= cap) {
+        capped = true;
+        break;
+      }
+    }
+    const data = [...byKey.values()].slice(0, cap);
+    return { data, totalResults: Math.max(reported, byKey.size), complete: !capped && data.length >= reported };
+  }
+
+  /**
+   * One collection by key, or null when this library has no such collection. A direct
+   * `GET /collections/<key>`, so it finds a collection wherever it would sit in a listing.
+   */
+  async getCollection(key: string, opts: ReadOpts = {}): Promise<any | null> {
+    const lib = opts.library ?? this.defaultLibrary();
+    if (await this.route(lib, opts.backend)) return this.local!.getCollection(key, lib);
+    return this.web.getCollection(lib, key);
   }
 
   /**
