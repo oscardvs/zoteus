@@ -1,0 +1,28 @@
+{
+  "name": "zoteus",
+  "displayName": "Zoteus",
+  "version": "1.21.0",
+  "description": "Your Zotero library inside Claude: search by keyword or meaning, quote PDF passages with page numbers, format citations in any CSL style, add papers by DOI or arXiv id, and organize with reversible writes.",
+  "author": { "name": "Oscar Devos", "url": "https://github.com/oscardvs" },
+  "homepage": "https://zoteus.com",
+  "repository": "https://github.com/oscardvs/zoteus",
+  "license": "MIT",
+  "keywords": [
+    "zotero",
+    "research",
+    "citations",
+    "bibliography",
+    "pdf",
+    "literature-review",
+    "reference-manager"
+  ],
+  "userConfig": {
+    "zotero_api_key": {
+      "type": "string",
+      "title": "Zotero API key (optional)",
+      "description": "Leave empty to work through the running Zotero desktop app with no key. Add a key from https://www.zotero.org/settings/keys for sync, group libraries, metadata edits, tags and collections, and for when the app is closed.",
+      "sensitive": true,
+      "default": ""
+    }
+  }
+}

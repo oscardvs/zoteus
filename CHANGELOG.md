@@ -4,6 +4,24 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **A Claude plugin, ready for the Claude directory.** `plugins/zoteus` packages the server
+  with four skills: `grounded-answers`, `evidence-table`, `citations` and `library-upkeep`.
+  Together they teach Claude the workflows the MCP prompts already describe: quote the
+  retrieved passage with its page, render comparisons through `zotero_evidence_table`, take
+  every reference from a tool, and confirm before writing. The server runs as
+  `npx -y @oscardvs/zoteus@<this version>`. The Zotero API key is an optional, masked setting,
+  so the plugin still starts, key-free through the desktop app, where no key is given. This
+  is the directory's replacement for desktop-extension listings, which it no longer accepts.
+  The repository is also a plugin marketplace, so Claude Code users can install it now with
+  `/plugin marketplace add oscardvs/zoteus` and `/plugin install zoteus@zoteus`.
+  `tests/claude-plugin.test.ts` fails a release that leaves the plugin's version or npx pin
+  behind the package, and a skill that names a tool the server does not register.
+  Submission steps for the plugin and for the hosted connector are in
+  `docs/distribution.md` §8.
+
 ## [1.21.0] - 2026-09-21
 
 ### Added

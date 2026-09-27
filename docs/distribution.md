@@ -17,7 +17,7 @@ How to ship Zoteus to the public. Two tracks that ship independently:
 npm run typecheck && npm run lint && npm run build && npm test
 ```
 
-Confirm the version is in lockstep across **all five** locations (a drift here ships a
+Confirm the version is in lockstep across **all seven** locations (a drift here ships a
 mismatched release):
 
 ```bash
@@ -26,9 +26,13 @@ grep -n "const VERSION" src/server.ts src/index.ts      # MCP serverInfo + /heal
 node -e "const s=require('./server.json'); console.log('server.json', s.version, s.packages[0].version)"
 node -e "console.log('mcpb', require('./mcpb/manifest.json').version)"
 node -e "console.log('lock', require('./package-lock.json').version)"
+node -e "console.log('claude plugin', require('./plugins/zoteus/.claude-plugin/plugin.json').version)"
+grep -o '@oscardvs/zoteus@[^"]*' plugins/zoteus/.mcp.json   # the npx pin the Claude plugin launches
 ```
 
-Every line must print the same `X.Y.Z`. (`src/server.ts` feeds the MCP `serverInfo.version`;
+Every line must print the same `X.Y.Z`. The last two are enforced by
+`tests/claude-plugin.test.ts`, because the Claude directory picks up every commit on the
+tracked branch: a pin left behind keeps the listing on the old server (see §8). (`src/server.ts` feeds the MCP `serverInfo.version`;
 `src/index.ts` feeds the `/healthz` liveness version — keep both in step.)
 
 ---
@@ -167,8 +171,11 @@ release when you can, and say so in #62.
 
 > **Toolchain note:** we migrated from the deprecated `@anthropic-ai/dxt` (`.dxt`,
 > `dxt_version` 0.1 manifests) to `@anthropic-ai/mcpb` (`.mcpb`, `manifest_version` 0.3)
-> in 1.4.1. MCPB is required for official directory submission, and its 0.2+ manifest
-> carries the mandatory `privacy_policies` field (see `PRIVACY.md`). Releases up to
+> in 1.4.1. Its 0.2+ manifest carries the mandatory `privacy_policies` field (see
+> `PRIVACY.md`). The Claude directory no longer accepts desktop-extension (MCPB) listings:
+> a local server is listed as part of a plugin bundle instead, which is what
+> `plugins/zoteus` is (§8). The `.mcpb` release assets stay as the manual install for
+> Claude Desktop. Releases up to
 > v1.4.0 attach `zoteus.dxt`, v1.4.1 through v1.15.0 a single `zoteus.mcpb`, and later
 > releases one `.mcpb` per operating system (#62).
 
@@ -215,21 +222,71 @@ validating its metadata document.
 
 ---
 
-## 8. claude.ai connector directory submission (async, external)
+## 8. Claude directory (developer portal)
+
+Everything is submitted at [claude.ai/directory/manage](https://claude.ai/directory/manage)
+(**Submit new**) from a paid claude.ai account; the listing belongs to the organization you
+submit from, so submit from the one that should own it long term. There are two
+submissions, and Anthropic's docs recommend making both:
+
+### 8a. Plugin bundle: `plugins/zoteus`
+
+The plugin packages the local server (`npx -y @oscardvs/zoteus@X.Y.Z`, with the Zotero API
+key asked for through a sensitive `userConfig` option) and four skills. It loads in Claude
+Code and in Cowork sessions on the user's machine; in claude.ai chat only the skills load,
+because chat cannot start a local server.
+
+Before submitting, from the repository root:
+
+```bash
+claude plugin validate ./plugins/zoteus        # must print "Validation passed"
+npx vitest run tests/claude-plugin.test.ts     # the directory rules claude plugin validate skips
+claude --plugin-dir ./plugins/zoteus           # optional: load it and try a skill
+```
+
+In the portal choose **Plugin bundle**, then on **Source**: repository `oscardvs/zoteus`,
+plugin path `plugins/zoteus`, branch empty (the default branch). Select **Validate**. Fix
+anything marked **Blocking**. Expect the plugin to be **held for a reviewer** anyway: the
+checklist always holds a server that is a pinned npm package run through `npx` ("Runs a
+pinned npx package"). That is inherent to shipping the server from npm, and a person
+reviews the first version of every new listing regardless. The data
+handling answers follow `PRIVACY.md`: the plugin reads the user's own library, sends data
+only to the services the plugin README lists, keeps an index and caches on the user's
+machine until they delete the data directory, and is not directed at people under 18. Keep
+**GitHub push webhook** on (it needs repository admin access to set up).
+
+After that, the listing follows the default branch: every release commit that bumps the
+two plugin files in lockstep (§1) is scanned and, once published, served to users. Tag and
+publish to npm with the same push, so the pin never points at a version npm does not have
+yet.
+
+### 8b. MCP connector: `https://mcp.zoteus.com/mcp`
+
+The hosted instance is submitted as its own **MCP connector** listing, by URL, with no
+repository. Submitting it from the same organization as the plugin lets the portal pair
+the two listings. Work through Anthropic's connector pre-submission checklist first; the
+preparation below still applies.
 
 Depends on the M13 hosted instance being live. Prepare:
 
 1. **Hosted instance** at a stable HTTPS domain (`docs/deployment.md` — free-tier VM + Caddy +
-   DuckDNS). Set `ZOTEUS_CIMD_ENABLED=true`. Either serve a CIMD document for Claude's client
-   app, or request **Anthropic-held credentials** by emailing `mcp-review@anthropic.com`.
+   DuckDNS). Set `ZOTEUS_CIMD_ENABLED=true`. The portal's **Authentication** step then offers
+   dynamic client registration, client ID metadata documents, or Anthropic-held client
+   credentials.
 2. **Production posture (M13):** health/readiness probes, structured **secret-redacted**
    logging (no token/key/passcode ever logged), `/metrics`, graceful shutdown, backups.
 3. **Privacy/security statement:** single operator key (passcode mode) vs per-user Zotero
    login (zotero mode); per-user keys encrypted at rest (`ZOTEUS_OAUTH_STORE=file` +
    `ZOTEUS_OAUTH_TOKEN_SECRET`); GDPR data-processor posture for stored Zotero keys.
 
-Submit per Anthropic's directory process (or email `mcp-review@anthropic.com`). Track as an
-external, async review — not gated on code.
+In the portal choose **MCP connector** and have ready: the server URL; the listing (name up
+to 100 characters, one-liner up to 200, description up to 2,000, documentation
+`https://zoteus.com/docs`, privacy policy `https://zoteus.com/privacy`, support
+`support@zoteus.com`, icon `mcpb/icon.png`); and reviewer access to a hosted account backed
+by a populated Zotero library. The **Tools** step flags any tool without a `title` and a
+`readOnlyHint` or `destructiveHint`; every Zoteus tool sets all three, and that has to stay
+true. The scan lists a new connector as Community by default; `mcp-review@anthropic.com` is
+for escalations only. Track it as an external, async review, not gated on code.
 
 ---
 

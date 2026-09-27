@@ -1,0 +1,12 @@
+{
+  "name": "zoteus",
+  "owner": { "name": "Oscar Devos", "url": "https://github.com/oscardvs" },
+  "description": "Zoteus, the Zotero plugin for Claude.",
+  "plugins": [
+    {
+      "name": "zoteus",
+      "source": "./plugins/zoteus",
+      "description": "Your Zotero library inside Claude: search by keyword or meaning, quote PDF passages with page numbers, format citations in any CSL style, add papers by DOI or arXiv id, and organize with reversible writes."
+    }
+  ]
+}
