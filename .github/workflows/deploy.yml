@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write                # OIDC → npm provenance
+      id-token: write                # OIDC: npm trusted publishing, and provenance
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -61,21 +61,25 @@ jobs:
           node-version: 22
           cache: npm
           registry-url: https://registry.npmjs.org
+      # Trusted publishing (the package trusts oscardvs/zoteus deploy.yml on npmjs.com) needs
+      # npm 11.5.1 or newer, and Node 22 bundles npm 10. It replaces the NPM_TOKEN secret: npm
+      # is retiring publish rights for tokens that bypass 2FA (targeted January 2027), and the
+      # granular token also had to be re-minted every 90 days.
+      - run: npm install -g npm@^11.5.1
       - run: npm ci
       - run: npm run build
-      # publishConfig.access=public + provenance from CI OIDC. prepublishOnly re-runs build.
+      # publishConfig.access=public; provenance comes with trusted publishing. prepublishOnly
+      # re-runs build, and prepack writes the npm-shrinkwrap.json the package ships.
       # Idempotent: skip (don't fail) if this version is already on the registry, so a prior
-      # manual publish or a re-pushed tag still lets the `release` job attach the .dxt.
+      # manual publish or a re-pushed tag still lets the `release` job attach the bundles.
       - name: Publish to npm (skip if version already published)
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           if npm view "@oscardvs/zoteus@${VERSION}" version >/dev/null 2>&1; then
-            echo "@oscardvs/zoteus@${VERSION} already on npm — skipping publish."
+            echo "@oscardvs/zoteus@${VERSION} already on npm, skipping publish."
           else
             npm publish --provenance
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   release:
     needs: [test, npm-publish]

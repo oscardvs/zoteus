@@ -54,10 +54,15 @@ grep -E '(^|/)(\.env|src/|tests/|docs/|mcpb/|\.git)' /tmp/zoteus-pack.txt && ech
 npm publish              # or: npm publish --dry-run  to rehearse
 ```
 
-**CI publish (preferred)** — push a `vX.Y.Z` tag; `.github/workflows/deploy.yml`'s
-`npm-publish` job runs `npm publish --provenance` (npm provenance via GitHub OIDC) behind the
-green `test` gate. Requires a repo Actions secret **`NPM_TOKEN`** — an *automation* token from
-npmjs.com with publish rights on `@oscardvs/zoteus`. Never commit the token.
+**CI publish (preferred)**: push a `vX.Y.Z` tag, and `.github/workflows/deploy.yml`'s
+`npm-publish` job runs `npm publish --provenance` behind the green `test` gate. It
+authenticates by **npm trusted publishing** (OIDC), not a token: the package's settings on
+npmjs.com list `oscardvs/zoteus` / `deploy.yml` as its trusted publisher, and the job
+upgrades to npm 11.5.1 or newer, which trusted publishing needs. There is no `NPM_TOKEN`
+secret to renew. The granular token it replaced lived at most 90 days, and npm is retiring
+publish rights for tokens that bypass 2FA (targeted January 2027). A 404 on the publish PUT
+usually means the trusted-publisher entry does not match the repository and workflow file
+name exactly (npm reports auth failures on scoped packages as 404).
 
 > Prefer **one** path per release — CI **or** manual, not both. The CI `npm-publish` step is
 > idempotent (it checks `npm view` and skips if the version already exists), so a prior manual
