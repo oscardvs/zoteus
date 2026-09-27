@@ -142,7 +142,8 @@ export class ScholarGraph {
     try {
       const w = await this.openalex.work(doi);
       const oa = bestOaPdf(w);
-      return { ...this.openalex.normalize(w), oaChecked: true, ...(oa ? { oa } : {}) };
+      const biblio = this.openalex.biblio(w);
+      return { ...this.openalex.normalize(w), oaChecked: true, ...(oa ? { oa } : {}), ...(biblio ? { biblio } : {}) };
     } catch {
       const fallback = await this.crossref.work(doi);
       return fallback ? { ...fallback, oaChecked: false } : null;

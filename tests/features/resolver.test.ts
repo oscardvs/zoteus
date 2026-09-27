@@ -7,6 +7,8 @@ import {
   fromScholarWork,
   foldSpec,
 } from '../../src/features/resolve/resolve.js';
+import { validateItem } from '../../src/schema/validate.js';
+import { SCHEMA_SLICE } from '../fixtures/zotero-schema.js';
 
 describe('parseIdentifier', () => {
   it('classifies bare DOIs', () => {
@@ -105,6 +107,62 @@ describe('fromScholarWork', () => {
   it('does not invent a type for an OpenAlex type it does not know', () => {
     const item = fromScholarWork({ title: 'B', authors: [], type: 'peer-review' }, '10.9/x');
     expect(item.itemType).toBe('document');
+  });
+
+  // #89: the lookup had these and the item kept only the year and the journal.
+  it('carries volume, issue, pages, the full date and the ISSN onto a journal article', () => {
+    const item = fromScholarWork(
+      {
+        title: 'Highly accurate protein structure prediction with AlphaFold',
+        authors: ['John Jumper'],
+        year: 2021,
+        venue: 'Nature',
+        type: 'article',
+        biblio: { date: '2021-07-15', volume: '596', issue: '7873', pages: '583-589', ISSN: '0028-0836, 1476-4687' },
+      },
+      '10.1038/s41586-021-03819-2',
+    );
+    expect(item).toMatchObject({
+      itemType: 'journalArticle',
+      publicationTitle: 'Nature',
+      date: '2021-07-15',
+      volume: '596',
+      issue: '7873',
+      pages: '583-589',
+      ISSN: '0028-0836, 1476-4687',
+    });
+    expect(item.url).toBeUndefined();
+  });
+
+  it("files the venue under each type's own container field", () => {
+    const venueOf = (type: string) => fromScholarWork({ title: 'B', authors: [], venue: 'V', type }, '10.9/x');
+    expect(venueOf('conference-paper')).toMatchObject({ proceedingsTitle: 'V' });
+    expect(venueOf('conference-paper').publicationTitle).toBeUndefined();
+    expect(venueOf('book-chapter')).toMatchObject({ bookTitle: 'V' });
+    expect(venueOf('preprint')).toMatchObject({ repository: 'V' });
+    expect(venueOf('book').publicationTitle).toBeUndefined();
+  });
+
+  // Zotero refuses the whole item over one field its type does not have (#77), so every
+  // field this can emit is checked against the real schema, for every type the slice holds.
+  it('emits only fields the item type accepts, whatever the provider sent', () => {
+    const everything = {
+      date: '2021-07-15',
+      volume: '1',
+      issue: '2',
+      pages: '3-4',
+      ISSN: '1234-5678',
+      url: 'https://example.org/paper',
+    };
+    const types = ['article', 'book', 'book-chapter', 'conference-paper', 'dissertation', 'preprint', 'standard', 'peer-review'];
+    for (const type of types) {
+      const item = fromScholarWork({ title: 'B', authors: ['Ada Lovelace'], venue: 'V', type, biblio: everything }, '10.9/x');
+      const inSlice = (SCHEMA_SLICE as any).itemTypes.some((t: any) => t.itemType === item.itemType);
+      expect(inSlice, `${type} maps to ${item.itemType}, which the schema slice does not hold`).toBe(true);
+      expect(validateItem(SCHEMA_SLICE as any, item).errors, `OpenAlex type ${type}`).toEqual([]);
+      expect(item.date).toBe('2021-07-15');
+      expect(item.url).toBe('https://example.org/paper');
+    }
   });
 });
 

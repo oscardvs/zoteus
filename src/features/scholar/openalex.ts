@@ -54,6 +54,68 @@ export interface ScholarWork {
   openalexIsRetracted?: boolean;
   /** The library item key holding this DOI, when a library scan matched it. */
   libraryItemKey?: string;
+  /**
+   * Where and when the work appeared, set only by a single-work lookup. A search result
+   * does not carry it, because a page of fifty hits has no use for fifty page ranges.
+   */
+  biblio?: WorkBiblio;
+}
+
+/**
+ * The citation details of one work, as a provider reports them, in Zotero's field names.
+ *
+ * Each field is absent when the provider did not report it; none is ever guessed. Built for
+ * the DOI import fallback, which used to keep the year and the journal and drop the rest of
+ * a record that had them (#89).
+ */
+export interface WorkBiblio {
+  /** The full publication date as far as the provider knows it: "2021-07-15", "2013-08" or "2013". */
+  date?: string;
+  volume?: string;
+  issue?: string;
+  /** "583-589", or the first page alone when that is all the provider has. */
+  pages?: string;
+  /** Every ISSN of the journal, linking ISSN first, joined the way Zotero's translators join them. */
+  ISSN?: string;
+  /** The publisher's landing page, when it is something other than the DOI resolver. */
+  url?: string;
+}
+
+/** A trimmed non-empty string, or undefined. Providers send `null`, `""` and numbers alike. */
+export function nonEmpty(v: unknown): string | undefined {
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  if (typeof v !== 'string') return undefined;
+  const t = v.trim();
+  return t ? t : undefined;
+}
+
+/** "583-589" from a first and last page; one page when they agree or only one is known. */
+export function pageRange(first: unknown, last: unknown): string | undefined {
+  const a = nonEmpty(first);
+  const b = nonEmpty(last);
+  if (a && b && a !== b) return `${a}-${b}`;
+  return a ?? b;
+}
+
+/**
+ * A landing page worth storing. The DOI resolver is not one: it is the DOI field again, and
+ * for most DOIs it is all OpenAlex and Crossref have.
+ */
+export function landingUrl(v: unknown): string | undefined {
+  const u = httpUrl(v);
+  return u && !/^https?:\/\/(dx\.)?doi\.org\//i.test(u) ? u : undefined;
+}
+
+/** ISSNs deduplicated, the linking one first, as one "0028-0836, 1476-4687" string. */
+export function joinIssns(linking: unknown, all: unknown): string | undefined {
+  const list = [linking, ...(Array.isArray(all) ? all : [])].map(nonEmpty).filter((x): x is string => Boolean(x));
+  return list.length ? [...new Set(list)].join(', ') : undefined;
+}
+
+/** Drop the keys whose value is undefined, and the whole object when nothing is left. */
+export function compactBiblio(b: WorkBiblio): WorkBiblio | undefined {
+  const out = Object.fromEntries(Object.entries(b).filter(([, v]) => v !== undefined)) as WorkBiblio;
+  return Object.keys(out).length ? out : undefined;
 }
 
 /**
@@ -315,6 +377,24 @@ export class OpenAlexClient {
       // Carried under a name that says whose flag it is; see ScholarWork.openalexIsRetracted.
       openalexIsRetracted: typeof w.is_retracted === 'boolean' ? w.is_retracted : undefined,
     };
+  }
+
+  /**
+   * {@link WorkBiblio} for one RAW work object. The ISSN is read only off a journal source:
+   * a work whose primary location is a repository would otherwise be filed under the
+   * repository's ISSN.
+   */
+  biblio(w: any): WorkBiblio | undefined {
+    const b = w?.biblio ?? {};
+    const source = w?.primary_location?.source;
+    return compactBiblio({
+      date: nonEmpty(w?.publication_date) ?? nonEmpty(w?.publication_year),
+      volume: nonEmpty(b.volume),
+      issue: nonEmpty(b.issue),
+      pages: pageRange(b.first_page, b.last_page),
+      ISSN: source?.type === 'journal' ? joinIssns(source.issn_l, source.issn) : undefined,
+      url: landingUrl(w?.primary_location?.landing_page_url),
+    });
   }
 
   /** {@link RetractionFlag} for one RAW work object, with no further request. */

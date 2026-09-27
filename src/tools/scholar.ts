@@ -287,6 +287,17 @@ const scholar: ToolDefinition = {
           .describe(
             "OpenAlex's own is_retracted flag for this work, named for its provider because that is all it is. Not a verdict: OpenAlex sets the same flag on retraction NOTICES as on retracted papers, so read it beside `type`. action:\"notices\" is the check that puts it next to Crossref's deposited records.",
           ),
+        biblio: z
+          .object({
+            date: z.string().optional().describe('Full publication date as far as the provider knows it: "2021-07-15", "2013-08" or "2013".'),
+            volume: z.string().optional().describe('Volume.'),
+            issue: z.string().optional().describe('Issue.'),
+            pages: z.string().optional().describe('Page range, e.g. "583-589".'),
+            ISSN: z.string().optional().describe('The journal\'s ISSNs, linking ISSN first, comma-separated.'),
+            url: z.string().optional().describe("The publisher's landing page, when it is not just the DOI resolver."),
+          })
+          .optional()
+          .describe('Where and when the work appeared, in Zotero field names; action:"lookup" only, and only the fields the provider reported.'),
       })
       .passthrough();
     const notice = z

@@ -1,5 +1,5 @@
 import type { RateLimitedFetcher } from '../../api/http.js';
-import { encodeDoiForQuery, encodeDoiPath, queryableDoi } from './openalex.js';
+import { compactBiblio, encodeDoiForQuery, encodeDoiPath, joinIssns, landingUrl, nonEmpty, queryableDoi } from './openalex.js';
 import type { ScholarWork } from './openalex.js';
 
 const BASE = 'https://api.crossref.org';
@@ -165,6 +165,22 @@ function isSingleWork(json: any): boolean {
   return !Array.isArray(w.items) && typeof w.DOI === 'string';
 }
 
+/**
+ * A Crossref date-parts value as "2021-07-15", "2013-08" or "2013", zero-padded the way Zotero
+ * stores a date it parsed itself. Undefined when the year is missing or not a number.
+ */
+export function crossrefDate(d: any): string | undefined {
+  const parts = d?.['date-parts']?.[0];
+  if (!Array.isArray(parts) || !Number.isInteger(parts[0])) return undefined;
+  const [year, month, day] = parts as number[];
+  const out = [String(year)];
+  if (Number.isInteger(month)) {
+    out.push(String(month).padStart(2, '0'));
+    if (Number.isInteger(day)) out.push(String(day).padStart(2, '0'));
+  }
+  return out.join('-');
+}
+
 /** Crossref DOI-metadata fallback. Tolerates non-JSON error responses. */
 export class CrossrefClient {
   constructor(
@@ -196,6 +212,14 @@ export class CrossrefClient {
           .slice(0, 10),
         citationCount: w['is-referenced-by-count'],
         venue: Array.isArray(w['container-title']) ? w['container-title'][0] : w['container-title'],
+        biblio: compactBiblio({
+          date: crossrefDate(w.issued),
+          volume: nonEmpty(w.volume),
+          issue: nonEmpty(w.issue),
+          pages: nonEmpty(w.page),
+          ISSN: joinIssns(undefined, w.ISSN),
+          url: landingUrl(w.URL),
+        }),
       };
     } catch {
       return null;

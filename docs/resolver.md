@@ -37,9 +37,14 @@ traceability. Abstracts are capped at 2000 chars.
 ### DOIs → `journalArticle` (or keeps arXiv preprint-ness)
 
 Uses the same scholar providers as `zotero_scholar` (`src/features/scholar/`):
-OpenAlex primary, Crossref fallback. `fromScholarWork` maps title/authors/year/
-venue onto a `journalArticle` item. A DOI that resolves to an arXiv-hosted record
-still comes through as `journalArticle`; preprint-ness signals travel in `extra`.
+OpenAlex primary, Crossref fallback. `fromScholarWork` picks the item type from
+OpenAlex's own work type (`article` is a `journalArticle`, `conference-paper` a
+`conferencePaper`, and so on; an unknown type is a `document`), then maps title,
+authors, the venue (into the type's own container field: `publicationTitle`,
+`proceedingsTitle`, `bookTitle` or a preprint's `repository`), the full
+publication date, volume, issue, pages, ISSN and a publisher landing page when it
+is not just `doi.org` (#89). A field the item type does not accept is left out
+rather than sent, because Zotero refuses the whole item over one unknown field.
 
 ## Explicit conventions (documented, not encoded)
 
