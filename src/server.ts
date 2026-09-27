@@ -7,6 +7,7 @@ import type { UsageRecorder } from './lib/usage/event.js';
 import { RateLimitedFetcher } from './api/http.js';
 import { loopbackFetch } from './api/loopback-fetch.js';
 import { WebApiClient } from './api/web-client.js';
+import { ZoteroApiError } from './api/errors.js';
 import { LocalApiClient } from './api/local-client.js';
 import { LocalWriteClient } from './api/local-writes.js';
 import { ConnectorWriteClient } from './api/connector-writes.js';
@@ -491,15 +492,30 @@ export async function buildServer(
  */
 const KEYS_PER_ACCOUNT = 8;
 
+/**
+ * How long a cached key is trusted before zotero.org is asked about it again: the longest a
+ * key Zotero has revoked keeps its context. One `/keys/current` per key per interval of use.
+ */
+const KEY_RECHECK_MS = 10 * 60_000;
+
 /** The per-user credential an access token carries, if it carries one. */
 function credentials(authInfo?: AuthInfo): { zoteroKey?: string; zoteroUserId?: number } {
   const extra = authInfo?.extra as { zoteroKey?: string; zoteroUserId?: number } | undefined;
   return { zoteroKey: extra?.zoteroKey, zoteroUserId: extra?.zoteroUserId };
 }
 
+interface KeyEntry {
+  ctx: ToolContext;
+  lastUsed: number;
+  /** When zotero.org last confirmed this key for the account (Date.now()). */
+  checkedAt: number;
+  /** The re-check in flight, shared by every call that finds the key due at once. */
+  checking?: Promise<boolean>;
+}
+
 interface Account {
   /** A context per Zotero key, every one of them holding the account's one set of indexes. */
-  keys: Map<string, { ctx: ToolContext; lastUsed: number }>;
+  keys: Map<string, KeyEntry>;
   lastUsed: number;
 }
 
@@ -523,8 +539,8 @@ interface Account {
  * consent page. Keying by account alone treated the second key as a replacement: it retired
  * the first key's context and refused that key from then on, so connecting one client
  * disconnected the other, and reconnecting that one disconnected the first in turn. A key
- * that Zotero has since revoked needs no retiring here; zotero.org refuses it, and that
- * client reconnects. Each key's context keeps its own clients and capabilities, so neither
+ * Zotero has since revoked is found by asking zotero.org again once it has been cached for
+ * `recheckAfterMs` (see recheck). Each key's context keeps its own clients and capabilities, so neither
  * client acts with the other's permissions, and they share the account's search indexes,
  * so the same files are never opened twice (`indexesOf` in buildContext).
  */
@@ -543,31 +559,67 @@ export class ContextCache {
     /** How many accounts hold contexts (and open indexes) at once. */
     private readonly maxEntries = 50,
     private readonly telemetry?: Telemetry,
+    /** How long a cached key is served before zotero.org is asked about it again. */
+    private readonly recheckAfterMs = KEY_RECHECK_MS,
   ) {}
 
   resolve(authInfo?: AuthInfo): Promise<ToolContext> {
     const { zoteroKey, zoteroUserId } = credentials(authInfo);
     if (!zoteroKey || zoteroUserId === undefined) return Promise.resolve(this.operatorCtx);
-    const hit = this.hit(zoteroUserId, zoteroKey);
-    if (hit) return Promise.resolve(hit);
+    const entry = this.hit(zoteroUserId, zoteroKey);
+    if (entry) {
+      if (entry.ctx.invalidated || Date.now() - entry.checkedAt < this.recheckAfterMs) {
+        return Promise.resolve(entry.ctx);
+      }
+      return this.recheck(zoteroUserId, zoteroKey, entry);
+    }
     const result = this.resolveTail.then(() => this.resolveMiss(zoteroKey, zoteroUserId));
     this.resolveTail = result.catch(() => {});
     return result;
   }
 
-  /** The context this key already has, marked used; undefined on a miss. */
-  private hit(zoteroUserId: number, zoteroKey: string): ToolContext | undefined {
+  /** The entry this key already has, marked used; undefined on a miss. */
+  private hit(zoteroUserId: number, zoteroKey: string): KeyEntry | undefined {
     const account = this.accounts.get(zoteroUserId);
     const entry = account?.keys.get(zoteroKey);
     if (!account || !entry) return undefined;
     entry.lastUsed = account.lastUsed = ++this.order;
+    return entry;
+  }
+
+  /**
+   * Ask zotero.org whether a cached key is still this account's, and retire it if not.
+   *
+   * A cached context is otherwise never asked again. When an account held one key, a revoked
+   * key was cut off as a side effect: reconnecting minted a new key, which retired the old
+   * one. With a context per key nothing retires it, and a tool that never reaches zotero.org
+   * (zotero_semantic_search reads the local index) kept answering a revoked key until the
+   * LRU dropped it or its token expired. Now it answers for at most `recheckAfterMs`.
+   *
+   * Only a definite refusal retires the key: a 401 or 403 (Zotero answers a revoked key
+   * with 403 "Invalid key"), or the key now belonging to another account. An outage, a 429
+   * or a 5xx keeps serving it, because locking every hosted user out whenever zotero.org
+   * falters is the worse failure; it is asked again one interval later. A retired key is
+   * told to reconnect, and the account's other keys and its indexes are not touched.
+   */
+  private async recheck(zoteroUserId: number, zoteroKey: string, entry: KeyEntry): Promise<ToolContext> {
+    entry.checking ??= stillThisAccount(entry.ctx, zoteroUserId).finally(() => {
+      entry.checking = undefined;
+      entry.checkedAt = Date.now();
+    });
+    if (await entry.checking) return entry.ctx;
+    entry.ctx.invalidated = true;
+    const account = this.accounts.get(zoteroUserId);
+    // The account's last key stays as a retired entry, still holding the indexes for the
+    // next key to share, until eviction or the next key's arrival clears it.
+    if (account && account.keys.size > 1 && account.keys.get(zoteroKey) === entry) account.keys.delete(zoteroKey);
     return entry.ctx;
   }
 
   private async resolveMiss(zoteroKey: string, zoteroUserId: number): Promise<ToolContext> {
     // Re-read under the lock: an identical miss queued behind this one must not build twice.
     const hit = this.hit(zoteroUserId, zoteroKey);
-    if (hit) return hit;
+    if (hit) return hit.ctx;
     // Any of the account's contexts will do: they all hold the same indexes.
     const account = this.accounts.get(zoteroUserId);
     const sibling = account?.keys.values().next().value?.ctx;
@@ -579,7 +631,7 @@ export class ContextCache {
     });
     const lastUsed = ++this.order;
     const held = account ?? { keys: new Map(), lastUsed };
-    held.keys.set(zoteroKey, { ctx, lastUsed });
+    held.keys.set(zoteroKey, { ctx, lastUsed, checkedAt: Date.now() });
     held.lastUsed = lastUsed;
     this.accounts.set(zoteroUserId, held);
     this.dropStaleKeys(held, zoteroKey);
@@ -595,6 +647,8 @@ export class ContextCache {
    * refused either; its next call builds it a context again.
    */
   private dropStaleKeys(account: Account, keep: string): void {
+    // A key Zotero refused is dead already; the one just added now holds the indexes.
+    for (const [k, v] of account.keys) if (k !== keep && v.ctx.invalidated) account.keys.delete(k);
     while (account.keys.size > KEYS_PER_ACCOUNT) {
       let oldestKey: string | undefined;
       let oldest = Infinity;
@@ -667,6 +721,23 @@ export class ContextCache {
       this.accounts.delete(oldestId);
       await releaseIndexes(anyContext(evicted));
     }
+  }
+}
+
+/**
+ * Whether zotero.org still confirms this context's key for the account. False only on a
+ * definite refusal; see ContextCache.recheck for why an outage answers true.
+ */
+async function stillThisAccount(ctx: ToolContext, zoteroUserId: number): Promise<boolean> {
+  try {
+    const info = await ctx.web.keysCurrent();
+    return info?.userID === zoteroUserId;
+  } catch (e) {
+    if (e instanceof ZoteroApiError && (e.status === 401 || e.status === 403)) return false;
+    ctx.logger.warn(
+      `Re-checking a cached Zotero key failed, serving it until the next check: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return true;
   }
 }
 

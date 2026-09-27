@@ -35,6 +35,10 @@ All notable changes to Zoteus are documented here. The format is based on
   are never opened twice. The cache bound (50) still counts accounts, and evicting one still
   closes its indexes; a key dropped past the per-account bound is rebuilt on its next call
   rather than refused.
+  A cached key is asked about again at zotero.org after 10 minutes, so a key Zotero has
+  revoked stops being served within that time even by tools that never reach zotero.org
+  (`zotero_semantic_search` reads the local index). Only a refusal from Zotero retires a key;
+  while zotero.org is not answering, the cached key keeps working.
 - **A library with more collections than one page is listed whole (#90).** `zotero_list_collections`
   and `zotero_manage_collections action:"list"` returned the first page Zotero served (25 on
   the cloud) with no count and no way to ask for more, so a library of 1,460 collections
