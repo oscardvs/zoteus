@@ -30,7 +30,8 @@
     "dist",
     "README.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "npm-shrinkwrap.json"
   ],
   "engines": {
     "node": ">=20.19"
@@ -48,7 +49,9 @@
     "gen:codex": "tsx scripts/generate-codex.ts",
     "inspector": "npx @modelcontextprotocol/inspector npx tsx src/index.ts",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "prepack": "node scripts/shrinkwrap.mjs create",
+    "postpack": "node scripts/shrinkwrap.mjs remove"
   },
   "mcpName": "io.github.oscardvs/zoteus",
   "publishConfig": {

@@ -246,10 +246,13 @@ claude --plugin-dir ./plugins/zoteus           # optional: load it and try a ski
 
 In the portal choose **Plugin bundle**, then on **Source**: repository `oscardvs/zoteus`,
 plugin path `plugins/zoteus`, branch empty (the default branch). Select **Validate**. Fix
-anything marked **Blocking**. Expect the plugin to be **held for a reviewer** anyway: the
-checklist always holds a server that is a pinned npm package run through `npx` ("Runs a
-pinned npx package"). That is inherent to shipping the server from npm, and a person
-reviews the first version of every new listing regardless. The data
+anything marked **Blocking**. The checklist holds a server that is a pinned npm package run
+through `npx` ("Runs a pinned npx package") unless that package ships a lockfile, so the
+npm package carries `npm-shrinkwrap.json`: `prepack` writes it from `package-lock.json` and
+`postpack` removes it (`scripts/shrinkwrap.mjs`), and npm installs the published dependency
+tree from it. Check a release with `npm view @oscardvs/zoteus@X.Y.Z _hasShrinkwrap`, which
+must print `true`. The plugin's icon is `.claude-plugin/icon.svg`, the zoteus.com mark. A
+person reviews the first version of every new listing regardless. The data
 handling answers follow `PRIVACY.md`: the plugin reads the user's own library, sends data
 only to the services the plugin README lists, keeps an index and caches on the user's
 machine until they delete the data directory, and is not directed at people under 18. Keep

@@ -55,3 +55,6 @@ docs/superpowers/
 .claude/worktrees/
 .claude/launch.json
 .claude/scheduled_tasks.lock
+
+# Created by `npm pack`/`npm publish` from package-lock.json and removed after (scripts/shrinkwrap.mjs).
+npm-shrinkwrap.json
