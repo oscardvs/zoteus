@@ -35,6 +35,23 @@ All notable changes to Zoteus are documented here. The format is based on
   are never opened twice. The cache bound (50) still counts accounts, and evicting one still
   closes its indexes; a key dropped past the per-account bound is rebuilt on its next call
   rather than refused.
+- **A library with more collections than one page is listed whole (#90).** `zotero_list_collections`
+  and `zotero_manage_collections action:"list"` returned the first page Zotero served (25 on
+  the cloud) with no count and no way to ask for more, so a library of 1,460 collections
+  looked like a library of 25, and a lookup by name created a duplicate of a collection that
+  was on page two. Both now read every page, sort by name, and take `q` (a name filter over
+  the whole library), `start` and `limit`; they return `totalResults` and say "Showing 1-200
+  of 1460" when there is more. Rename and reparent found their collection by scanning one
+  page of 100, so most keys in a large library were "not found"; they, and
+  `zotero_import`'s `collection_key` on the desktop route, now ask Zotero for the collection
+  by key. The `zotero://collections` resource lists every page too.
+- **A DOI imported without translation-server keeps its volume, issue, pages, full date and
+  ISSN (#89).** The built-in fallback read them from OpenAlex (or Crossref) and dropped all
+  but the year and the journal. Each field is now written only where the item type has it,
+  and the venue goes to the type's own field: `proceedingsTitle` for a conference paper,
+  `bookTitle` for a chapter, `repository` for a preprint, where `publicationTitle` used to
+  be sent to all of them. `zotero_scholar action:"lookup"` returns the same details as
+  `work.biblio`.
 
 ## [1.21.0] - 2026-09-21
 
