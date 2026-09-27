@@ -856,10 +856,10 @@ async function attachUrlToCloud(
  */
 async function resolveTreeViewId(ctx: ToolContext, collectionKey: string): Promise<string | undefined> {
   if (/^[CL]\d+$/.test(collectionKey)) return collectionKey;
-  const collections = await ctx.router.listCollections({ limit: 1000 });
-  const match = collections.data
-    .map((c: any) => c?.data ?? c)
-    .find((c: any) => c?.key === collectionKey);
+  // Asked for by key: a listing is served in pages of at most 100, so a scan of "the list"
+  // missed every collection past the first page (#90).
+  const found = await ctx.router.getCollection(collectionKey);
+  const match = found ? (found.data ?? found) : undefined;
   if (!match) throw new Error(`Collection key ${collectionKey} not found in the library.`);
   const { targets } = await ctx.connectorWrites!.getSelectedCollection();
   const byName = targets.filter((t) => t.name === match.name);

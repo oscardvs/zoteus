@@ -192,13 +192,40 @@ describe('zotero_delete_items', () => {
 describe('zotero_manage_collections', () => {
   it('lists collections via the router', async () => {
     const ctx = makeCtx();
-    ctx.router.listCollections = vi.fn(async () => ({
+    ctx.router.listAllCollections = vi.fn(async () => ({
       data: [{ key: 'C1', data: { name: 'Reading', parentCollection: false } }],
       totalResults: 1,
-      lastModifiedVersion: 1,
+      complete: true,
     }));
     const res = await manageCollections.handler({ action: 'list' }, ctx);
     expect((res.structuredContent?.collections as any[])[0].name).toBe('Reading');
+  });
+
+  // #90: rename and reparent looked the key up in ONE page of 100 collections, so in a
+  // library with 1,460 of them most keys were "not found".
+  it('finds the collection to rename by key, wherever it sits in the library', async () => {
+    const ctx = makeCtx();
+    ctx.web.listCollections = vi.fn(async () => {
+      throw new Error('a key lookup must not scan a listing');
+    });
+    ctx.web.getCollection = vi.fn(async (_lib: unknown, key: string) =>
+      key === 'FAR01460' ? { key, version: 9, data: { key, name: 'Backups', parentCollection: 'PARENT01' } } : null,
+    );
+    const res = await manageCollections.handler({ action: 'rename', collection_key: 'FAR01460', name: 'Backups 2026' }, ctx);
+    expect(res.isError).toBeFalsy();
+    expect(ctx.web.getCollection).toHaveBeenCalledWith({ type: 'user', id: 19552201 }, 'FAR01460');
+    expect(ctx.web.writeCollections).toHaveBeenCalledWith({ type: 'user', id: 19552201 }, [
+      { key: 'FAR01460', name: 'Backups 2026', parentCollection: 'PARENT01', version: 9 },
+    ]);
+  });
+
+  it('says not found only when Zotero has no such collection', async () => {
+    const ctx = makeCtx();
+    ctx.web.getCollection = vi.fn(async () => null);
+    const res = await manageCollections.handler({ action: 'reparent', collection_key: 'GONE0001' }, ctx);
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('GONE0001 not found');
+    expect(ctx.web.writeCollections).not.toHaveBeenCalled();
   });
 
   it('creates a collection', async () => {

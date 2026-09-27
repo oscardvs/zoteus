@@ -39,6 +39,11 @@ function fakeCtx(): ToolContext {
         totalResults: 1,
         lastModifiedVersion: 1,
       })),
+      listAllCollections: vi.fn(async () => ({
+        data: [{ key: 'COLL', data: { name: 'Reading' } }],
+        totalResults: 1,
+        complete: true,
+      })),
     } as any,
     schema: {
       getSchema: vi.fn(async () => ({ version: 39, itemTypes: [{ itemType: 'book', fields: [{ field: 'title' }] }] })),

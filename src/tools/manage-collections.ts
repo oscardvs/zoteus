@@ -2,28 +2,32 @@ import { z } from 'zod';
 import { collectionRow, newLibraryVersion, writeFailures } from './common-output.js';
 import type { ToolContext, ToolDefinition, ToolHandlerResult } from '../registry/registry.js';
 import { libraryArgs } from './common-args.js';
-import { ok, optionalLibrary, requireCloudLibrary, requireBulkConfirm } from '../registry/registry.js';
+import { ok, requireCloudLibrary, requireBulkConfirm } from '../registry/registry.js';
 import type { LibraryRef } from '../api/web-client.js';
+import { collectionListing, listingArgs, listingOutput } from './collection-listing.js';
 
 function err(text: string): ToolHandlerResult {
   return { content: [{ type: 'text', text }], isError: true };
 }
 
-async function fetchCollection(ctx: ToolContext, lib: LibraryRef, key: string): Promise<any | undefined> {
-  const r = await ctx.web.listCollections(lib, { limit: 100 });
-  return r.data.find((c: any) => (c.key ?? c.data?.key) === key);
+/**
+ * The collection by key, asked for directly. This used to scan one page of 100 for it, so
+ * in a library with more collections than that, most keys were "not found" (#90).
+ */
+async function fetchCollection(ctx: ToolContext, lib: LibraryRef, key: string): Promise<any | null> {
+  return ctx.web.getCollection(lib, key);
 }
 
 const manageCollections: ToolDefinition = {
   name: 'zotero_manage_collections',
   title: 'Manage Zotero collections',
   description:
-    'List, create, rename, reparent, or delete collections, and move items into or out of a collection. Set `action` to one of: "list" (all collections with key/name/parent), "create" (needs `name`, optional `parent_collection` key — omit for top-level), "rename" (needs `collection_key` + `name`), "reparent" (needs `collection_key`; `parent_collection` key, or omit to move to top level), "delete" (needs `collection_key`), "add_items" / "remove_items" (need `collection_key` + `item_keys`; collection membership lives on each item). All actions except "list" write to the cloud Web API. When the server sets a bulk-write threshold (ZOTEUS_CONFIRM_BULK_WRITES, off by default), removing more items than that from a collection in one call also needs `confirm: true`.',
+    'List, create, rename, reparent, or delete collections, and move items into or out of a collection. Set `action` to one of: "list" (collections with key/name/parent, sorted by name; `q` filters by name over the whole library, `start`/`limit` page, `totalResults` counts them all), "create" (needs `name`, optional `parent_collection` key; omit it for top-level), "rename" (needs `collection_key` + `name`), "reparent" (needs `collection_key`; `parent_collection` key, or omit to move to top level), "delete" (needs `collection_key`), "add_items" / "remove_items" (need `collection_key` + `item_keys`; collection membership lives on each item). All actions except "list" write to the cloud Web API. When the server sets a bulk-write threshold (ZOTEUS_CONFIRM_BULK_WRITES, off by default), removing more items than that from a collection in one call also needs `confirm: true`.',
   inputSchema: {
     action: z
       .enum(['list', 'create', 'rename', 'reparent', 'delete', 'add_items', 'remove_items'])
       .describe(
-        'What to do. "list" reads every collection; "create" needs `name`; "rename" needs `collection_key` + `name`; "reparent" needs `collection_key`; "delete" needs `collection_key`; "add_items"/"remove_items" need `collection_key` + `item_keys`.',
+        'What to do. "list" reads every collection (then `q`, `start`, `limit` apply); "create" needs `name`; "rename" needs `collection_key` + `name`; "reparent" needs `collection_key`; "delete" needs `collection_key`; "add_items"/"remove_items" need `collection_key` + `item_keys`.',
       ),
     name: z.string().optional().describe('Collection name (create/rename).'),
     collection_key: z.string().optional().describe('Target collection key (all actions except list/create).'),
@@ -33,11 +37,13 @@ const manageCollections: ToolDefinition = {
       .boolean()
       .optional()
       .describe("Required to remove more items in one call than the server's bulk-write threshold."),
+    ...listingArgs,
     ...libraryArgs,
   },
   outputSchema: z
     .object({
-      collections: z.array(collectionRow).optional().describe('Every collection in the library (action:"list").'),
+      collections: z.array(collectionRow).optional().describe('This page of the collections, sorted by name (action:"list").'),
+      ...listingOutput,
       created: z.array(z.string()).optional().describe('Key of the collection created (action:"create").'),
       collection_key: z.string().optional().describe('The collection renamed or reparented.'),
       deleted: z.string().optional().describe('Key of the collection deleted.'),
@@ -52,15 +58,8 @@ const manageCollections: ToolDefinition = {
       // Routed like every other read, but in the library the caller named: listing the
       // personal library's collections for a call that named a group handed the model
       // collection keys that do not exist there, and the create that followed failed or
-      // landed in the wrong place (#74).
-      const r = await ctx.router.listCollections({ library: optionalLibrary(args, ctx) });
-      const collections = r.data.map((c: any) => ({
-        key: c.key ?? c.data?.key,
-        name: c.data?.name,
-        parentCollection: c.data?.parentCollection ?? false,
-        numItems: c.meta?.numItems,
-      }));
-      return ok({ collections }, `${collections.length} collection(s).`);
+      // landed in the wrong place (#74). Every page of it, not the first (#90).
+      return collectionListing(ctx, args);
     }
 
     const lib = requireCloudLibrary(ctx, args);
