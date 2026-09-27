@@ -24,7 +24,6 @@ import { createEmbeddingProvider } from './features/search/embeddings.js';
 import { ScholarGraph } from './features/scholar/graph.js';
 import {
   registerAllTools,
-  SESSION_RETIRED_MESSAGE,
   type ToolContext,
   type ToolContextSource,
   type AnyToolDefinition,
@@ -50,7 +49,26 @@ export interface ContextOverrides {
    * recorder so there is a single SQLite writer.
    */
   telemetry?: Telemetry;
+  /**
+   * A live context of the SAME account whose search indexes this one shares instead of
+   * opening its own. How one account holds a context per Zotero key: every OAuth
+   * authorization mints a key, so an account connected from Claude and from ChatGPT
+   * presents two, and each needs its own clients and capabilities (its own permissions),
+   * while the index files belong to the account and must be opened once, not once per key.
+   */
+  indexesOf?: ToolContext;
 }
+
+/** A context's search indexes. Per account, so every key's context holds the same one. */
+interface HeldIndexes {
+  /** The default library's index; replaced (never mutated) by a repair's reopen. */
+  search: SearchIndex;
+  indexes: SearchIndexRegistry;
+  searchIndexPath: string;
+  primaryLibrary: string;
+}
+
+const heldIndexes = new WeakMap<ToolContext, HeldIndexes>();
 
 /** The observability handles a context passes on to its tool calls. */
 export interface Telemetry {
@@ -163,6 +181,115 @@ export async function buildContext(
   const schema = new SchemaService({ web });
   const styles = new StyleResolver();
   const translation = new TranslationServerClient(config.translationServerUrl, fetcher);
+  const scholar = new ScholarGraph({
+    fetcher,
+    mailto: config.contactEmail,
+    openalexApiKey: config.openalexApiKey,
+  });
+  // The account's indexes when another of its keys already holds them open, so a second
+  // client (a second OAuth key) reads the same files through the same handles.
+  const held = sharedIndexes(overrides) ?? (await openIndexes(config, logger, overrides.zoteroUserId, router));
+
+  /**
+   * Replace the held search index with a freshly opened one.
+   *
+   * Three properties, each load-bearing, and all three now live in the registry's
+   * `reopen` so that every library gets them rather than only the default one:
+   *  - single-flight, so two concurrent repairs cannot both open the same database (they
+   *    interleave across awaits on one event loop, and the second would orphan the first);
+   *  - the old handle is released before the new one is opened, because a repair deletes
+   *    files and on Windows an open handle refuses the unlink, so a server holding them
+   *    would block the recovery it is prescribing;
+   *  - `ctx.search` is only ever assigned an index that opened successfully, so a failed
+   *    reopen leaves the faulted one in place rather than leaving the field undefined.
+   *
+   * Still the default library's index and nothing else, because that is the one `ctx.search`
+   * holds. A second library's index is repaired through the registry, under its own token.
+   *
+   * Assigned to the account's holder, not to this context, so every other key's context of
+   * the account reads the fresh index too instead of the handle this just closed.
+   */
+  const reopenSearchIndex = async (): Promise<SearchIndex> => {
+    const fresh = await held.indexes.reopen(held.primaryLibrary);
+    held.search = fresh;
+    return fresh;
+  };
+
+  const ctx: ToolContext = {
+    config,
+    capabilities,
+    router,
+    schema,
+    web,
+    local,
+    localWrites,
+    connectorWrites,
+    styles,
+    translation,
+    get search() {
+      return held.search;
+    },
+    set search(index: SearchIndex) {
+      held.search = index;
+    },
+    scholar,
+    fetcher,
+    logger,
+    remoteCaller: perUser || config.oauth.enabled,
+    zoteroUserId: overrides.zoteroUserId,
+    metrics,
+    usage,
+    searchIndexPath: held.searchIndexPath,
+    indexes: held.indexes,
+    localStatus,
+    reopenSearchIndex,
+  };
+  heldIndexes.set(ctx, held);
+  // Manual installs (notably the .dxt) have no auto-update channel; check GitHub
+  // releases once a day and let zotero_whoami surface a newer version. Operator
+  // context only: per-user (hosted) tenants share the operator's install.
+  if (!perUser) {
+    ctx.updates = new UpdateChecker({
+      currentVersion: VERSION,
+      dataDir: config.dataDir,
+      logger,
+      enabled: config.updateCheck,
+    });
+    void ctx.updates.start();
+  }
+  ctx.toolCatalog = selectActiveTools(config).map((t) => ({
+    name: t.name,
+    title: t.title,
+    description: t.description,
+    deferLoading: t.deferLoading,
+  }));
+  return ctx;
+}
+
+/**
+ * The indexes another context of this account already holds, when this build was asked
+ * to share them.
+ *
+ * Refused outright for any other account: an index holds one account's rows, and handing
+ * it to a context of another would serve one tenant's library to another.
+ */
+function sharedIndexes(overrides: ContextOverrides): HeldIndexes | undefined {
+  const of = overrides.indexesOf;
+  if (!of) return undefined;
+  const held = heldIndexes.get(of);
+  if (!held || of.zoteroUserId === undefined || of.zoteroUserId !== overrides.zoteroUserId) {
+    throw new Error('A context can share search indexes only with another context of the same account.');
+  }
+  return held;
+}
+
+/** Open the default library's index and the registry for every other library's. */
+async function openIndexes(
+  config: ZoteusConfig,
+  logger: Logger,
+  zoteroUserId: number | undefined,
+  router: LibraryRouter,
+): Promise<HeldIndexes> {
   // Preflighted at startup so a configured-but-unrunnable embedder (the classic case: a
   // desktop bundle that cannot carry @huggingface/transformers) is reported as inactive
   // from the first status call, rather than discovered as a silently empty vector set.
@@ -172,7 +299,7 @@ export async function buildContext(
   // rather than a rename, so nothing has to be migrated. `zoteroUserId` stays part of it
   // in multi-tenant mode, and no library token may ever replace or collapse that segment:
   // two tenants who both belong to group 4523 still index through different Zotero keys.
-  const searchIndexPath = defaultIndexPath(config.dataDir, overrides.zoteroUserId);
+  const searchIndexPath = defaultIndexPath(config.dataDir, zoteroUserId);
   // Hoisted rather than passed inline, because a repair has to be able to build the same
   // index again later and the embedder triple is not reachable from the context (#21).
   // Split from the path so the registry can apply the same options to a second library.
@@ -195,12 +322,6 @@ export async function buildContext(
   const stale = search.buildStatus().vectorsStaleReason;
   if (stale) logger.warn(stale);
   logger.debug(`search index backend: ${search.storage} (${searchIndexPath})`);
-  const scholar = new ScholarGraph({
-    fetcher,
-    mailto: config.contactEmail,
-    openalexApiKey: config.openalexApiKey,
-  });
-
   /**
    * Which library the file at `searchIndexPath` answers for.
    *
@@ -251,72 +372,7 @@ export async function buildContext(
         'an index of their own here (zotero_index action:"libraries" lists them).',
     );
   }
-
-  /**
-   * Replace the held search index with a freshly opened one.
-   *
-   * Three properties, each load-bearing, and all three now live in the registry's
-   * `reopen` so that every library gets them rather than only the default one:
-   *  - single-flight, so two concurrent repairs cannot both open the same database (they
-   *    interleave across awaits on one event loop, and the second would orphan the first);
-   *  - the old handle is released before the new one is opened, because a repair deletes
-   *    files and on Windows an open handle refuses the unlink, so a server holding them
-   *    would block the recovery it is prescribing;
-   *  - `ctx.search` is only ever assigned an index that opened successfully, so a failed
-   *    reopen leaves the faulted one in place rather than leaving the field undefined.
-   *
-   * Still the default library's index and nothing else, because that is the one `ctx.search`
-   * holds. A second library's index is repaired through the registry, under its own token.
-   */
-  const reopenSearchIndex = async (): Promise<SearchIndex> => {
-    const fresh = await indexes.reopen(primaryLibrary);
-    ctx.search = fresh;
-    return fresh;
-  };
-
-  const ctx: ToolContext = {
-    config,
-    capabilities,
-    router,
-    schema,
-    web,
-    local,
-    localWrites,
-    connectorWrites,
-    styles,
-    translation,
-    search,
-    scholar,
-    fetcher,
-    logger,
-    remoteCaller: perUser || config.oauth.enabled,
-    zoteroUserId: overrides.zoteroUserId,
-    metrics,
-    usage,
-    searchIndexPath,
-    indexes,
-    localStatus,
-    reopenSearchIndex,
-  };
-  // Manual installs (notably the .dxt) have no auto-update channel; check GitHub
-  // releases once a day and let zotero_whoami surface a newer version. Operator
-  // context only: per-user (hosted) tenants share the operator's install.
-  if (!perUser) {
-    ctx.updates = new UpdateChecker({
-      currentVersion: VERSION,
-      dataDir: config.dataDir,
-      logger,
-      enabled: config.updateCheck,
-    });
-    void ctx.updates.start();
-  }
-  ctx.toolCatalog = selectActiveTools(config).map((t) => ({
-    name: t.name,
-    title: t.title,
-    description: t.description,
-    deferLoading: t.deferLoading,
-  }));
-  return ctx;
+  return { search, indexes, searchIndexPath, primaryLibrary };
 }
 
 /** The McpServer shell: identity, capabilities and instructions, with nothing registered yet. */
@@ -427,8 +483,13 @@ export async function buildServer(
   return { server: createServer(ctx), ctx, createServer: () => createServer(ctx) };
 }
 
-/** How many replaced keys an account keeps on record, so a rotation storm stays bounded. */
-const RETIRED_KEYS_PER_ACCOUNT = 8;
+/**
+ * How many of one account's Zotero keys hold a context at once. Every OAuth authorization
+ * mints a key of its own, so this is how many clients (Claude, ChatGPT, a second machine)
+ * an account keeps connected before its least recently used one pays a rebuild, one key
+ * probe, on its next call.
+ */
+const KEYS_PER_ACCOUNT = 8;
 
 /** The per-user credential an access token carries, if it carries one. */
 function credentials(authInfo?: AuthInfo): { zoteroKey?: string; zoteroUserId?: number } {
@@ -436,11 +497,16 @@ function credentials(authInfo?: AuthInfo): { zoteroKey?: string; zoteroUserId?: 
   return { zoteroKey: extra?.zoteroKey, zoteroUserId: extra?.zoteroUserId };
 }
 
+interface Account {
+  /** A context per Zotero key, every one of them holding the account's one set of indexes. */
+  keys: Map<string, { ctx: ToolContext; lastUsed: number }>;
+  lastUsed: number;
+}
+
 /**
- * Resolves a ToolContext per authenticated user (keyed by zoteroUserId), caching the
- * expensive build. Sessions without a per-user Zotero key (passcode/stdio/no-auth) fall
- * back to the operator context. Eviction drops the cache entry AND closes that context's
- * search indexes.
+ * Resolves a ToolContext per authenticated user and Zotero key, caching the expensive
+ * build. Sessions without a per-user Zotero key (passcode/stdio/no-auth) fall back to the
+ * operator context. Eviction drops the account AND closes its search indexes.
  *
  * Resolved on EVERY tool call, not once per session (`createServerFrom` with a thunk in
  * src/index.ts). A session that bound its context at `initialize` kept the object an LRU
@@ -451,26 +517,30 @@ function credentials(authInfo?: AuthInfo): { zoteroKey?: string; zoteroUserId?: 
  * be: the evicted context is closed, and the next call from that account builds a fresh
  * one at the cost of one key probe. It also makes `lastUsed` mean used.
  *
- * A context IS still retired, and its sessions told to reconnect, when the account's key
- * changes: that is a credential change, and a session carrying the old key must not keep
- * a context built from it. The replaced key is remembered so that a session still
- * presenting it is refused rather than rebuilding the old context and retiring the new one
- * on every call, which two live sessions of one account would otherwise do to each other.
+ * One context PER KEY, not per account, because one account legitimately holds several
+ * live keys at once: every OAuth authorization mints its own, so a subscriber connected
+ * from Claude and from ChatGPT presents two, each with the permissions granted on its own
+ * consent page. Keying by account alone treated the second key as a replacement: it retired
+ * the first key's context and refused that key from then on, so connecting one client
+ * disconnected the other, and reconnecting that one disconnected the first in turn. A key
+ * that Zotero has since revoked needs no retiring here; zotero.org refuses it, and that
+ * client reconnects. Each key's context keeps its own clients and capabilities, so neither
+ * client acts with the other's permissions, and they share the account's search indexes,
+ * so the same files are never opened twice (`indexesOf` in buildContext).
  */
 export class ContextCache {
-  private readonly entries = new Map<number, { ctx: ToolContext; lastUsed: number; zoteroKey: string }>();
-  /** Keys each account has replaced, most recent last. */
-  private readonly retired = new Map<number, Set<string>>();
+  private readonly accounts = new Map<number, Account>();
   // Serialize cache MISSES so simultaneous initializations cannot open competing index
-  // handles or replace a credential while its predecessor is still opening. Hits do not
-  // queue here: with a resolve per tool call, waiting behind another tenant's build would
-  // be paid on every call.
+  // handles, or build a second key's context while the first key's is still opening the
+  // indexes it will share. Hits do not queue here: with a resolve per tool call, waiting
+  // behind another tenant's build would be paid on every call.
   private resolveTail: Promise<unknown> = Promise.resolve();
   private order = 0;
 
   constructor(
     private readonly config: ZoteusConfig,
     private readonly operatorCtx: ToolContext,
+    /** How many accounts hold contexts (and open indexes) at once. */
     private readonly maxEntries = 50,
     private readonly telemetry?: Telemetry,
   ) {}
@@ -478,45 +548,66 @@ export class ContextCache {
   resolve(authInfo?: AuthInfo): Promise<ToolContext> {
     const { zoteroKey, zoteroUserId } = credentials(authInfo);
     if (!zoteroKey || zoteroUserId === undefined) return Promise.resolve(this.operatorCtx);
-    const hit = this.entries.get(zoteroUserId);
-    if (hit && hit.zoteroKey === zoteroKey) {
-      hit.lastUsed = ++this.order;
-      return Promise.resolve(hit.ctx);
-    }
+    const hit = this.hit(zoteroUserId, zoteroKey);
+    if (hit) return Promise.resolve(hit);
     const result = this.resolveTail.then(() => this.resolveMiss(zoteroKey, zoteroUserId));
     this.resolveTail = result.catch(() => {});
     return result;
   }
 
+  /** The context this key already has, marked used; undefined on a miss. */
+  private hit(zoteroUserId: number, zoteroKey: string): ToolContext | undefined {
+    const account = this.accounts.get(zoteroUserId);
+    const entry = account?.keys.get(zoteroKey);
+    if (!account || !entry) return undefined;
+    entry.lastUsed = account.lastUsed = ++this.order;
+    return entry.ctx;
+  }
+
   private async resolveMiss(zoteroKey: string, zoteroUserId: number): Promise<ToolContext> {
     // Re-read under the lock: an identical miss queued behind this one must not build twice.
-    const hit = this.entries.get(zoteroUserId);
-    if (hit && hit.zoteroKey === zoteroKey) {
-      hit.lastUsed = ++this.order;
-      return hit.ctx;
-    }
-    if (this.retired.get(zoteroUserId)?.has(zoteroKey)) throw new Error(SESSION_RETIRED_MESSAGE);
-    if (hit) {
-      hit.ctx.invalidated = true;
-      this.entries.delete(zoteroUserId);
-      this.retire(zoteroUserId, hit.zoteroKey);
-      await releaseIndexes(hit.ctx);
-    }
+    const hit = this.hit(zoteroUserId, zoteroKey);
+    if (hit) return hit;
+    // Any of the account's contexts will do: they all hold the same indexes.
+    const account = this.accounts.get(zoteroUserId);
+    const sibling = account?.keys.values().next().value?.ctx;
     const ctx = await buildContext(this.config, {
       apiKey: zoteroKey,
       zoteroUserId,
       telemetry: this.telemetry,
+      indexesOf: sibling,
     });
-    this.entries.set(zoteroUserId, { ctx, lastUsed: ++this.order, zoteroKey });
+    const lastUsed = ++this.order;
+    const held = account ?? { keys: new Map(), lastUsed };
+    held.keys.set(zoteroKey, { ctx, lastUsed });
+    held.lastUsed = lastUsed;
+    this.accounts.set(zoteroUserId, held);
+    this.dropStaleKeys(held, zoteroKey);
     await this.evictIfNeeded(zoteroUserId);
     return ctx;
   }
 
-  private retire(zoteroUserId: number, key: string): void {
-    const keys = this.retired.get(zoteroUserId) ?? new Set<string>();
-    keys.add(key);
-    while (keys.size > RETIRED_KEYS_PER_ACCOUNT) keys.delete(keys.values().next().value!);
-    this.retired.set(zoteroUserId, keys);
+  /**
+   * Hold at most KEYS_PER_ACCOUNT of one account's keys, dropping the least recently used.
+   *
+   * Never the key just added, and never the indexes: they belong to the account, which
+   * still has that context holding them, so nothing is closed here. A dropped key is not
+   * refused either; its next call builds it a context again.
+   */
+  private dropStaleKeys(account: Account, keep: string): void {
+    while (account.keys.size > KEYS_PER_ACCOUNT) {
+      let oldestKey: string | undefined;
+      let oldest = Infinity;
+      for (const [k, v] of account.keys) {
+        if (k !== keep && v.lastUsed < oldest) {
+          oldest = v.lastUsed;
+          oldestKey = k;
+        }
+      }
+      if (oldestKey === undefined) break;
+      account.keys.get(oldestKey)!.ctx.invalidated = true;
+      account.keys.delete(oldestKey);
+    }
   }
 
   /**
@@ -524,18 +615,19 @@ export class ContextCache {
    * stores. Best-effort, and terminal: this runs from the shutdown handler, where closing
    * is what checkpoints SQLite's write-ahead log instead of leaving it for the next startup.
    *
-   * EVERY index of every context, not one each. A context now holds one index per library
+   * EVERY index of every account, not one each. A context now holds one index per library
    * it has addressed, and flushing only `ctx.search` would leave every other library's
-   * handle open and its write-ahead log uncheckpointed on every shutdown.
+   * handle open and its write-ahead log uncheckpointed on every shutdown. Once per account,
+   * not per key: its keys' contexts all hold the same registry.
    */
   async flushIndexes(): Promise<void> {
     await this.resolveTail;
-    const ctxs = [this.operatorCtx, ...[...this.entries.values()].map((e) => e.ctx)];
+    const ctxs = [this.operatorCtx, ...[...this.accounts.values()].map(anyContext)];
     await Promise.allSettled(ctxs.map((c) => releaseIndexes(c)));
   }
 
   /**
-   * Drop the least recently used contexts, closing their indexes as they go.
+   * Drop the least recently used accounts, closing their indexes as they go.
    *
    * Closing is the point. Dropping the cache entry alone left the evicted context's
    * SQLite handle open and its write-ahead log uncheckpointed for the life of the process,
@@ -544,8 +636,8 @@ export class ContextCache {
    *
    * Evicted contexts are marked invalidated so that nothing which still holds the object
    * (there should be nothing: sessions resolve per call) can use it after its indexes
-   * closed. Contexts with a build running, a search holding an index open, and the
-   * just-resolved context are not evicted; the loop takes the next candidate instead.
+   * closed. Accounts with a build running, a search holding an index open, and the
+   * just-resolved account are not evicted; the loop takes the next candidate instead.
    *
    * "Any index", not `ctx.search`, and the difference was a real failure: a build on a
    * group runs inside that group's own index (zotero_index hands the registry's store to
@@ -555,25 +647,32 @@ export class ContextCache {
    * "The SQLite search index is not open."
    */
   private async evictIfNeeded(justAdded?: number): Promise<void> {
-    while (this.entries.size > this.maxEntries) {
-      let oldestKey: number | undefined;
+    while (this.accounts.size > this.maxEntries) {
+      let oldestId: number | undefined;
       let oldest = Infinity;
-      for (const [k, v] of this.entries) {
-        if (k === justAdded || v.ctx.search.isBuilding || v.ctx.indexes?.anyBuilding() || v.ctx.indexes?.anyLeased()) {
+      for (const [id, account] of this.accounts) {
+        // One context answers for all of the account's: they share these indexes.
+        const ctx = anyContext(account);
+        if (id === justAdded || ctx.search.isBuilding || ctx.indexes?.anyBuilding() || ctx.indexes?.anyLeased()) {
           continue;
         }
-        if (v.lastUsed < oldest) {
-          oldest = v.lastUsed;
-          oldestKey = k;
+        if (account.lastUsed < oldest) {
+          oldest = account.lastUsed;
+          oldestId = id;
         }
       }
-      if (oldestKey === undefined) break;
-      const evicted = this.entries.get(oldestKey)!;
-      evicted.ctx.invalidated = true;
-      this.entries.delete(oldestKey);
-      await releaseIndexes(evicted.ctx);
+      if (oldestId === undefined) break;
+      const evicted = this.accounts.get(oldestId)!;
+      for (const { ctx } of evicted.keys.values()) ctx.invalidated = true;
+      this.accounts.delete(oldestId);
+      await releaseIndexes(anyContext(evicted));
     }
   }
+}
+
+/** One of an account's contexts. Never empty: an account is created with its first key. */
+function anyContext(account: Account): ToolContext {
+  return account.keys.values().next().value!.ctx;
 }
 
 /**
