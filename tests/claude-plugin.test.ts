@@ -144,4 +144,25 @@ describe('Claude plugin folder, against the directory checklist', () => {
     // A top-level bin/ stops claude.ai and Cowork from installing the plugin at all.
     expect(existsSync(join(pluginDir, 'bin'))).toBe(false);
   });
+
+  it('has a square icon of at least 128px, which the directory warns about otherwise', () => {
+    const svg = readFileSync(join(pluginDir, '.claude-plugin', 'icon.svg'), 'utf8');
+    const attr = (name: string) => Number(new RegExp(`<svg[^>]*\\s${name}="(\\d+)"`).exec(svg)?.[1]);
+    const box = /viewBox="0 0 (\d+) (\d+)"/.exec(svg);
+    expect(attr('width')).toBeGreaterThanOrEqual(128);
+    expect(attr('height')).toBe(attr('width'));
+    expect(box?.[1]).toBe(box?.[2]);
+  });
+});
+
+describe('The npm package the plugin launches', () => {
+  // The directory holds a plugin that runs a pinned npx package unless that package ships a
+  // lockfile. npm publishes npm-shrinkwrap.json (never package-lock.json) and installs from
+  // it, so it is written from package-lock.json while npm packs and removed afterwards.
+  it('ships its lockfile as npm-shrinkwrap.json', () => {
+    expect(pkg.files).toContain('npm-shrinkwrap.json');
+    expect(pkg.scripts.prepack).toBe('node scripts/shrinkwrap.mjs create');
+    expect(pkg.scripts.postpack).toBe('node scripts/shrinkwrap.mjs remove');
+    expect(existsSync(join(repo, 'package-lock.json'))).toBe(true);
+  });
 });

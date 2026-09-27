@@ -4,6 +4,17 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **The npm package ships its lockfile.** `@oscardvs/zoteus` now carries
+  `npm-shrinkwrap.json`, so `npx @oscardvs/zoteus@X.Y.Z` (how the Claude plugin starts the
+  server) installs exactly the dependency tree this release was tested with instead of
+  whatever the version ranges resolve to on the day. The Claude directory holds a plugin
+  that runs a pinned npx package without one. It is written from `package-lock.json` while
+  npm packs and removed afterwards, so the repository keeps a single lockfile.
+- **The Claude plugin has an icon**: the zoteus.com mark, as `.claude-plugin/icon.svg`.
+
 ## [1.22.0] - 2026-09-27
 
 ### Added
