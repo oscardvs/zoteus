@@ -22,6 +22,20 @@ All notable changes to Zoteus are documented here. The format is based on
   Submission steps for the plugin and for the hosted connector are in
   `docs/distribution.md` §8.
 
+### Fixed
+- **One account connected from two clients no longer disconnects one of them.** Every OAuth
+  authorization mints its own Zotero key, so an account connected from Claude and from
+  ChatGPT presents two keys. The hosted server kept one context per account and treated the
+  second key as a replacement: it retired the first key's context and refused that key from
+  then on, so connecting one client made the other answer "Zotero authorization changed or
+  the session expired. Reconnect to start a new session." on every call, and reconnecting it
+  did the same to the first. An account now holds a context per key (up to 8), each with its
+  own clients and capabilities, so each client keeps the permissions granted on its own
+  consent page, and all of them share the account's search indexes, so the same index files
+  are never opened twice. The cache bound (50) still counts accounts, and evicting one still
+  closes its indexes; a key dropped past the per-account bound is rebuilt on its next call
+  rather than refused.
+
 ## [1.21.0] - 2026-09-21
 
 ### Added
