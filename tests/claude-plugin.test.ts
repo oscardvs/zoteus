@@ -9,7 +9,9 @@
  * leave a skill pointing at nothing. These tests catch both, plus the directory's README,
  * license and file rules, in `npm test` rather than in the portal.
  */
-import { lstatSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -164,5 +166,25 @@ describe('The npm package the plugin launches', () => {
     expect(pkg.scripts.prepack).toBe('node scripts/shrinkwrap.mjs create');
     expect(pkg.scripts.postpack).toBe('node scripts/shrinkwrap.mjs remove');
     expect(existsSync(join(repo, 'package-lock.json'))).toBe(true);
+  });
+
+  // npm installs every entry a dependency's shrinkwrap lists, dev or not, so 1.22.1, which
+  // shipped the lock whole, installed vitest, typescript, esbuild and eslint through npx.
+  it('ships only the runtime tree, so npx does not install the test and build tools', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zoteus-shrinkwrap-'));
+    try {
+      copyFileSync(join(repo, 'package-lock.json'), join(dir, 'package-lock.json'));
+      execFileSync(process.execPath, [join(repo, 'scripts', 'shrinkwrap.mjs'), 'create'], { cwd: dir });
+      const lock = readJson(join(repo, 'package-lock.json'));
+      const shipped = readJson(join(dir, 'npm-shrinkwrap.json'));
+      const runtime = Object.keys(lock.packages).filter((path) => !lock.packages[path].dev);
+      expect(Object.keys(shipped.packages).sort()).toEqual(runtime.sort());
+      expect(shipped.packages['node_modules/vitest']).toBeUndefined();
+      expect(shipped.packages[''].devDependencies).toBeUndefined();
+      expect(shipped.packages[''].dependencies).toEqual(lock.packages[''].dependencies);
+      expect(shipped.lockfileVersion).toBe(lock.lockfileVersion);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
