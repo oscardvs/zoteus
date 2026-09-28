@@ -88,6 +88,17 @@ Any variable *not* in that list is out of reach of the bundle: use a manual inst
 (Option B in [`getting-started.md`](./getting-started.md)) or a self-hosted run, both of
 which take the full environment.
 
+## Claude plugin settings
+
+The Claude plugin in [`plugins/zoteus`](../plugins/zoteus) takes one setting, the Zotero
+API key (`ZOTERO_API_KEY`). In Claude Code, run `/plugin`, open Zoteus and choose
+**Configure options**. The plugin sets no other variable.
+
+Claude Desktop does not show plugin settings. A plugin installed there from this
+repository's marketplace runs without a key, through the Zotero desktop app, and has no
+settings screen and no per-tool permissions. The `.mcpb` extension above has both, so
+install that one in Claude Desktop when you need either.
+
 ## Remote OAuth (claude.ai or ChatGPT connector)
 
 Turn the Streamable HTTP `/mcp` endpoint into an OAuth 2.1 + PKCE protected resource so it can be added as a claude.ai custom connector or as a ChatGPT app. See [`remote-oauth.md`](./remote-oauth.md) for the full walkthrough.
