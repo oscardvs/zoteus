@@ -4,6 +4,17 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **The search index's write-ahead log gives its disk space back** (#98). SQLite never
+  shrinks a `-wal` file on its own: after one large transaction, such as a schema migration
+  or a big build, it kept that size through every later checkpoint and restart. One
+  full-text library carried a 1.08 GB log beside its 3.6 GB index for three weeks. The index
+  now caps the log at 64 MB whenever SQLite restarts it, and truncates it to zero when it
+  opens and when it closes. The truncation never waits: while another process sharing the
+  data directory is mid-read, it is skipped and the next open or close reclaims the space.
+
 ## [1.22.2] - 2026-09-27
 
 ### Fixed
