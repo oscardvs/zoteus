@@ -239,6 +239,19 @@ const CODE_DIM = 'codeDim';
  */
 const BUSY_TIMEOUT_MS = 10_000;
 
+/**
+ * The size a write-ahead log is cut back to whenever SQLite restarts it (#98).
+ *
+ * A WAL file never shrinks by itself. A checkpoint copies its frames into the database and
+ * the next writer starts again at the front of the same file, so one large transaction (a
+ * migration rung rewriting every passage, or a build whose checkpoints a long reader held
+ * back) leaves a file of that transaction's size behind for good: 1.08 GB beside a 3.6 GB
+ * index, on a library of 281k passages. With this limit, the first write after a checkpoint
+ * truncates it. 64 MB is sixteen times SQLite's 4 MB autocheckpoint threshold, so an
+ * ordinary build reuses the file instead of shrinking and regrowing it on every commit.
+ */
+const WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024;
+
 export interface SqliteSearchIndexOptions extends SearchIndexOptions {
   /** Database file (':memory:' is accepted, for tests). */
   path: string;
@@ -485,6 +498,15 @@ export class SqliteSearchIndex extends SearchIndexBase {
       this.refreshCounts();
       this.loadMeta();
       this.syncSalvage();
+      // Last, after the migrations and the accent-map refresh that may have written, and
+      // with the same rule as that refresh: reclaiming disk never decides whether the index
+      // opens, but corruption it runs into is evidence for the catch below.
+      try {
+        this.truncateWal();
+      } catch (e) {
+        if (isCorruptionError(e)) throw e;
+        this.opts.logger?.debug(`Write-ahead log of ${this.file} not truncated: ${String(e)}`);
+      }
     } catch (e) {
       if (!isCorruptionError(e) && !(e instanceof SearchIndexCorruptError)) throw e;
       // The handle may exist, so this object owns it and must release it before handing
@@ -542,6 +564,36 @@ export class SqliteSearchIndex extends SearchIndexBase {
     // the last commits of a running build, which the next build replaces anyway, but it
     // can never cost the database itself.
     this.db.exec('PRAGMA synchronous = NORMAL');
+    // Per connection, not stored in the file, so every open sets it again.
+    this.db.exec(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES}`);
+  }
+
+  /**
+   * Checkpoint the write-ahead log and truncate its file to zero bytes, without waiting.
+   *
+   * The size limit above only acts when a writer restarts the log, and an index that is
+   * only searched until the next build never writes. Closing the last connection deletes
+   * the log, but only the LAST one, and a sibling server sharing the data directory (a host
+   * probe, a second client, an `index update` run) makes this connection not the last. So
+   * the open and the close each try a TRUNCATE checkpoint as well.
+   *
+   * Never waits. A TRUNCATE checkpoint needs every other connection idle, with no read or
+   * write under way, and under the ten-second busy timeout it would stall an open behind a
+   * sibling's running build. With the timeout at zero a blocked checkpoint returns `busy: 1`
+   * straight away, having copied what it could, and the next open or close reclaims the file.
+   */
+  private truncateWal(): void {
+    const db = this.db;
+    if (!db || this.inTransaction) return;
+    db.exec('PRAGMA busy_timeout = 0');
+    try {
+      const row = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get() as { busy?: number } | undefined;
+      if (row?.busy) {
+        this.opts.logger?.debug(`Write-ahead log of ${this.file} not truncated: another connection is using it.`);
+      }
+    } finally {
+      db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    }
   }
 
   /**
@@ -2235,6 +2287,11 @@ export class SqliteSearchIndex extends SearchIndexBase {
       this.flush();
     } catch {
       this.inTransaction = false;
+    }
+    try {
+      this.truncateWal();
+    } catch (e) {
+      this.opts.logger?.debug(`Write-ahead log of ${this.file} not truncated on close: ${String(e)}`);
     }
     this.db.close();
     this.db = undefined;
