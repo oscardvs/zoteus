@@ -18,11 +18,12 @@ The plugin has two parts:
 
 1. Install and run the [Zotero desktop app](https://www.zotero.org/download). In **Settings → Advanced**, turn on **Allow other applications on this computer to communicate with Zotero**.
 2. Have [Node.js](https://nodejs.org) 20.19 or later installed. The server is started with `npx`.
-3. Optional: in the plugin's settings, enter a Zotero API key from [zotero.org/settings/keys](https://www.zotero.org/settings/keys). Without one, Zoteus reads your library through the desktop app. It can also add items, attachments and annotations there, and trash or restore them. A key adds sync, group libraries, metadata edits, tags and collections, and access while the app is closed. Claude Code stores the key in your system's secure credential store.
+3. Optional: enter a Zotero API key from [zotero.org/settings/keys](https://www.zotero.org/settings/keys). In Claude Code, run `/plugin`, open Zoteus and choose **Configure options**. Without one, Zoteus reads your library through the desktop app. It can also add items, attachments and annotations there, and trash or restore them. A key adds sync, group libraries, metadata edits, tags and collections, and access while the app is closed. Claude Code stores the key in your system's secure credential store.
 
 ## Where it works
 
 - **Claude Code**, and **Cowork** sessions that run on your computer: the plugin starts the server for you. Cowork does not ask for plugin settings, so there it works through the desktop app, with no key.
+- **Claude Desktop**, with this repository added as a marketplace: the server runs inside each session, as its connector list says. Claude Desktop shows no settings for a plugin's server, so there is nowhere to enter a key or change a setting, and no list of per-tool permissions. For a settings screen and per-tool permissions, install the `.mcpb` extension from the [latest release](https://github.com/oscardvs/zoteus/releases/latest) instead.
 - **claude.ai chat**: the skills load, but a chat cannot start a program on your computer. For the tools, add a remote Zoteus connector: the [hosted one](https://zoteus.com/pricing) or [one you run yourself](https://github.com/oscardvs/zoteus/blob/main/docs/remote-oauth.md).
 
 ## Try it
