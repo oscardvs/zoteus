@@ -198,6 +198,34 @@ describe('LocalApiStatus', () => {
     expect(status.lastDegradedAt()).toBeGreaterThan(seen[0]!);
   });
 
+  it('keeps why the latest probe failed on the live capability object (#102)', async () => {
+    let answer: { up: boolean; timedOut: boolean; status?: number } = { up: false, timedOut: false, status: 403 };
+    const { status, capabilities, advance } = makeStatus({ up: () => answer });
+    advance(10_000);
+    expect(await status.ensure()).toBe(false);
+    expect(capabilities.localProbe).toEqual({ kind: 'http', status: 403 });
+    // A timeout carries the budget it ran out of, which is the number a user needs to
+    // compare against how long their Zotero really takes.
+    answer = { up: false, timedOut: true };
+    advance(60_000);
+    await status.ensure();
+    expect(capabilities.localProbe).toEqual({ kind: 'timeout', budgetMs: 1500 });
+    answer = { up: true, timedOut: false, status: 200 };
+    advance(60_000);
+    expect(await status.ensure()).toBe(true);
+    expect(capabilities.localProbe).toEqual({ kind: 'up' });
+  });
+
+  it('records a failed probe even while the two-strikes rule keeps the app up', async () => {
+    let up = true;
+    const { status, capabilities, advance } = makeStatus({ localApi: true, up: () => ({ up, timedOut: true }) });
+    up = false;
+    advance(60_000);
+    expect(await status.ensure({ force: true })).toBe(true);
+    expect(capabilities.localApi).toBe(true);
+    expect(capabilities.localProbe).toEqual({ kind: 'timeout', budgetMs: 1500 });
+  });
+
   it('never lets a listener that throws take the probe down with it', async () => {
     let up = true;
     const { status, capabilities, advance } = makeStatus({ localApi: true, up: () => ({ up, timedOut: false }) });

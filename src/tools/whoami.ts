@@ -4,6 +4,34 @@ import { ok } from '../registry/registry.js';
 import { canonicalLibraryToken, describeLibraryToken } from '../features/search/backend.js';
 import { ATTRIBUTION_LINE, CITEPROC_ATTRIBUTION } from '../lib/notices.js';
 import { VERSION } from '../lib/version.js';
+import { LIVENESS_PATH } from '../api/local-client.js';
+import type { LocalProbeOutcome } from '../router/capabilities.js';
+
+const ENABLE_LOCAL_API =
+  'enable Settings → Advanced → "Allow other applications on this computer to communicate with Zotero"';
+const RECHECKS = 'The server re-checks by itself; no restart is needed.';
+
+/**
+ * The remedy for an unavailable local API, chosen by what the latest probe found rather
+ * than guessed. One sentence used to cover every case ("start Zotero and enable the
+ * setting"), and for the user whose Zotero was running with the setting on, it was wrong
+ * twice over and said nothing about what was actually happening (#102).
+ */
+function localApiRemedy(outcome: LocalProbeOutcome | undefined, port: number): string {
+  switch (outcome?.kind) {
+    case 'http':
+      if (outcome.status === 403) {
+        return `Zotero is running on port ${port} but its local API is switched off (it answered HTTP 403): ${ENABLE_LOCAL_API}. ${RECHECKS}`;
+      }
+      return `Zotero answered the liveness probe (GET /api${LIVENESS_PATH}) on port ${port} with HTTP ${outcome.status}, so reads are not routed to it. A 400 usually means the request did not reach Zotero directly: a proxy or port forward in front of it rewrites the Host header, which Zotero refuses. ${RECHECKS}`;
+    case 'timeout':
+      return `Port ${port} accepted the connection but did not answer the liveness probe within ${outcome.budgetMs} ms. Zotero may still be loading its library after starting, or be busy with a sync or an import. ${RECHECKS} If it never becomes available, Zotero's debug output (Help → Debug Output Logging) shows how long it takes to answer GET /api${LIVENESS_PATH}.`;
+    case 'unreachable':
+      return `Nothing is listening on 127.0.0.1:${port}: start Zotero and ${ENABLE_LOCAL_API}. If Zotero listens on another port, set ZOTERO_LOCAL_PORT. ${RECHECKS}`;
+    default:
+      return `Zotero's local API is not answering on port ${port}: start Zotero and ${ENABLE_LOCAL_API}. ${RECHECKS}`;
+  }
+}
 
 /**
  * Where the default library came from, and what a caller can do about it.
@@ -185,6 +213,9 @@ const whoami: ToolDefinition = {
       // mode it never does, and there `localApi: false` is a setting, not a diagnosis.
       localApiChecked: ctx.localStatus?.enabled ? new Date(ctx.localStatus.lastCheckedAt()).toISOString() : null,
       localApiWatched: ctx.localStatus?.enabled ?? (ctx.config?.local !== 'off' && Boolean(ctx.local)),
+      // What the latest probe found, in the same words the log uses, so a `false` comes
+      // with its reason: nothing listening, no answer within the budget, or an HTTP status.
+      ...(ctx.capabilities.localProbe ? { localApiProbe: ctx.capabilities.localProbe } : {}),
       // A per-user context is built without any desktop client at all, so its `false` can
       // never become true however the Zotero on the caller's own machine is configured.
       ...(perUser
@@ -217,12 +248,12 @@ const whoami: ToolDefinition = {
       // THIRD_PARTY_NOTICES.md carries the full text.
       attribution: CITEPROC_ATTRIBUTION,
     };
-    // Naming the remedy beside the symptom: an unavailable local API is nearly always the
-    // one Zotero setting, and the answer is re-checked on every call now, so there is no
-    // longer any reason to tell someone to restart their MCP host.
+    // Naming the remedy beside the symptom, and choosing it by what the probe found: the
+    // answer is re-checked on every call now, so there is no longer any reason to tell
+    // someone to restart their MCP host.
     const localHint =
       ctx.localStatus?.enabled && !ctx.capabilities.localApi
-        ? ` Zotero's local API is not answering on port ${ctx.config?.localPort ?? 23119} — start Zotero and enable Settings → Advanced → "Allow other applications on this computer to communicate with Zotero". The server re-checks by itself; no restart is needed.`
+        ? ` ${localApiRemedy(ctx.capabilities.localProbe, ctx.config?.localPort ?? 23119)}`
         : '';
     let summary = cloud
       ? `Signed in as ${cloud.username} (userID ${cloud.userID}). Local API: ${ctx.capabilities.localApi ? 'available' : 'unavailable'}.${localHint}`

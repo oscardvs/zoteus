@@ -7,6 +7,22 @@ All notable changes to Zoteus are documented here. The format is based on
 ## [Unreleased]
 
 ### Fixed
+- **A large library no longer hides a running Zotero** (#102). The liveness probe asked the
+  desktop app for `/users/0/items?limit=1`, and Zotero answers that by searching, loading
+  and sorting the whole library before it slices off one item, so the request cost the size
+  of the library whatever the limit said. On a library of 166,000 items it took longer than
+  the probe's 1.5 s budget on every attempt, `zotero_whoami` reported `localApi: false` for
+  the life of the process, and every read went to the cloud Web API, where a library-wide
+  full-text search then timed out. The probe now asks for `/users/0/collections?limit=1`,
+  which the same endpoint class answers in milliseconds whatever the library holds, and
+  Zotero 10 desktop writes read their server id and library version off the same request.
+- **`zotero_whoami` says why the local API is unavailable.** The answer carries the latest
+  probe's outcome (`localApiProbe`: nothing listening on the port, no answer within the
+  budget, or the HTTP status Zotero answered with), and the remedy is chosen by it: a 403
+  is Zotero running with "Allow other applications on this computer to communicate with
+  Zotero" switched off, a timeout names the budget and where Zotero's debug output shows
+  its own timing, a refused connection names the port and `ZOTERO_LOCAL_PORT`. The startup
+  `Capabilities:` log line carries the same reason beside `localApi=false`.
 - **The search index's write-ahead log gives its disk space back** (#98). SQLite never
   shrinks a `-wal` file on its own: after one large transaction, such as a schema migration
   or a big build, it kept that size through every later checkpoint and restart. One

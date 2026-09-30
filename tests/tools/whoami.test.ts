@@ -98,3 +98,64 @@ describe('zotero_whoami', () => {
     expect(res.content[0].text).not.toMatch(/available \(installed/);
   });
 });
+
+// #102: one sentence ("start Zotero and enable the setting") covered every unavailable
+// local API. For the user whose Zotero was running with the setting on, and merely took
+// longer than the probe's budget to answer, it was wrong twice over. The remedy is now
+// chosen by what the probe found, and the finding itself is in the structured answer.
+describe('zotero_whoami names why the local API is unavailable (#102)', () => {
+  function unavailable(localProbe: any) {
+    const ctx = ctxWith(null);
+    ctx.capabilities = { cloud: null, localApi: false, localGroupIds: [], ...(localProbe ? { localProbe } : {}) };
+    ctx.localStatus = { enabled: true, lastCheckedAt: () => 1_700_000_000_000, ensure: async () => ctx.capabilities.localApi };
+    ctx.config = { localPort: 23119 };
+    return ctx;
+  }
+
+  it('a 403 is Zotero running with its local API switched off', async () => {
+    const res = await whoami.handler({}, unavailable({ kind: 'http', status: 403 }));
+    expect(res.structuredContent?.localApi).toBe(false);
+    expect(res.structuredContent?.localApiProbe).toEqual({ kind: 'http', status: 403 });
+    const text = res.content[0].text;
+    expect(text).toMatch(/Zotero is running on port 23119 but its local API is switched off/);
+    expect(text).toMatch(/Allow other applications/);
+    expect(text).not.toMatch(/start Zotero/);
+  });
+
+  it('a timeout says what the budget was and what to look at', async () => {
+    const res = await whoami.handler({}, unavailable({ kind: 'timeout', budgetMs: 1500 }));
+    const text = res.content[0].text;
+    expect(text).toMatch(/did not answer the liveness probe within 1500 ms/);
+    expect(text).toMatch(/Debug Output Logging/);
+    expect(text).toMatch(/collections\?limit=1/);
+  });
+
+  it('a refused connection is a Zotero that is not running, or on another port', async () => {
+    const res = await whoami.handler({}, unavailable({ kind: 'unreachable' }));
+    const text = res.content[0].text;
+    expect(text).toMatch(/Nothing is listening on 127\.0\.0\.1:23119/);
+    expect(text).toMatch(/ZOTERO_LOCAL_PORT/);
+  });
+
+  it('any other status is quoted as it was', async () => {
+    const res = await whoami.handler({}, unavailable({ kind: 'http', status: 400 }));
+    expect(res.content[0].text).toMatch(/with HTTP 400/);
+    expect(res.content[0].text).toMatch(/Host header/);
+  });
+
+  it('falls back to the general remedy when no probe outcome was recorded', async () => {
+    const res = await whoami.handler({}, unavailable(undefined));
+    expect(res.structuredContent?.localApiProbe).toBeUndefined();
+    expect(res.content[0].text).toMatch(/not answering on port 23119: start Zotero/);
+  });
+
+  it('says nothing about a remedy while the local API is up, whatever the latest probe found', async () => {
+    const ctx = ctxWith(null);
+    ctx.capabilities = { cloud: null, localApi: true, localGroupIds: [], localProbe: { kind: 'timeout', budgetMs: 1500 } };
+    ctx.localStatus = { enabled: true, lastCheckedAt: () => 1_700_000_000_000, ensure: async () => ctx.capabilities.localApi };
+    const res = await whoami.handler({}, ctx);
+    expect(res.structuredContent?.localApi).toBe(true);
+    expect(res.structuredContent?.localApiProbe).toEqual({ kind: 'timeout', budgetMs: 1500 });
+    expect(res.content[0].text).not.toMatch(/liveness probe/);
+  });
+});

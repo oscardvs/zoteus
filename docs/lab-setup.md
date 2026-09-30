@@ -25,6 +25,7 @@ Beyond identity and version, it reports:
 | `defaultLibrary.source` | Why *this* library is the default: `configured` (`ZOTERO_LIBRARY_ID`, set by whoever runs the server), `key` (the personal library of the account the key belongs to), or `local` (no key and no setting, so the desktop app's own library, addressed as `users/0`). |
 | `defaultLibrary.sourceDetail` | The same answer in words, including how to address a different library on a call. |
 | `localApi`, `localApiChecked`, `localApiWatched`, `localApiReason` | Whether the Zotero desktop app answered a probe taken for this call, when, whether this server watches for it at all, and, on a shared server, why it never will. |
+| `localApiProbe` | What the latest probe found: `{ kind: "up" }`, `{ kind: "unreachable" }` (nothing listening on the port), `{ kind: "timeout", budgetMs }` (a connection accepted but not answered in time), or `{ kind: "http", status }` (Zotero answered, and 403 means its local API is switched off). Absent where nothing is probed. |
 | `searchIndex` | Which single library this context's search index holds, and whether that is the default library. |
 
 `zotero_whoami` never returns an API key.

@@ -78,3 +78,46 @@ describe('probeCapabilities', () => {
     expect(caps.localGroupIds).toEqual([]);
   });
 });
+
+// #102: "localApi=false" on its own is the one line every bug report quotes, and it has
+// been read as a Zoteus bug, a Zotero bug and a firewall. The startup answer now says why.
+describe('probeCapabilities records why the desktop app was not available (#102)', () => {
+  const cfg = loadConfig({ ZOTEUS_LOCAL: 'auto' } as any);
+  const web = { hasKey: false } as any;
+
+  it('an HTTP status, so a local API switched off in Zotero is not reported as an absent Zotero', async () => {
+    const local = { ping: vi.fn(), probe: vi.fn(async () => ({ up: false, timedOut: false, status: 403 })) };
+    const caps = await probeCapabilities(cfg, { web, local: local as any, logger });
+    expect(caps.localApi).toBe(false);
+    expect(caps.localProbe).toEqual({ kind: 'http', status: 403 });
+  });
+
+  it('a timeout with its budget, which is what a large library used to look like', async () => {
+    const local = { ping: vi.fn(), probe: vi.fn(async () => ({ up: false, timedOut: true })) };
+    const caps = await probeCapabilities(cfg, { web, local: local as any, logger });
+    expect(caps.localProbe).toEqual({ kind: 'timeout', budgetMs: 2000 });
+  });
+
+  it('nothing listening, when the connection was refused', async () => {
+    const local = { ping: vi.fn(), probe: vi.fn(async () => ({ up: false, timedOut: false })) };
+    const caps = await probeCapabilities(cfg, { web, local: local as any, logger });
+    expect(caps.localProbe).toEqual({ kind: 'unreachable' });
+  });
+
+  it('the last attempt, not the first: a Zotero still loading its library ends up as up', async () => {
+    let calls = 0;
+    const local = {
+      ping: vi.fn(),
+      probe: vi.fn(async () => (++calls < 2 ? { up: false, timedOut: true } : { up: true, timedOut: false, status: 200 })),
+      listLocalGroupIds: vi.fn(async () => []),
+    };
+    const caps = await probeCapabilities(cfg, { web, local: local as any, logger });
+    expect(caps.localApi).toBe(true);
+    expect(caps.localProbe).toEqual({ kind: 'up' });
+  });
+
+  it('records nothing when no probe ran at all', async () => {
+    const caps = await probeCapabilities(loadConfig({ ZOTEUS_LOCAL: 'off' } as any), { web, logger });
+    expect(caps.localProbe).toBeUndefined();
+  });
+});

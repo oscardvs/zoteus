@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { RateLimitedFetcher, type FetchLike } from './http.js';
 import { ZoteroApiError } from './errors.js';
+import { LIVENESS_PATH } from './local-client.js';
 import type { WriteResult } from './web-client.js';
 import type { Logger } from '../lib/logger.js';
 
@@ -104,14 +105,16 @@ export class LocalWriteClient {
   /**
    * One GET against the local API yields both things every write needs: the stable
    * `Zotero-Server-ID` of the running instance and the library's current version
-   * (`Last-Modified-Version`), used as the concurrency precondition on writes.
+   * (`Last-Modified-Version`), used as the concurrency precondition on writes. Both come on
+   * every local API response, so the read is the same cheap one the liveness probe makes,
+   * not an items listing that costs the size of the library (#102).
    */
   private async probe(force = false): Promise<{ serverId: string; libraryVersion: number }> {
     if (!force && this.serverId !== undefined && this.libraryVersion !== undefined) {
       return { serverId: this.serverId, libraryVersion: this.libraryVersion };
     }
     const res = await this.fetcher.fetch(
-      `${this.base}/users/0/items?limit=1`,
+      `${this.base}${LIVENESS_PATH}`,
       { method: 'GET', headers: this.readHeaders() },
       { maxRetries: 0, fetchImpl: this.fetchImpl },
     );

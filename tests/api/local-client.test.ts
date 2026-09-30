@@ -9,7 +9,7 @@ function makeLocal(fetchImpl: any, port = 23119) {
 describe('LocalApiClient', () => {
   it('ping returns true when the local API responds', async () => {
     const fetchImpl = vi.fn(async (url: string) => {
-      expect(url).toContain('http://127.0.0.1:23119/api/users/0/items');
+      expect(url).toBe('http://127.0.0.1:23119/api/users/0/collections?limit=1');
       return new Response(JSON.stringify([]), { status: 200, headers: { 'Total-Results': '0' } });
     });
     expect(await makeLocal(fetchImpl).ping()).toBe(true);
@@ -627,5 +627,40 @@ describe('LocalApiClient tag and sync-delta reads', () => {
       const fetchImpl = vi.fn(async () => new Response('', { status: 200, headers: { 'Total-Results': '0' } }));
       expect((await makeLocal(fetchImpl).listItemKeys({ itemType: 'book' })).keys).toEqual([]);
     });
+  });
+});
+
+// #102: the probe asked for `/users/0/items?limit=1`, and the desktop app answers that by
+// searching, loading and sorting the whole library before it slices off one item. On a
+// library of 166,000 items that took longer than the probe's budget every time, so a
+// Zotero that answered curl perfectly well was reported as absent for the life of the
+// process, and every read went to the cloud.
+describe('LocalApiClient.probe (#102)', () => {
+  it('asks for the collections list, whose cost does not grow with the library', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      expect(url).toBe('http://127.0.0.1:23119/api/users/0/collections?limit=1');
+      return new Response('[]', { status: 200, headers: { 'Total-Results': '0' } });
+    });
+    const local = new LocalApiClient({ port: 23119, probeFetcher: new RateLimitedFetcher({ fetchImpl }) });
+    expect(await local.probe(500)).toEqual({ up: true, timedOut: false, status: 200 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]![0]).not.toContain('/items');
+  });
+
+  it('reports the status Zotero answered with, so a switched-off local API is told apart from an absent one', async () => {
+    const fetchImpl = vi.fn(async () => new Response('Local API is not enabled', { status: 403 }));
+    const local = new LocalApiClient({ port: 23119, probeFetcher: new RateLimitedFetcher({ fetchImpl }) });
+    expect(await local.probe(500)).toEqual({ up: false, timedOut: false, status: 403 });
+  });
+
+  it('reports no status at all when nothing accepted the connection', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+    });
+    const local = new LocalApiClient({ port: 23119, probeFetcher: new RateLimitedFetcher({ fetchImpl }) });
+    const result = await local.probe(500);
+    expect(result.up).toBe(false);
+    expect(result.timedOut).toBe(false);
+    expect(result.status).toBeUndefined();
   });
 });
