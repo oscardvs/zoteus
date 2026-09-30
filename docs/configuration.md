@@ -203,9 +203,20 @@ That line is the answer at startup, not the answer for the life of the process. 
 re-checks the desktop local API in the background as tools are called, so starting Zotero
 *after* your MCP host no longer leaves it invisible until you restart the host, and a Zotero
 you quit is noticed too. `zotero_whoami` always probes afresh and reports `localApi` plus
-`localApiChecked`, so a `false` there is a live answer. Where no desktop app can apply — a
-hosted server, or `ZOTEUS_LOCAL=off` — nothing is probed at all.
-(`localGroups` counts the group libraries the desktop app is serving).
+`localApiChecked`, so a `false` there is a live answer, and `localApiProbe` says what the
+probe found: `unreachable` (nothing listening on the port), `timeout` (a connection was
+accepted but not answered within the budget), or `http` with the status Zotero answered
+(403 is the local API switched off in Zotero). When the answer is `false`, the startup
+line carries the same reason, e.g. `localApi=false (HTTP 403, the local API is switched
+off in Zotero)`. Where no desktop app can apply — a hosted server, or `ZOTEUS_LOCAL=off`
+— nothing is probed at all. (`localGroups` counts the group libraries the desktop app is
+serving).
+
+The probe is `GET /api/users/0/collections?limit=1`, chosen because its cost does not grow
+with the library. It used to be an items listing, which the desktop app answers by
+searching, loading and sorting every item before it slices off the page, so a library of
+166,000 items took longer than the probe's budget on every attempt and was reported as
+absent while it answered `curl` perfectly well (#102).
 
 ### Local API prerequisite
 

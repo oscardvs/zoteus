@@ -1,7 +1,7 @@
 import type { ZoteusConfig } from '../config.js';
 import type { LocalApiClient } from '../api/local-client.js';
 import type { Logger } from '../lib/logger.js';
-import type { Capabilities } from './capabilities.js';
+import { describeLocalProbe, probeOutcome, type Capabilities } from './capabilities.js';
 
 /**
  * How long a `true` is trusted before it is worth asking again. Long, because the cost of
@@ -174,8 +174,13 @@ export class LocalApiStatus {
     const client = this.client;
     if (!client) return false;
     const was = this.capabilities.localApi;
-    const { up, timedOut } = await client.probe(PROBE_TIMEOUT_MS).catch(() => ({ up: false, timedOut: false }));
+    const result = await client.probe(PROBE_TIMEOUT_MS).catch(() => ({ up: false, timedOut: false }));
+    const { up, timedOut } = result;
     this.checkedAt = this.now();
+    // Recorded before the flag is decided, so that a failure the two-strikes rule below
+    // does not yet act on is still visible as what it was: zotero_whoami then shows a
+    // local API that is up and a latest probe that was not answered, which is the truth.
+    this.capabilities.localProbe = probeOutcome(result, PROBE_TIMEOUT_MS);
 
     if (up) {
       this.negativeTtlMs = NEGATIVE_TTL_FLOOR_MS;
@@ -227,7 +232,9 @@ export class LocalApiStatus {
       this.groupsKnown = false;
       this.capabilities.localGroupIds = [];
       this.logger.info(
-        `Zotero's local API stopped answering on port ${this.config.localPort}; reads and writes fall back to the Zotero Web API.`,
+        `Zotero's local API stopped answering on port ${this.config.localPort} ` +
+          `(${describeLocalProbe(this.capabilities.localProbe, this.config.localPort)}); ` +
+          'reads and writes fall back to the Zotero Web API.',
       );
       this.degradedAt = this.checkedAt;
       // A listener is somebody else's code on this process's probe path, and a probe that

@@ -51,6 +51,10 @@ describe('LocalWriteClient (Zotero 10+ desktop writes)', () => {
     expect(result.newLibraryVersion).toBe(42);
     // No authorize round-trip when a key is pre-provisioned.
     expect(seen.some((s) => s.url.includes('/local/authorize'))).toBe(false);
+    // The server id and library version come on every local API response, so the probe
+    // that reads them is the cheap collections listing, not an items listing whose cost is
+    // the size of the library (#102).
+    expect(seen[0]!.url).toBe('http://127.0.0.1:23119/api/users/0/collections?limit=1');
     const write = seen.find((s) => s.url.endsWith('/users/0/items') && s.headers['Content-Type'] === 'application/json');
     expect(write).toBeTruthy();
     expect(write!.headers['Zotero-API-Key']).toBe('preset-key');

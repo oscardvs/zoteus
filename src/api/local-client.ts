@@ -107,6 +107,36 @@ export function localLibraryPrefix(lib?: LibraryRef): string {
 }
 
 /**
+ * The read every liveness check makes, relative to the `/api` base.
+ *
+ * A collections listing, not `/users/0/items?limit=1`, which it was until #102. The desktop
+ * app answers an items listing by running a library-wide search, loading every item that
+ * search returns and sorting them all, and only then slicing off the page asked for, so the
+ * request costs the size of the library whatever the `limit` says: on a library of 166,000
+ * items (34,000 top-level) it took longer than the probe's budget on every attempt, and a
+ * Zotero that was answering curl perfectly well was reported as absent for the life of the
+ * process. A collections listing goes through the same endpoint class, so it fails the same
+ * way for the same reasons (403 when the local API is switched off, 400 through a proxy
+ * that rewrites the Host header) and carries the same `Last-Modified-Version` and
+ * `Zotero-Server-ID` headers the write client reads off its own probe, over a list that is
+ * a few hundred entries at most.
+ */
+export const LIVENESS_PATH = '/users/0/collections?limit=1';
+
+/**
+ * What one liveness probe found. `up` is the only thing routing acts on; the rest says why,
+ * for the startup log and for zotero_whoami, because a bare `localApi: false` sent one user
+ * through browser User-Agent strings and IPv6 before the real cause (#102).
+ */
+export interface LocalProbeResult {
+  up: boolean;
+  /** The budget ran out: something may be listening, but it did not answer in time. */
+  timedOut: boolean;
+  /** The HTTP status when something answered, whatever it said. Absent when nothing did. */
+  status?: number;
+}
+
+/**
  * Read-only client for the Zotero desktop local API (Zotero 7+).
  * Base: http://127.0.0.1:<port>/api ; the personal library is always users/0.
  * Every endpoint here is GET. Native local-API writes exist from Zotero 10 and live in
@@ -217,7 +247,7 @@ export class LocalApiClient {
 
   async ping(): Promise<boolean> {
     try {
-      await this.getJson('/users/0/items', this.buildQuery({ limit: 1 }));
+      await this.getJson(LIVENESS_PATH);
       return true;
     } catch {
       return false;
@@ -230,13 +260,17 @@ export class LocalApiClient {
    * they deserve different retry rates: a refused connection is instant and cheap to repeat,
    * whereas a firewall that DROPs the packet costs the whole budget every time.
    *
-   * `up` is the only thing callers act on; `timedOut` only tunes how soon to ask again.
+   * `up` is the only thing callers act on; `timedOut` only tunes how soon to ask again, and
+   * `status` only says why, where something answered.
+   *
+   * The request is `LIVENESS_PATH`, whose cost does not grow with the library: see there
+   * for the items listing this used to be and what it did on a large library (#102).
    */
-  async probe(timeoutMs: number): Promise<{ up: boolean; timedOut: boolean }> {
+  async probe(timeoutMs: number): Promise<LocalProbeResult> {
     const started = Date.now();
     try {
       const res = await this.probeFetcher.fetch(
-        `${this.base}/users/0/items?limit=1`,
+        `${this.base}${LIVENESS_PATH}`,
         { method: 'GET', headers: this.headers() },
         { maxRetries: 0, deadlineMs: timeoutMs, fetchImpl: this.fetchImpl },
       );
@@ -244,10 +278,10 @@ export class LocalApiClient {
       // collected: the loopback transport buffers only so much of one before it stops
       // reading. Cancelling lets the socket go now.
       await res.body?.cancel().catch(() => {});
-      // Any answer at all proves something is listening and speaking HTTP on the port,
-      // which is what the capability means. A non-2xx from Zotero itself (an unsupported
-      // query, say) is not the app being absent.
-      return { up: res.ok, timedOut: false };
+      // Only a success means the local API is serving reads. A 403 is Zotero running with
+      // its local API switched off; a 400 is a request that did not reach it directly. Both
+      // are reported with the status, so the caller can say which.
+      return { up: res.ok, timedOut: false, status: res.status };
     } catch {
       // The fetcher turns its own abort into a timeout error, but a DROPped packet can
       // also surface as a socket error at the same moment the budget runs out, so the

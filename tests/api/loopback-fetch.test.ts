@@ -343,7 +343,7 @@ describe('the desktop clients built the way src/server.ts builds them', () => {
     });
     const fetcher = new RateLimitedFetcher({ fetchImpl: never, maxConcurrency: 4 });
     handler = (s, raw) => {
-      if (s.url.startsWith('/api/users/0/items')) {
+      if (s.url.startsWith('/api/users/0/items') || s.url.startsWith('/api/users/0/collections')) {
         return json(raw, 200, [{ key: 'K1' }], [
           ['Zotero-Server-ID', 'srv-1'],
           ['Last-Modified-Version', '9'],
@@ -361,7 +361,7 @@ describe('the desktop clients built the way src/server.ts builds them', () => {
       probeFetcher: new RateLimitedFetcher({ fetchImpl: never, maxConcurrency: 2 }),
       fetchImpl: loopbackFetch,
     });
-    expect(await local.probe(2_000)).toEqual({ up: true, timedOut: false });
+    expect(await local.probe(2_000)).toEqual({ up: true, timedOut: false, status: 200 });
     expect((await local.listItems({ limit: 1 })).data).toEqual([{ key: 'K1' }]);
 
     const writes = new LocalWriteClient({ port, fetcher, key: 'k', fetchImpl: loopbackFetch });
@@ -374,10 +374,12 @@ describe('the desktop clients built the way src/server.ts builds them', () => {
     expect(await bbt.ping()).toBe(true);
 
     expect(never).not.toHaveBeenCalled();
+    // The liveness probe and the write client's own probe both ask for the collections
+    // listing (#102); only the read in between is an items listing.
     expect(seen.map((s) => s.url)).toEqual([
+      '/api/users/0/collections?limit=1',
       '/api/users/0/items?limit=1',
-      '/api/users/0/items?limit=1',
-      '/api/users/0/items?limit=1',
+      '/api/users/0/collections?limit=1',
       '/connector/ping',
       '/better-bibtex/json-rpc',
     ]);
@@ -387,7 +389,7 @@ describe('the desktop clients built the way src/server.ts builds them', () => {
   it('and buildContext itself: the startup probe and the write clients reach the desktop app over node:http', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zoteus-loopback-'));
     handler = (s, raw) => {
-      if (s.url.startsWith('/api/users/0/items')) {
+      if (s.url.startsWith('/api/users/0/items') || s.url.startsWith('/api/users/0/collections')) {
         return json(raw, 200, [{ key: 'K1' }], [
           ['Zotero-Server-ID', 'srv-1'],
           ['Last-Modified-Version', '9'],
