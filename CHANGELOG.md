@@ -4,7 +4,7 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.22.3] - 2026-09-30
 
 ### Fixed
 - **A large library no longer hides a running Zotero** (#102). The liveness probe asked the

@@ -1,7 +1,7 @@
 {
   "name": "zoteus",
   "displayName": "Zoteus",
-  "version": "1.22.2",
+  "version": "1.22.3",
   "description": "Your Zotero library inside Claude: search by keyword or meaning, quote PDF passages with page numbers, format citations in any CSL style, add papers by DOI or arXiv id, and organize with reversible writes.",
   "author": { "name": "Oscar Devos", "url": "https://github.com/oscardvs" },
   "homepage": "https://zoteus.com",
