@@ -154,7 +154,12 @@ async function listAllTags(ctx: ToolContext, lib: LibraryRef): Promise<TagInfo[]
       else out.push({ name: t.tag, numItems: t.meta?.numItems, auto: t.meta?.type === 1 }); // Zotero: type 1 = automatic
     }
     start += r.data.length;
-    if (!r.data.length || start >= r.totalResults) break;
+    // A short page is the end whatever the header says, and the header ends the crawl only
+    // by being reached exactly. A total smaller than what has already been read is not a
+    // reason to stop, it is a wrong header: api.zotero.org sends Total-Results: 0 for an
+    // unsorted /tags, and `start >= totalResults` ended this audit after its first 100 tags
+    // on every cloud-served library (the 2026-10-01 stress test).
+    if (r.data.length < limit || start === r.totalResults) break;
   }
   return out;
 }

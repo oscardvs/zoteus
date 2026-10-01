@@ -48,7 +48,10 @@ abbreviations, `@comment` and `@preamble` skipping, `--` page ranges, and the La
 forms real exports contain (`\"{o}`, `\'e`, `\c{c}`, `\v{r}`, `\H{o}`, `\ss`, `\o`, `\l` and
 the rest). Not supported: `crossref` inheritance between entries, user-defined `\newcommand`
 macros, and math mode. A `crossref` is reported as a warning on the entry rather than
-silently producing a half-filled item.
+silently producing a half-filled item. An entry missing the comma after its key
+(`@article{smith2020 title = {…}, …}`) is read as if the comma were there, and one with no
+key at all (`@article{title = {…}, …}`) with an empty key; both keep every field and get a
+warning that quotes the entry, since other BibTeX tools will not read it that way.
 
 RIS: `TAG  - value` lines (one to three spaces before the dash), values continuing on
 following lines, repeated tags (every `AU` an author, every `KW` a keyword), `ER`
@@ -92,6 +95,11 @@ title in Extra.
 - Every item produced by the built-in parsers is validated against the Zotero schema before
   the write. An entry the schema refuses is listed in `skipped` with the reason, and the rest
   are still saved.
+- An entry nothing usable could be read from (no title, no creator, and no field beyond its
+  citation key and keywords) is not turned into an item, whichever path read it: the
+  built-in parsers or a translation-server. It is listed in `skipped` with the reason, and
+  never previewed or saved as a blank item. When every entry is like that, the call fails
+  and names them.
 
 Items carry `resolved:bibtex`, `resolved:ris`, `resolved:csljson` or
 `resolved:translation-server-import` in Extra, so where a record came from stays traceable.

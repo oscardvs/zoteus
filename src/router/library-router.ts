@@ -28,6 +28,26 @@ const ITEM_KEY_BATCH = 50;
 /** The page size a caller that named no `limit` gets, matching zotero_search_items. */
 const DEFAULT_PAGE = 25;
 
+/**
+ * A `tag` or `itemType` filter with its `&&` conjunctions turned into repeated parameters,
+ * which is the only AND either Zotero API understands.
+ *
+ * zotero_search_items documents `&&` as AND ("to-read && 2024"), and neither API has ever
+ * read it that way: both take the whole string as one tag name, so the tool's own example
+ * found nothing, and the cloud refuses an `itemType` written so with HTTP 400 "Invalid
+ * itemType". Measured on 2026-10-01 against a library where 7 items carry both "World
+ * Models" and "method · diffusion": repeated parameters answered 7 on both APIs, the `&&`
+ * spelling 0 on both. Each part keeps its own syntax, so "-attachment && -note" is two
+ * negations and "a || b && c" is (a or b) and c, as Zotero reads repeated parameters.
+ */
+export function splitConjunction(value: string | string[] | undefined): string | string[] | undefined {
+  if (value === undefined) return undefined;
+  const parts = (Array.isArray(value) ? value : [value]).flatMap((v) =>
+    v.includes('&&') ? v.split('&&').map((part) => part.trim()).filter(Boolean) : [v],
+  );
+  return Array.isArray(value) || parts.length > 1 ? parts : parts[0];
+}
+
 export interface LibraryRouterOptions {
   config: ZoteusConfig;
   capabilities: Capabilities;
@@ -242,12 +262,22 @@ export class LibraryRouter {
   }
 
   async searchItems(query: ItemQuery & ReadOpts = {}): Promise<ListResult> {
-    const { library, backend, ...q } = query;
+    const { library, backend, ...rest } = query;
     const lib = library ?? this.defaultLibrary();
-    // `top` combined with an `itemType` filter is the one shape neither API answers the
-    // way the tool promises, so Zoteus works it out itself (#79).
+    const q: ItemQuery = { ...rest, tag: splitConjunction(rest.tag), itemType: splitConjunction(rest.itemType) };
+    // `top` combined with an `itemType` filter is a shape neither API answers the way the
+    // tool promises, so Zoteus works it out itself (#79).
     if (q.top && q.itemType) return this.topLevelItemsOfType(lib, backend, q);
-    if (await this.route(lib, backend)) return this.local!.listItems(q, lib);
+    if (await this.route(lib, backend)) {
+      // So is `top` with a `tag` filter, on the desktop alone: it runs the tag as a
+      // sub-search that ignores `top` (the cause of #79 again), so tagged child notes came
+      // back as top-level items. Measured 2026-10-01: `/items/top?tag=HILDA-reviewed`
+      // answered 34 on the desktop, 17 of them child notes, where the cloud answered the
+      // 17 top-level items that carry the tag. The cloud is right about tags, so only the
+      // desktop pays the key intersection.
+      if (q.top && q.tag) return this.topLevelItemsOfType(lib, 'local', q);
+      return this.local!.listItems(q, lib);
+    }
     return this.web.listItems(lib, q);
   }
 
@@ -270,6 +300,10 @@ export class LibraryRouter {
    *
    * The true answer for that library is zero standalone attachments, which is what this
    * method returns on both backends.
+   *
+   * It also answers `top` with a `tag` filter on the desktop, which drops `top` the same way
+   * (see searchItems). Nothing below depends on which filter it is: the first read applies
+   * whatever filters came in, and the second is the top-level key set alone.
    *
    * Both APIs are correct about `top` with no `itemType` in play (`/items/top` alone gave
    * 320 of 1302, none with a `parentItem`; `/items/top?itemKey=<child>` answers with
@@ -315,7 +349,17 @@ export class LibraryRouter {
       // the named items AND every descendant they have (77 items for three keys, measured);
       // on /items/top it is exactly the keys asked for. Every key here is top-level by
       // construction, so nothing the caller should see is filtered out by asking that way.
-      const page = await itemsOf({ itemKey: batch.join(','), top: true, limit: batch.length });
+      // `includeTrashed` has to ride along: both APIs leave a trashed item out of a keyed
+      // read without it (the cloud answered 1 of 2 keys for `/items/top?itemKey=<trashed>,
+      // <live>` and 2 with it, in the 2026-10-01 stress test), so the trashed matches the
+      // key sets above counted would otherwise vanish from the page they were counted for.
+      // The desktop leaves them out even with it, which LocalApiClient works around.
+      const page = await itemsOf({
+        itemKey: batch.join(','),
+        top: true,
+        limit: batch.length,
+        includeTrashed: filters.includeTrashed,
+      });
       for (const item of page.data) if (item?.key) fetched.set(item.key, item);
     }
 

@@ -2,7 +2,7 @@ import type { LibraryArgs, ToolContext } from '../../registry/registry.js';
 import { optionalLibrary } from '../../registry/registry.js';
 import type { LibraryRef } from '../../api/web-client.js';
 import type { EmbedRate, IndexBuildStatus, SearchIndex, VersionBackend } from './backend.js';
-import { canonicalLibraryToken, describeLibraryToken, isAddressableLibrary } from './backend.js';
+import { canonicalLibraryToken, describeJobElsewhere, describeLibraryToken, isAddressableLibrary } from './backend.js';
 import { createFulltextSource, type FulltextSource } from './fulltext-source.js';
 import { createOwnWordsSource, fetchChildVersions, type OwnWordsSource } from './own-words-source.js';
 import {
@@ -48,8 +48,16 @@ export function progressLine(s: IndexBuildStatus): string {
   const fulltext = showFulltext ? `, full text of ${s.fulltextItems} items (${s.fulltextPassages} passages)` : '';
   // An update's itemsFetched is the size of the delta, not progress through the library, so
   // rendering it as "7 of 5000" would read as a build that stalled on its first page.
+  //
+  // While it runs, its denominator is the delta (`itemsChanged`), and the item count is the
+  // index as it stands mid-delta rather than a total. Called "items total" throughout, it
+  // was read in the 2026-10-01 stress test as an index holding 280 to 295 items against a
+  // library of 350, with nothing to say a delta was still on its way in.
   if (s.operation === 'update') {
-    return `${s.itemsFetched} changed items re-indexed, ${s.itemsRemoved} removed, ${s.items} items total, ${s.passages} passages, ${s.vectors} vectors${fulltext} (embedder=${s.embedder})`;
+    const running = s.state === 'building';
+    const of = running && s.itemsChanged ? ` of ${s.itemsChanged}` : '';
+    const held = running ? `${s.items} items in the index so far` : `${s.items} items total`;
+    return `${s.itemsFetched}${of} changed items re-indexed, ${s.itemsRemoved} removed, ${held}, ${s.passages} passages, ${s.vectors} vectors${fulltext} (embedder=${s.embedder})`;
   }
   // The full-text pass has finished walking the library, so counting items fetched out of
   // items total would sit at 100% for however long the body crawl runs. Count what is
@@ -199,6 +207,29 @@ export function unembeddedNotice(s: IndexBuildStatus): string {
     ' rate limit is what stopped it, pace the next run with ZOTEUS_EMBED_BATCH_SIZE and' +
     ' ZOTEUS_EMBED_BATCH_DELAY_MS.'
   );
+}
+
+/**
+ * What `passagesWithoutVectors` means while a job is still running, which is the one time
+ * `unembeddedNotice` says nothing.
+ *
+ * The structured status carries the number on every poll, and mid-job it is mostly the
+ * job's own embedding queue rather than a shortfall: the 2026-10-01 stress test watched it
+ * fall from 3,358 to 2,988 during a running job and could not tell whether that was
+ * progress or damage. A build embeds every passage it queues (and a resumed one fills in
+ * the ones its predecessor left), so for a build the queue is the whole story. An update
+ * embeds only the passages of the items it re-indexes, so it promises no more than that,
+ * and anything still missing when it ends is reported by `unembeddedNotice` with its remedy.
+ * Silent once the embedder has failed: nothing is being embedded then, and `embedderNotice`
+ * says why.
+ */
+export function queuedNotice(s: IndexBuildStatus): string {
+  if (s.state !== 'building' || !s.passagesWithoutVectors || !s.embedderActive) return '';
+  return s.operation === 'update'
+    ? ` ${s.passagesWithoutVectors} passage(s) carry no vector yet: this update embeds those of the items it` +
+        ' re-indexes, and reports any still missing when it finishes.'
+    : ` ${s.passagesWithoutVectors} passage(s) are still waiting for a vector, which this build adds as it goes;` +
+        ' they are searchable by keyword meanwhile.';
 }
 
 /**
@@ -403,7 +434,7 @@ export function statusSummary(s: IndexBuildStatus): string {
         s.phase === 'fulltext'
           ? ' Every item\'s metadata is already indexed and searchable — this pass only adds the body text of attachments.'
           : '';
-      return `Index ${job} in progress: ${progressLine(s)}.${searchable} Poll zotero_index action:"status" again shortly.${pause}${notice}`;
+      return `Index ${job} in progress: ${progressLine(s)}.${searchable}${queuedNotice(s)} Poll zotero_index action:"status" again shortly.${pause}${notice}`;
     }
     case 'error': {
       // A failed build keeps what it got; a failed update keeps nothing of its own, because
@@ -449,6 +480,18 @@ export interface BuildFulltextOptions {
    * already committed and paid for is the complaint behind #24.
    */
   fresh?: boolean;
+}
+
+/**
+ * Refuse, synchronously, a job another process is already running on this index file.
+ * The job itself refuses too (it takes the file's lease, see SqliteSearchIndex), but from
+ * inside a fire-and-forget promise that refusal would only reach the log, and the caller
+ * would be told a build had started.
+ */
+function refuseJobElsewhere(index: SearchIndex, wanted: 'build' | 'update'): void {
+  index.syncFromStore?.();
+  const holder = index.jobElsewhere?.();
+  if (holder) throw new Error(describeJobElsewhere(holder, wanted));
 }
 
 /**
@@ -499,6 +542,7 @@ export function startIndexBuild(
   if (index.isPaused) {
     throw new Error('Index work is paused. Call zotero_index action:"resume" before build, refresh, or update.');
   }
+  refuseJobElsewhere(index, 'build');
   // Synchronously, before the fire-and-forget job below: a refusal thrown inside the job
   // would only reach the logger, and the tool caller would see a build that "started".
   //
@@ -592,6 +636,9 @@ export function startIndexUpdate(
   if (index.isPaused) {
     throw new Error('Index work is paused. Call zotero_index action:"resume" before build, refresh, or update.');
   }
+  // Before the blocker below, which can turn this update into a full build that empties
+  // the store: the store another process is filling.
+  refuseJobElsewhere(index, 'update');
   const backend: VersionBackend = ctx.router.servesLocally(lib) ? 'local' : 'cloud';
   // Same synchronous guard as startIndexBuild, and for the same reason: the version stamp
   // this update would diff against belongs to the library the index holds, not to `lib`.

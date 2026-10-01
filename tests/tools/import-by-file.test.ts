@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import importTool from '../../src/tools/import.js';
+import { TranslationServerClient } from '../../src/features/citation/translation-server.js';
 import {
   BIBTEX_FIXTURE,
   BIBTEX_FIXTURE_PATH,
@@ -280,8 +281,10 @@ describe('zotero_import action:"by_file" summary', () => {
   it('tells a text-only client about the entries a runaway brace swallowed, not only the confident count', async () => {
     const ctx = makeCtx();
     // Everything on one line, so the parser cannot resynchronise: b and c are gone, and the
-    // only trace of them is a warning that used to live in the JSON mirror alone.
-    const text = '@article{a, title = {Unclosed {brace, @article{b, title={B}} @article{c, title={C}}';
+    // only trace of them is a warning that used to live in the JSON mirror alone. Entry a
+    // keeps its author, which comes before the brace that broke it, so it is still an item;
+    // without that it holds nothing at all and is skipped (see "empty entries" below).
+    const text = '@article{a, author = {Ada Lovelace}, title = {Unclosed {brace, @article{b, title={B}} @article{c, title={C}}';
     const res = await call({ text, save_to_library: true }, ctx);
 
     expect(res.isError).toBeFalsy();
@@ -292,10 +295,144 @@ describe('zotero_import action:"by_file" summary', () => {
     expect(summary).toMatch(/\d+ warning\(s\); see warnings\./);
   });
 
+  it('refuses, and names what was lost, when the one entry left holds nothing', async () => {
+    // The same runaway brace, with nothing before it: entry a used to be saved as an empty
+    // item under "Imported 1 of 1", which is the 2026-10-01 stress test's defect in a save.
+    const ctx = makeCtx();
+    const text = '@article{a, title = {Unclosed {brace, @article{b, title={B}} @article{c, title={C}}';
+    const res = await call({ text, save_to_library: true }, ctx);
+
+    expect(res.isError).toBe(true);
+    expect(ctx.web.writeItems).not.toHaveBeenCalled();
+    const msg = res.content[0].text;
+    expect(msg).toMatch(/None of the 1 entry in this bibtex payload could be imported, so nothing was: a \(nothing usable could be read/);
+    // The error carries the parser's account too, since an error has no `warnings` field.
+    expect(msg).toMatch(/2 further entries were inside what could not be read and were skipped/);
+  });
+
   it('keeps a clean summary clean', async () => {
     const res = await call({ text: CSLJSON_FIXTURE, save_to_library: true }, makeCtx());
     expect(res.content[0].text).toMatch(/Imported 2 of 2/);
     expect(res.content[0].text).not.toMatch(/warning\(s\)|skipped|already match/);
+  });
+});
+
+/**
+ * The 2026-10-01 stress test: a malformed BibTeX entry was warned about correctly, and still
+ * came back as an empty `document` in `items`, which a save would have written to the library
+ * as a blank row. Each payload pairs one entry the parser can read nothing from with one good
+ * entry, so "skipped, not empty" and "the good one still lands" are checked together.
+ */
+describe('zotero_import action:"by_file" empty entries', () => {
+  const EMPTY_ENTRIES: Array<{ name: string; text: string; entry: string; warning?: RegExp }> = [
+    { name: 'an entry with no fields', text: '@misc{x,}\n@article{good, title={Good}}\n', entry: 'x' },
+    {
+      // A missing comma after the key is repaired now (see below); a key with a space in it
+      // and nothing readable after its first word is not, and holds no field at all.
+      name: 'a key with a space and no field after it',
+      text: '@article{key title}\n@article{good, title={Good}}\n',
+      entry: 'key title',
+      warning: /a citation key cannot contain a space or "=".*not a missing comma that could be repaired/,
+    },
+    {
+      name: 'a body that is not fields at all',
+      text: '@article{junk, this is not bibtex}\n@article{good, title={Good}}\n',
+      entry: 'junk',
+      warning: /reading stopped at "this is not bibtex}", which is neither a "name = value" field.*no field came before it/,
+    },
+    {
+      name: 'an unterminated quote in the first field',
+      text: '@article{q, title = "Unterminated, year = 2020}\n\n@article{good, title={Good}}\n',
+      entry: 'q',
+      warning: /the value of "title" opens a quotation mark that is never closed/,
+    },
+    { name: 'an RIS record with only a TY', text: 'TY  - JOUR\nER  - \nTY  - JOUR\nTI  - Good\nER  - \n', entry: 'record 1' },
+    { name: 'an RIS record with only an ID', text: 'TY  - JOUR\nID  - abc\nER  - \nTY  - JOUR\nTI  - Good\nER  - \n', entry: 'abc' },
+    { name: 'a CSL-JSON item with only a type', text: '[{"type":"article-journal"},{"type":"article-journal","title":"Good"}]', entry: 'entry 1' },
+    { name: 'a CSL-JSON item with only an id', text: '[{"id":"x"},{"type":"article-journal","title":"Good"}]', entry: 'x' },
+  ];
+
+  for (const { name, text, entry, warning } of EMPTY_ENTRIES) {
+    it(`skips ${name} instead of previewing an empty item, and says which entry and why`, async () => {
+      const res = await call({ text }, makeCtx());
+      expect(res.isError).toBeFalsy();
+      const sc = res.structuredContent;
+      expect(sc.items).toHaveLength(1);
+      expect(sc.items[0].title).toBe('Good');
+      expect(sc.count).toBe(1);
+      expect(sc.parsed).toBe(2);
+      expect(sc.skipped).toEqual([
+        { entry, reason: expect.stringMatching(/^nothing usable could be read from this entry: no title, no creators and no other field/) },
+      ]);
+      if (warning) expect(sc.warnings.join(' ')).toMatch(warning);
+      // The mapper's "no title" warning is about an item that came through untitled; this one
+      // did not come through, so it must not be told as if it had.
+      expect((sc.warnings ?? []).join(' ')).not.toMatch(/no title could be read/);
+      expect(res.content[0].text).toMatch(/1 entry skipped; see .*skipped\./);
+    });
+  }
+
+  it('does not save the empty entry either', async () => {
+    const ctx = makeCtx();
+    const res = await call({ text: '@misc{x,}\n@article{good, title={Good}}\n', save_to_library: true }, ctx);
+    expect(res.isError).toBeFalsy();
+    expect(ctx.web.writeItems).toHaveBeenCalledTimes(1);
+    const written = ctx.web.writeItems.mock.calls[0][1];
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ itemType: 'journalArticle', title: 'Good' });
+    expect(res.content[0].text).toMatch(/Imported 1 of 1/);
+    expect(res.structuredContent.skipped).toEqual([{ entry: 'x', reason: expect.stringMatching(/nothing usable/) }]);
+  });
+
+  it('maps the same way from the offline snapshot, where the item type check is weaker', async () => {
+    const ctx = makeCtx({ schema: { getSchema: vi.fn(async () => { throw new Error('offline'); }) } });
+    const res = await call({ text: '@misc{x,}\n@article{good, title={Good}}\n' }, ctx);
+    expect(res.structuredContent.mapping).toBe('snapshot');
+    expect(res.structuredContent.items).toHaveLength(1);
+    expect(res.structuredContent.skipped[0].entry).toBe('x');
+  });
+
+  it('refuses a payload whose every entry is empty, and writes nothing', async () => {
+    const ctx = makeCtx();
+    const res = await call({ text: '@misc{x,}\n@misc{y, keywords = {orphan}}\n', save_to_library: true }, ctx);
+    expect(res.isError).toBe(true);
+    expect(ctx.web.writeItems).not.toHaveBeenCalled();
+    expect(res.content[0].text).toMatch(/None of the 2 entries in this bibtex payload could be imported, so nothing was: x \(nothing usable/);
+    // Keywords name what a work is about, not which work it is.
+    expect(res.content[0].text).toMatch(/y \(nothing usable could be read from this entry: no title, no creators and no other field \(only a citation key and keywords\)/);
+  });
+
+  it('keeps an entry with no title that still names a work, and says it has no title', async () => {
+    // The line is "nothing at all", not "no title": an author and a DOI are a record someone
+    // can find again, and Zotero takes an untitled item.
+    const res = await call({ text: '@article{untitled, author = {Ada Lovelace}, doi = {10.1234/x}}\n' }, makeCtx());
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.items).toHaveLength(1);
+    expect(res.structuredContent.skipped).toBeUndefined();
+    expect(res.structuredContent.warnings.join(' ')).toMatch(/untitled: no title could be read from this entry/);
+  });
+
+  it('imports an entry whose key has no comma after it, repaired, instead of skipping it', async () => {
+    // The stress test's entry used to land in `skipped` as empty, its title and author lost.
+    const ctx = makeCtx();
+    const text = '@article{smith2020 title = {A title}, author = {Doe, Jane}}\n@article{good, title={Good}}\n';
+    const res = await call({ text, save_to_library: true }, ctx);
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.skipped).toBeUndefined();
+    const written = ctx.web.writeItems.mock.calls[0][1];
+    expect(written).toHaveLength(2);
+    expect(written[0]).toMatchObject({
+      itemType: 'journalArticle',
+      title: 'A title',
+      creators: [{ creatorType: 'author', lastName: 'Doe', firstName: 'Jane' }],
+    });
+    // In its own field where the schema has one, else in Extra: either way, the key alone.
+    expect(written[0].citationKey ?? written[0].extra).toMatch(/^(Citation Key: )?smith2020$/m);
+    expect(res.structuredContent.warnings.join(' ')).toMatch(
+      /entry "smith2020" \(@article\): there is no comma between the citation key and the first field .*read as if the comma were there/,
+    );
+    expect(res.content[0].text).toMatch(/Imported 2 of 2/);
   });
 });
 
@@ -330,6 +467,124 @@ describe('zotero_import action:"by_file" and the translation-server', () => {
     const ctx = makeCtx({ translation: { isUp: vi.fn(async () => true), import: vi.fn(async () => []) } });
     const res = await call({ text: RIS_FIXTURE }, ctx);
     expect(res.structuredContent.format).toBe('ris');
+  });
+});
+
+/**
+ * The empty-entry check on the translation-server path. Its items are Zotero JSON and never
+ * become a BibRecord, so the check the built-in parsers' records go through used to miss
+ * them: a malformed entry the server answered with as an item holding only its itemType (and
+ * a citation key in Extra) was previewed, and saved as a blank row. The translation-server
+ * here is the real client over a fetcher that answers /import as a running server does,
+ * with the `key` and `version` it stamps on every item.
+ */
+describe('zotero_import action:"by_file" empty items from the translation-server', () => {
+  const GOOD = { key: 'GOOD2345', version: 0, itemType: 'journalArticle', title: 'Good', creators: [], tags: [] };
+  const BLANK = {
+    key: 'BLNK2345',
+    version: 0,
+    itemType: 'journalArticle',
+    creators: [],
+    tags: [],
+    extra: 'Citation Key: smith2020',
+  };
+
+  function serverAnswering(items: unknown[]) {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/import')) return new Response(JSON.stringify(items), { status: 200 });
+      return new Response('', { status: 200 }); // the isUp probe
+    });
+    return { translation: new TranslationServerClient('http://127.0.0.1:1969', { fetch } as any), fetch };
+  }
+
+  // An entry neither reader can recover: nothing follows its key. (One missing only the comma
+  // after its key is a different case, recovered by Zoteus's own parser; see below.)
+  const MALFORMED = '@article{smith2020,}\n@article{good, title = {Good}}\n';
+
+  it('skips the empty item instead of previewing it, and names it by its citation key', async () => {
+    const { translation, fetch } = serverAnswering([BLANK, GOOD]);
+    const res = await call({ text: MALFORMED }, makeCtx({ translation }));
+
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/import'))).toBe(true);
+    expect(res.isError).toBeFalsy();
+    const sc = res.structuredContent;
+    expect(sc.format).toBe('translation-server');
+    expect(sc.parsed).toBe(2);
+    expect(sc.count).toBe(1);
+    expect(sc.items).toHaveLength(1);
+    expect(sc.items[0]).toMatchObject({ title: 'Good' });
+    expect(sc.skipped).toEqual([
+      {
+        entry: 'smith2020',
+        reason: expect.stringMatching(
+          /^nothing usable could be read from this entry: no title, no creators and no other field \(only a citation key\).*translation-server read the entry this way/,
+        ),
+      },
+    ]);
+    expect(res.content[0].text).toMatch(/1 entry skipped; see skipped\./);
+  });
+
+  it('never saves the empty item', async () => {
+    const { translation } = serverAnswering([BLANK, GOOD]);
+    const ctx = makeCtx({ translation });
+    const res = await call({ text: MALFORMED, save_to_library: true }, ctx);
+
+    expect(res.isError).toBeFalsy();
+    expect(ctx.web.writeItems).toHaveBeenCalledTimes(1);
+    const written = ctx.web.writeItems.mock.calls[0][1];
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ title: 'Good' });
+    expect(res.content[0].text).toMatch(/Imported 1 of 1/);
+    expect(res.structuredContent.skipped).toEqual([{ entry: 'smith2020', reason: expect.stringMatching(/nothing usable/) }]);
+  });
+
+  it('keeps the warnings reading the payload earned beside what it skipped', async () => {
+    const { translation } = serverAnswering([{ ...BLANK, extra: '' }, GOOD]);
+    const res = await call({ path: latin1Path }, makeCtx({ translation }));
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.warnings.join(' ')).toMatch(/latin1\.bib is not valid UTF-8/);
+    // No citation key anywhere, so it is named by its place in the server's answer.
+    expect(res.structuredContent.skipped).toEqual([{ entry: 'entry 1', reason: expect.stringMatching(/no other field, so/) }]);
+    expect(res.content[0].text).toMatch(/1 warning\(s\) and 1 entry skipped; see warnings and skipped\./);
+  });
+
+  it("uses Zoteus's own reading when it recovers entries the translation-server left empty", async () => {
+    // The translator reads the entry with no comma after its key as an empty item; bibtex.ts
+    // repairs it, so its reading of this payload has two usable entries to the server's one.
+    const { translation } = serverAnswering([BLANK, GOOD]);
+    const ctx = makeCtx({ translation });
+    const res = await call({ text: '@article{smith2020 title = {Recovered}}\n@article{good, title = {Good}}\n' }, ctx);
+
+    expect(res.isError).toBeFalsy();
+    const sc = res.structuredContent;
+    expect(sc.format).toBe('bibtex');
+    expect(sc.items.map((i: any) => i.title)).toEqual(['Recovered', 'Good']);
+    expect(sc.skipped ?? []).toEqual([]);
+    expect(sc.warnings.join(' ')).toMatch(/read 1 of the 2 entries in this payload as empty.*so this import uses Zoteus's reading/);
+  });
+
+  it('refuses, and writes nothing, when every item the server returned is empty', async () => {
+    const { translation } = serverAnswering([BLANK, { ...BLANK, key: 'BLNK3456', extra: 'Citation Key: jones2021' }]);
+    const ctx = makeCtx({ translation });
+    // Empty to Zoteus's own parser too, so there is no better reading to fall back to.
+    const res = await call({ text: '@article{smith2020,}\n@article{jones2021,}\n', save_to_library: true }, ctx);
+
+    expect(res.isError).toBe(true);
+    expect(ctx.web.writeItems).not.toHaveBeenCalled();
+    expect(res.content[0].text).toMatch(
+      /^None of the 2 entries the translation-server read from this payload could be imported, so nothing was: smith2020 \(nothing usable.*; jones2021 \(nothing usable/,
+    );
+  });
+
+  it('keeps an untitled item that still names a work', async () => {
+    const untitled = { ...BLANK, creators: [{ creatorType: 'author', firstName: 'Ada', lastName: 'Lovelace' }] };
+    const { translation } = serverAnswering([untitled, { ...BLANK, DOI: '10.1234/x' }]);
+    const res = await call({ text: MALFORMED }, makeCtx({ translation }));
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.items).toHaveLength(2);
+    expect(res.structuredContent.skipped).toBeUndefined();
   });
 });
 

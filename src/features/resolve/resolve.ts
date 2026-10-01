@@ -12,8 +12,11 @@ export function parseIdentifier(v: string): { type: IdentifierType; value: strin
   const s = v.trim();
   if (!s) return null;
 
-  // DOI with or without the https://doi.org/ or https://dx.doi.org/ prefix
-  const doi = s.match(/^(?:https?:\/\/(?:dx\.)?doi\.org\/)?(10\.[0-9]{4,}(?:\.[0-9]+)*\/\S+)$/i);
+  // DOI with or without the https://doi.org/ or https://dx.doi.org/ prefix, or the "doi:"
+  // a reference list prints before it. Refusing "doi:10.1038/…" was the same failure as the
+  // hyphenated ISBN below: an identifier as commonly written, turned away by a message that
+  // lists its kind as accepted.
+  const doi = s.match(/^(?:https?:\/\/(?:dx\.)?doi\.org\/|doi:\s*)?(10\.[0-9]{4,}(?:\.[0-9]+)*\/\S+)$/i);
   if (doi?.[1]) return { type: 'doi', value: doi[1] };
 
   // arXiv ids, also via arxiv.org/abs/ export.arxiv.org/abs/ or /pdf/
@@ -24,16 +27,32 @@ export function parseIdentifier(v: string): { type: IdentifierType; value: strin
   const legacy = s.match(/^(?:https?:\/\/[^/]*(?:arxiv\.org|export\.arxiv\.org)\/(?:abs|pdf)\/)?([a-z-]+(?:\.[A-Z]{2})?\/\d{7}(?:v\d+)?)$/i);
   if (legacy?.[1]) return { type: 'arxiv', value: legacy[1].toLowerCase() };
 
-  // PMID (also via pubmed.ncbi.nlm.nih.gov/)
-  const pmid = s.match(/^(?:https?:\/\/pubmed\.ncbi\.nlm\.nih\.gov\/)?(\d{1,9})$/);
+  // PMID, bare, as PubMed prints it ("PMID: 31452104"), or as a PubMed URL, which the
+  // browser's address bar gives with a trailing slash.
+  const pmid = s.match(
+    /^(?:https?:\/\/(?:www\.)?(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov\/pubmed)\/|pmid:?\s*)?(\d{1,9})\/?$/i,
+  );
   if (pmid?.[1]) return { type: 'pmid', value: pmid[1] };
 
-  // ISBN-10/13 (also via isbnsearch.org/ or search.worldcat.org/)
-  const isbn = s.match(/^(?:https?:\/\/[^/]*(?:isbnsearch\.org|search\.worldcat\.org)\/[^/]*\/)?(?:isbn(?:-1[03])?:?\s*)?(\d{9}[\dXx]|\d{13})$/i);
-  if (isbn?.[1]) return { type: 'isbn', value: isbn[1].toUpperCase() };
+  // ISBN-10/13 (also via isbnsearch.org/ or search.worldcat.org/), with or without the
+  // hyphens or spaces a book prints it with. The bare-digits form was the only one accepted
+  // until the 2026-10-01 stress test, so "978-0-262-03384-8", which is how an ISBN is copied
+  // off a copyright page or a catalogue, came back as "Could not parse as a known
+  // identifier", from an error message that listed ISBN among the identifiers it takes. The
+  // value is canonicalised to the digits, which is what every resolver keys on.
+  const isbn = s.match(
+    /^(?:https?:\/\/[^/]*(?:isbnsearch\.org|search\.worldcat\.org)\/[^/]*\/)?(?:isbn(?:[- ]?1[03])?:?\s*)?(\d(?:[- ]?\d){8}[- ]?[\dXx]|\d(?:[- ]?\d){12})$/i,
+  );
+  if (isbn?.[1]) return { type: 'isbn', value: isbn[1].replace(/[- ]/g, '').toUpperCase() };
 
-  // ADS bibcodes: 19 uppercase chars (1 digit + 4 year + 5 ref + 9 bib)
-  const bibcode = s.match(/^(?:https?:\/\/ui\.adsabs\.harvard\.edu\/abs\/)?(\d{19})$/i);
+  // ADS bibcodes: 19 characters, YYYYJJJJJVVVVMPPPPA (year, journal abbreviation, volume,
+  // qualifier, page, first author's initial), dot-padded: "2019ApJ...882L..24A",
+  // "2018A&A...616A...1G". The pattern here used to be nineteen DIGITS, which no bibcode is,
+  // so every real one fell through to "Could not parse". Bibcodes are case-sensitive, so the
+  // value is kept as given.
+  const bibcode = s.match(
+    /^(?:https?:\/\/(?:ui\.)?adsabs\.harvard\.edu\/abs\/)?(\d{4}[A-Za-z0-9.&]{14}[A-Za-z.])(?:\/abstract)?\/?$/i,
+  );
   if (bibcode?.[1]) return { type: 'bibcode', value: bibcode[1] };
 
   // Loose arXiv ids (e.g. "2201.00001v2" already matched above; this catches

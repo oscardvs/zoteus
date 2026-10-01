@@ -86,8 +86,10 @@ export interface LocalGroup {
   /**
    * Items in the group library as the DESKTOP counts them: `SELECT COUNT(*) FROM items
    * WHERE libraryID = ?`, so every row, child attachments, notes, annotations and
-   * trashed items included. The cloud computes its own numItems separately, so the two
-   * need not agree; callers that show this number must say where it came from.
+   * trashed items included. The cloud runs the very same count over its own copy (the
+   * dataserver's Zotero_Group::numItems), so the two agree only as far as the group is
+   * synced; callers that show this number must say where it came from, and that it is
+   * not a count a search would return.
    */
   numItems?: number;
   /** The group's synced METADATA version, not the version of its contents. */
@@ -291,6 +293,7 @@ export class LocalApiClient {
   }
 
   async listItems(query: ItemQuery = {}, lib?: LibraryRef): Promise<ListResult> {
+    if (losesTrashedMatches(query)) return this.listItemsAcrossTrash(query, lib);
     const { top: _t, collectionKey, ...rest } = query;
     const base = collectionKey ? `/collections/${collectionKey}` : '';
     const segment = query.top ? `${base}/items/top` : `${base}/items`;
@@ -317,6 +320,10 @@ export class LocalApiClient {
     query: ItemQuery = {},
     lib?: LibraryRef,
   ): Promise<{ keys: string[]; totalResults: number; lastModifiedVersion: number }> {
+    if (losesTrashedMatches(query)) {
+      const { keys, lastModifiedVersion } = await this.matchAcrossTrash(query, lib);
+      return { keys: pageOf(keys, query.start, query.limit), totalResults: keys.length, lastModifiedVersion };
+    }
     const { top: _t, collectionKey, ...rest } = query;
     const base = collectionKey ? `/collections/${collectionKey}` : '';
     const segment = query.top ? `${base}/items/top` : `${base}/items`;
@@ -333,6 +340,144 @@ export class LocalApiClient {
       totalResults: numOrUndef(headers.get('total-results')) ?? keys.length,
       lastModifiedVersion: numOrUndef(headers.get('last-modified-version')) ?? 0,
     };
+  }
+
+  /**
+   * Every key a filtered listing that includes the trash should have answered, in the
+   * caller's sort order, plus the JSON of its trashed matches.
+   *
+   * Needed because the desktop does not answer that listing: it leaves every trashed item
+   * out of it. Measured against Zotero 10 in the 2026-10-01 stress test, on a personal
+   * library whose trash held 55 items tagged `zoteus-stress-test` and nothing else did:
+   *
+   *   /items?tag=zoteus-stress-test&includeTrashed=1   0
+   *   /items/trash?tag=zoteus-stress-test              0
+   *   /items?q=ZST&includeTrashed=1                    55
+   *
+   * while the cloud answered 55 to all three. The cause is in Zotero's own local API, not in
+   * how the request is spelled: it runs each `tag`, `itemType` and `itemKey` parameter as a
+   * search of its own, scoped to the main one, and only the main search carries the
+   * `includeTrashed` (or /trash) condition. A Zotero search that carries neither excludes
+   * the trash by default, so the sub-search drops every trashed item before the scope is
+   * applied, and a filter that should have found 55 finds nothing. `q`, `top`, `since` and
+   * a collection are conditions on the main search and are answered correctly, trash
+   * included. (`/items/trash?itemType=journalArticle` answers 0 for the same reason, and
+   * so does a keyed read of a trashed item; see `objectVersion`.)
+   *
+   * So the answer is assembled from the reads the desktop does get right:
+   *
+   *   1. the listing with those filters taken away and the trash put in (keys only): the
+   *      superset, already in the caller's sort order, which is Zotero's own comparator
+   *      and so needs no reimplementation here;
+   *   2. the filtered listing without the trash (keys only): the live matches, exact;
+   *   3. the trash's own keys, which are what the sub-searches drop;
+   *   4. the JSON of the trashed items in (1), tested against the filters here, with the
+   *      desktop's own reading of their syntax (see `matchesSearchSyntax`).
+   *
+   * Bounded by the size of the trash, which Zotero empties of anything older than 30 days
+   * by default, and (4) is skipped outright when no trashed item falls inside the query.
+   * Only ever taken for this combination: a listing without the trash, or without one of
+   * those filters, is the single request it always was.
+   */
+  private async matchAcrossTrash(
+    query: ItemQuery,
+    lib?: LibraryRef,
+  ): Promise<{ keys: string[]; trashed: Map<string, any>; lastModifiedVersion: number }> {
+    const {
+      tag,
+      itemType,
+      itemKey,
+      includeTrashed: _trash,
+      limit: _limit,
+      start: _start,
+      format: _format,
+      include,
+      ...scope
+    } = query;
+    const [everything, live, trashKeys] = await Promise.all([
+      this.listItemKeys({ ...scope, includeTrashed: true }, lib),
+      this.listItemKeys({ ...scope, tag, itemType, itemKey }, lib),
+      this.trashKeys(lib),
+    ]);
+    const named = itemKey ? new Set(itemKey.split(',').map((k) => k.trim())) : undefined;
+    const inTrash = new Set(trashKeys);
+    // `itemKey` needs no JSON to test, so it narrows the trashed candidates before any is read.
+    const candidates = new Set(
+      everything.keys.filter((k) => inTrash.has(k) && (!named || named.has(k))),
+    );
+
+    const trashed = new Map<string, any>();
+    if (candidates.size) {
+      const seen = new Set<string>();
+      // The same main-search conditions the superset carried, so the trash is read only as
+      // far as this query reaches into it. A collection cannot be put on the trash path,
+      // which is why the candidate set, not this read, decides membership.
+      const narrow = { q: scope.q, qmode: scope.qmode, since: scope.since, include };
+      const path = `${localLibraryPrefix(lib)}/items/trash${scope.top ? '/top' : ''}`;
+      for (let start = 0; seen.size < candidates.size; ) {
+        const { json, headers } = await this.getJson(
+          path,
+          this.buildQuery({ ...narrow, limit: TRASH_PAGE, start }),
+        );
+        if (!Array.isArray(json) || !json.length) break;
+        for (const item of json) {
+          const key = item?.key ?? item?.data?.key;
+          if (typeof key !== 'string' || !candidates.has(key)) continue;
+          seen.add(key);
+          if (matchesSearchSyntax(item, tag, itemType)) trashed.set(key, item);
+        }
+        start += json.length;
+        const total = numOrUndef(headers.get('total-results')) ?? json.length;
+        if (start >= total) break;
+      }
+    }
+
+    const liveKeys = new Set(live.keys);
+    // Membership in the superset is what keeps the answer inside the query: the desktop's
+    // filtered listing can also answer with children of what was asked for (it ignores `top`
+    // once an `itemType` filter is present, #79), and none of those is in the superset.
+    const keys = everything.keys.filter((k) => trashed.has(k) || (!inTrash.has(k) && liveKeys.has(k)));
+    return { keys, trashed, lastModifiedVersion: everything.lastModifiedVersion };
+  }
+
+  /** One page of `matchAcrossTrash`, as items: trashed ones from its JSON, live ones by key. */
+  private async listItemsAcrossTrash(query: ItemQuery, lib?: LibraryRef): Promise<ListResult> {
+    const { keys, trashed, lastModifiedVersion } = await this.matchAcrossTrash(query, lib);
+    const wanted = pageOf(keys, query.start, query.limit);
+    const live = wanted.filter((k) => !trashed.has(k));
+    const fetched = new Map<string, any>();
+    for (let i = 0; i < live.length; i += ITEM_KEY_BATCH) {
+      const batch = live.slice(i, i + ITEM_KEY_BATCH);
+      // A keyed read off /top answers with every descendant of the items named as well, so
+      // the filters ride along to hold it to items that match; anything else it answers is
+      // dropped by key below. Every key here is a live match, so the filters lose none of
+      // them.
+      const { json } = await this.getJson(
+        `${localLibraryPrefix(lib)}${query.top ? '/items/top' : '/items'}`,
+        this.buildQuery({ itemKey: batch.join(','), tag: query.tag, itemType: query.itemType, include: query.include }),
+      );
+      for (const item of Array.isArray(json) ? json : []) {
+        const key = item?.key ?? item?.data?.key;
+        if (typeof key === 'string') fetched.set(key, item);
+      }
+    }
+    return {
+      data: wanted.map((k) => trashed.get(k) ?? fetched.get(k)).filter(Boolean),
+      totalResults: keys.length,
+      lastModifiedVersion,
+    };
+  }
+
+  /** The keys /items/trash lists: trashed items, and the children of trashed parents. */
+  private async trashKeys(lib?: LibraryRef): Promise<string[]> {
+    const { text } = await this.getRawResponse(
+      `${localLibraryPrefix(lib)}/items/trash`,
+      this.buildQuery({ format: 'keys' }),
+    );
+    return text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
   }
 
   async getItem(
@@ -756,6 +901,72 @@ function parseLocalGroup(g: any): LocalGroup | undefined {
   const version = Number(g?.version ?? g?.data?.version);
   if (Number.isFinite(version)) group.version = version;
   return group;
+}
+
+/** Keys per `?itemKey=` request: both APIs cap the list at 50. */
+const ITEM_KEY_BATCH = 50;
+
+/** The largest page the desktop is asked for when the trash is read as JSON. */
+const TRASH_PAGE = 100;
+
+function present(v: string | string[] | undefined): boolean {
+  return Array.isArray(v) ? v.some((s) => s !== '') : v !== undefined && v !== '';
+}
+
+/**
+ * Whether the desktop would leave trashed matches out of this listing: the trash was asked
+ * for, together with one of the parameters it evaluates in a sub-search that never sees
+ * the trash. See `LocalApiClient.matchAcrossTrash`.
+ */
+function losesTrashedMatches(query: ItemQuery): boolean {
+  return Boolean(query.includeTrashed) && (present(query.tag) || present(query.itemType) || present(query.itemKey));
+}
+
+/** `start`/`limit` over a whole key list. No `limit` means the rest, as on the desktop itself. */
+function pageOf(keys: string[], start?: number, limit?: number): string[] {
+  const from = Math.max(0, start ?? 0);
+  return limit === undefined ? keys.slice(from) : keys.slice(from, from + limit);
+}
+
+/**
+ * Whether one item matches the `tag` and `itemType` parameters, read exactly as the
+ * desktop's local API reads them (buildSearchFromSearchSyntax in Zotero 10's
+ * server_localAPI.js), because the answer this feeds is spliced into one the desktop gave:
+ *
+ *   - repeated parameters must ALL match;
+ *   - within one, `||` separates alternatives, each trimmed, any of which may match;
+ *   - a leading `-` negates the whole parameter (every alternative, not just the first),
+ *     and a leading `\-` is a literal hyphen;
+ *   - a name matches exactly, case included (Zotero compares tag names with SQL `=`);
+ *   - a negated parameter never matches an annotation. Zotero restricts a negated
+ *     item-level condition to non-annotations, which is why `tag=-X` on the desktop
+ *     answers with every item lacking X except annotations (measured: 798 of 1534 items,
+ *     the 707 annotations being the gap, with 29 items tagged X).
+ */
+function matchesSearchSyntax(
+  item: any,
+  tag: string | string[] | undefined,
+  itemType: string | string[] | undefined,
+): boolean {
+  const data = item?.data ?? item ?? {};
+  const isAnnotation = data.itemType === 'annotation';
+  const tags = new Set<string>(
+    (Array.isArray(data.tags) ? data.tags : []).map((t: any) => (typeof t === 'string' ? t : t?.tag)),
+  );
+  const holds = (param: string | string[] | undefined, has: (v: string) => boolean) =>
+    (param === undefined ? [] : Array.isArray(param) ? param : [param]).every((raw) => {
+      let s = raw;
+      let negate = false;
+      if (s[0] === '-') {
+        negate = true;
+        s = s.slice(1);
+      }
+      if (s[0] === '\\' && s[1] === '-') s = s.slice(1);
+      const alternatives = s.split('||').map((v) => v.trim());
+      if (negate) return !isAnnotation && alternatives.some((v) => !has(v));
+      return alternatives.some(has);
+    });
+  return holds(tag, (v) => tags.has(v)) && holds(itemType, (v) => data.itemType === v);
 }
 
 function numOrUndef(v: string | null): number | undefined {

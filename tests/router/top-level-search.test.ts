@@ -126,6 +126,19 @@ describe('searchItems with top and an itemType filter (#79)', () => {
     expect(topRead?.[0].includeTrashed).toBe(true);
   });
 
+  it('carries includeTrashed into the keyed page read, on both APIs', async () => {
+    // Both APIs leave a trashed item out of a keyed read that does not ask for the trash
+    // (the cloud answered 1 of 2 keys for a trashed and a live one in the 2026-10-01 stress
+    // test), so a trashed match the key sets counted would vanish from its own page.
+    for (const localApi of [true, false]) {
+      const { router, web, local } = makeRouter({ localApi });
+      await router.searchItems({ itemType: 'attachment', top: true, includeTrashed: true, limit: 10 });
+      const reads = localApi ? local.listItems.mock.calls : web.listItems.mock.calls;
+      expect(reads.length).toBeGreaterThan(0);
+      for (const call of reads) expect(queryOf(localApi ? 'local' : 'web', call).includeTrashed).toBe(true);
+    }
+  });
+
   it('pages coherently: every page disjoint, together the whole filtered set', async () => {
     const { router } = makeRouter({ localApi: true });
     const seen: string[] = [];
@@ -256,5 +269,65 @@ describe('searchItems against a desktop that ignores /items/top when filtering b
     ITEMS.STANDALO = { key: 'STANDALO', data: { key: 'STANDALO', itemType: 'attachment' } };
     expect(res.totalResults).toBe(1);
     expect(empty.data).toEqual([]);
+  });
+});
+
+/**
+ * `top` with a `tag` filter: the desktop runs the tag as a sub-search that ignores `top`,
+ * so a tagged child note came back as a top-level item. Measured 2026-10-01 against Zotero
+ * 10: `/items/top?tag=HILDA-reviewed` answered 34, 17 of them child notes, where the cloud
+ * answered the 17 top-level items carrying the tag.
+ */
+describe('searchItems with top and a tag filter', () => {
+  const TAGGED: Record<string, any> = {
+    PAPERAAA: { key: 'PAPERAAA', data: { key: 'PAPERAAA', itemType: 'journalArticle', tags: [{ tag: 'reviewed' }] } },
+    PAPERBBB: { key: 'PAPERBBB', data: { key: 'PAPERBBB', itemType: 'journalArticle', tags: [] } },
+    NOTEBBBB: {
+      key: 'NOTEBBBB',
+      data: { key: 'NOTEBBBB', itemType: 'note', parentItem: 'PAPERBBB', tags: [{ tag: 'reviewed' }] },
+    },
+  };
+  const TOP = ['PAPERAAA', 'PAPERBBB'];
+
+  function fakeDesktop() {
+    return vi.fn(async (rawUrl: string) => {
+      const url = new URL(rawUrl);
+      const isTop = url.pathname.endsWith('/items/top');
+      const tag = url.searchParams.get('tag');
+      const itemKey = url.searchParams.get('itemKey');
+      let keys: string[];
+      if (itemKey) keys = itemKey.split(',').filter((k) => !isTop || TOP.includes(k));
+      // The bug: with a tag in the query, /items/top answers exactly what /items does.
+      else if (tag) keys = Object.keys(TAGGED).filter((k) => TAGGED[k].data.tags.some((t: any) => t.tag === tag));
+      else keys = isTop ? TOP : Object.keys(TAGGED);
+      const headers = { 'Total-Results': String(keys.length), 'Last-Modified-Version': '681' };
+      if (url.searchParams.get('format') === 'keys') return new Response(keys.join('\n'), { status: 200, headers });
+      return new Response(JSON.stringify(keys.map((k) => TAGGED[k])), { status: 200, headers });
+    });
+  }
+
+  it('returns no tagged child note as a top-level item, on the desktop', async () => {
+    const fetchImpl = fakeDesktop();
+    const local = new LocalApiClient({ fetcher: new RateLimitedFetcher({ fetchImpl, maxConcurrency: 4 }) });
+    // What the desktop itself says: the child note is in its top-level answer.
+    const raw = await local.listItems({ tag: 'reviewed', top: true });
+    expect(raw.data.map((i: any) => i.key)).toContain('NOTEBBBB');
+
+    const router = new LibraryRouter({
+      config: loadConfig({ ZOTEUS_LOCAL: 'on' } as any),
+      capabilities: { cloud: cloudInfo, localApi: true, localGroupIds: [] } as any,
+      web: {} as any,
+      local,
+    });
+    const res = await router.searchItems({ tag: 'reviewed', top: true, limit: 10 });
+    expect(res.data.map((i: any) => i.key)).toEqual(['PAPERAAA']);
+    expect(res.totalResults).toBe(1);
+  });
+
+  it('leaves the cloud, which answers this correctly, on its single listing request', async () => {
+    const { router, web } = makeRouter({ localApi: false });
+    await router.searchItems({ tag: 'reviewed', top: true, limit: 10 });
+    expect(web.listItemKeys).not.toHaveBeenCalled();
+    expect(web.listItems).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,4 +1,4 @@
-import { parseRisName, splitKeywords, type BibCreator, type BibRecord } from './record.js';
+import { CITATION_KEY_EXTRA_LABEL, parseRisName, splitKeywords, type BibCreator, type BibRecord } from './record.js';
 
 /**
  * An RIS parser.
@@ -203,7 +203,7 @@ const RIS_EXTRA_LABELS: Record<string, string> = table({
   N1: 'Notes',
   RN: 'Research Notes',
   RI: 'Reviewed Item',
-  ID: 'Citation Key',
+  ID: CITATION_KEY_EXTRA_LABEL,
   CN: 'Call Number',
 });
 

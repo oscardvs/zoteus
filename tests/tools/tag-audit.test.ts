@@ -56,6 +56,27 @@ describe('zotero_tag_audit', () => {
     expect(text).toContain('legacy');
   });
 
+  /**
+   * api.zotero.org answers an unsorted /tags with Total-Results: 0, and the crawl stopped
+   * as soon as it had read that many: after its first page, auditing 100 of 235 tags on
+   * every cloud-served library (the 2026-10-01 stress test).
+   */
+  it('reads every page of tags even when the header undercounts them', async () => {
+    const all = Array.from({ length: 235 }, (_, i) => ({ tag: `t${i}`, meta: { type: 0, numItems: 1 } }));
+    const listTags = vi.fn(async ({ start = 0, limit = 100 }: { start?: number; limit?: number }) => ({
+      data: all.slice(start, start + limit),
+      totalResults: 0,
+      lastModifiedVersion: 1,
+    }));
+    const c = ctx();
+    c.router.listTags = listTags;
+    const res = await tagAudit.handler({ vocabulary }, c);
+    const sc = res.structuredContent as any;
+    expect(listTags).toHaveBeenCalledTimes(3);
+    // None of the 235 is in the vocabulary, so all of them are off-taxonomy: all were read.
+    expect(sc.offTaxonomyTotal).toBe(235);
+  });
+
   it('errors when neither vocabulary nor vocabulary_path is given', async () => {
     const res = await tagAudit.handler({}, ctx());
     expect(res.isError).toBe(true);

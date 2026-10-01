@@ -150,7 +150,7 @@ const wordDocument: ToolDefinition = {
       .min(1)
       .describe('Paragraphs of the document, in order. Each may contain [[cite:ITEMKEY]] or [[cite:ITEMKEY,locator]] placeholders.'),
     title: z.string().optional().describe('Document title, written as a heading and into the file metadata.'),
-    style: z.string().optional().describe('Citation style id or name, e.g. "apa" or "Chicago Manual of Style 17th edition" (default APA). Resolved with zotero_styles.'),
+    style: z.string().optional().describe('Citation style id or name, e.g. "apa" or "Chicago Manual of Style 17th edition (author-date)" (default APA). Resolved with zotero_styles.'),
     locale: z.string().optional().describe('CSL locale for the rendered citations, e.g. "en-US" (default "en-US").'),
     bibliography: z.boolean().optional().describe('Append a live Zotero bibliography field after the body (default true).'),
     save_path: z

@@ -67,6 +67,27 @@ describe('WebApiClient', () => {
     );
   });
 
+  /**
+   * Unsorted, api.zotero.org answers /tags in no stable order and with Total-Results: 0
+   * (measured 2026-10-01 on a library of 235 tags); sorted by title the header is the real
+   * count. So every tag listing asks for that sort.
+   */
+  it('lists tags sorted by title, which is what makes Total-Results true', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      const u = new URL(url);
+      expect(u.pathname).toBe('/users/19552201/tags');
+      expect(u.searchParams.get('sort')).toBe('title');
+      expect(u.searchParams.get('q')).toBe('map');
+      return new Response(JSON.stringify([{ tag: 'mapping', meta: { numItems: 1 } }]), {
+        status: 200,
+        headers: { 'Total-Results': '9', 'Last-Modified-Version': '4685' },
+      });
+    });
+    const r = await makeClient(fetchImpl).listTags({ type: 'user', id: 19552201 }, { q: 'map', limit: 1 });
+    expect(r.totalResults).toBe(9);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('throws ZoteroApiError with an actionable message on failure', async () => {
     const fetchImpl = vi.fn(async () => new Response('nope', { status: 404 }));
     await expect(makeClient(fetchImpl).getItem({ type: 'user', id: 1 }, 'XYZ')).rejects.toThrow(

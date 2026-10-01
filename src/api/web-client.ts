@@ -60,7 +60,8 @@ export type WriteObserver = (
 export interface ItemQuery {
   q?: string;
   qmode?: 'titleCreatorYear' | 'everything';
-  itemType?: string;
+  /** Zotero's filter syntax; several values are ANDed, as repeated parameters. */
+  itemType?: string | string[];
   /**
    * Comma-separated item keys, at most 50 (both APIs). The one way to look items up in
    * bulk without a request each: the search index resolves annotated attachments to their
@@ -290,9 +291,16 @@ export class WebApiClient {
     lib: LibraryRef,
     query: { q?: string; limit?: number; start?: number } = {},
   ): Promise<ListResult> {
+    // `sort=title` is not cosmetic. Without an explicit sort, api.zotero.org answers /tags
+    // in no particular order and with a `Total-Results` of 0 whatever the library holds
+    // (sort=numItems gets 1), measured on 2026-10-01 against a library of 235 tags. Every
+    // count was wrong, and zotero_tag_audit, which pages until it has read Total-Results
+    // tags, stopped after its first page of 100 on every cloud-served library. Sorted by
+    // title the header is the real count, the order is stable across pages, and it is
+    // the order the desktop app already answers in, so both backends now agree.
     const { json, headers } = await this.getJson(
       this.prefix(lib) + '/tags',
-      this.buildQuery(query as any),
+      this.buildQuery({ sort: 'title', ...query } as any),
     );
     return this.toListResult(json, headers);
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { LibraryRouter } from '../../src/router/library-router.js';
+import { LibraryRouter, splitConjunction } from '../../src/router/library-router.js';
 import { LocalApiUnsupportedError } from '../../src/api/local-client.js';
 import { loadConfig } from '../../src/config.js';
 
@@ -54,6 +54,34 @@ function makeRouter(opts: {
   });
   return { router, web, local };
 }
+
+/**
+ * zotero_search_items documents `&&` as AND, and neither Zotero API reads it: both take
+ * "World Models && method · diffusion" as one tag name and answer 0, where the repeated
+ * parameters answer 7 (measured 2026-10-01), and the cloud refuses an itemType written so
+ * with HTTP 400. The router spells it the way both APIs understand.
+ */
+describe('splitConjunction', () => {
+  it('turns && into repeated values and leaves everything else alone', () => {
+    expect(splitConjunction('to-read && 2024')).toEqual(['to-read', '2024']);
+    expect(splitConjunction('-attachment && -note')).toEqual(['-attachment', '-note']);
+    expect(splitConjunction('a || b && c')).toEqual(['a || b', 'c']);
+    expect(splitConjunction('journalArticle || book')).toBe('journalArticle || book');
+    expect(splitConjunction('to-read')).toBe('to-read');
+    expect(splitConjunction(['a && b', 'c'])).toEqual(['a', 'b', 'c']);
+    expect(splitConjunction(undefined)).toBeUndefined();
+  });
+
+  it('reaches both backends as repeated parameters', async () => {
+    for (const localApi of [true, false]) {
+      const { router, web, local } = makeRouter({ local: 'auto', localApi });
+      await router.searchItems({ tag: 'World Models && method · diffusion', itemType: '-attachment && -note' });
+      const sent: any = localApi ? (local.listItems.mock.calls[0] as any)[0] : (web.listItems.mock.calls[0] as any)[1];
+      expect(sent.tag).toEqual(['World Models', 'method · diffusion']);
+      expect(sent.itemType).toEqual(['-attachment', '-note']);
+    }
+  });
+});
 
 describe('LibraryRouter', () => {
   it('reads from the local API when available and not disabled', async () => {

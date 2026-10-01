@@ -6,6 +6,38 @@ export interface MultipleChoices {
   items: Record<string, string>;
 }
 
+/** A translation-server that answered, with a status that is not a result. */
+export class TranslationServerError extends Error {
+  constructor(
+    message: string,
+    /** The HTTP status it answered with. */
+    readonly status: number,
+    /** Its own short account of why, from the body, when it gave one. */
+    readonly reason?: string,
+  ) {
+    super(message);
+    this.name = 'TranslationServerError';
+  }
+}
+
+/**
+ * The first line of an error body, as plain text and short enough to quote. The
+ * translation-server answers a failure with one plain-text line; a proxy in front of it may
+ * answer with an HTML page, whose tags are dropped. Undefined when there is nothing to quote.
+ */
+async function shortReason(res: Response): Promise<string | undefined> {
+  let body: string;
+  try {
+    body = await res.text();
+  } catch {
+    return undefined;
+  }
+  const lines = body.replace(/<[^>]*>/g, ' ').split(/\r?\n/);
+  const text = (lines.find((line) => line.trim()) ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return undefined;
+  return text.length > 160 ? `${text.slice(0, 160)}…` : text;
+}
+
 /**
  * Client for a Zotero translation-server (https://github.com/zotero/translation-server).
  * Used for add-by-identifier (DOI/ISBN/PMID/arXiv) and add-by-URL. Optional: if the
@@ -67,7 +99,14 @@ export class TranslationServerClient {
     return Array.isArray(items) ? items : [];
   }
 
-  /** Scrape a URL. Returns items, or a 300 Multiple-Choices selection set. */
+  /**
+   * Scrape a URL. Returns items, or a 300 Multiple-Choices selection set.
+   *
+   * Any other non-2xx answer throws a {@link TranslationServerError} carrying the status and
+   * the server's own short reason ("No translators available", "An error occurred retrieving
+   * the document"), which it sends as the body. Only the status used to be kept, so the
+   * caller could say nothing about why a page failed beyond "returned 501".
+   */
   async web(url: string): Promise<{ items?: any[]; multiple?: MultipleChoices }> {
     const res = await this.fetcher.fetch(
       `${this.baseUrl}/web`,
@@ -75,7 +114,14 @@ export class TranslationServerClient {
       { maxRetries: 0 },
     );
     if (res.status === 300) return { multiple: (await res.json()) as MultipleChoices };
-    if (!res.ok) throw new Error(`translation-server /web returned ${res.status}.`);
+    if (!res.ok) {
+      const reason = await shortReason(res);
+      throw new TranslationServerError(
+        `translation-server /web returned ${res.status}${reason ? ` (${reason})` : ''}.`,
+        res.status,
+        reason,
+      );
+    }
     return { items: (await res.json()) as any[] };
   }
 

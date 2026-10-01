@@ -86,8 +86,23 @@ export const indexStatus = {
   documents: z.number().optional().describe('Passages held for keyword search.'),
   passages: z.number().optional().describe('Alias of `documents`.'),
   vectors: z.number().optional().describe('Passages that also carry an embedding.'),
-  items: z.number().optional().describe('Library items represented in the index.'),
+  items: z
+    .number()
+    .optional()
+    .describe(
+      'Library items represented in the index: every top-level item a finished build reached, with or without any text beyond its title. While state is "building" it is how far the running job has got, not a shortfall against the library: read itemsFetched against itemsTotal (a build) or itemsChanged (an update).',
+    ),
   itemsFetched: z.number().optional().describe('Items pulled from Zotero so far (on an update: changed items processed).'),
+  itemsChanged: z
+    .number()
+    .optional()
+    .describe('On an update: how many changed items the delta holds, the figure itemsFetched counts towards (0 until its first page arrives).'),
+  passagesWithoutVectors: z
+    .number()
+    .optional()
+    .describe(
+      'Passages that carry no embedding yet. While a job runs this is mostly its own queue and falls as it embeds; after it ends, a non-zero figure is a gap that action:"build" fills.',
+    ),
   itemsTotal: z.number().optional().describe('Items this job expects to index (0 = not yet known).'),
   itemsAvailable: z.number().optional().describe('Items the library holds before the build cap is applied.'),
   itemsRemoved: z.number().optional().describe('Items an update dropped because the library no longer holds them.'),

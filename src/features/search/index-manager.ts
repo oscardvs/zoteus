@@ -25,6 +25,7 @@ import type {
   IncrementalUpdateOptions,
   EmbedRate,
   IndexBuildStatus,
+  JobLease,
   IndexCounts,
   IndexSnapshot,
   PageFetcher,
@@ -421,6 +422,16 @@ export abstract class SearchIndexBase implements SearchIndex {
   private operation: 'build' | 'update' = 'build';
   private itemsFetched = 0;
   private itemsRemoved = 0;
+  /** An update's delta size; see IndexBuildStatus.itemsChanged. */
+  private itemsChanged = 0;
+  /**
+   * True while an update is crawling its delta on a store whose writes hold a lock. The
+   * passages it queues for embedding are set aside (as ids, in `deferredIds`) instead of
+   * embedded, and embedded only after the delta has committed. See `updateIncremental`.
+   */
+  protected deferEmbedding = false;
+  /** Passage ids an update set aside for embedding; ids only, so a large delta stays small. */
+  private deferredIds: string[] = [];
   protected itemsTotal = 0;
   protected itemsAvailable = 0;
   /** Which pass of a build is running; see IndexBuildStatus.phase (#23). */
@@ -588,6 +599,91 @@ export abstract class SearchIndexBase implements SearchIndex {
    * never a failed build.
    */
   protected finalizeVectors(): void {}
+  /**
+   * Whether this store's writes take a lock that other processes wait on, and keep it until
+   * the store commits. Only SQLite does: its write transaction holds the database's writer
+   * lock from the first row written to the commit. The JSON store writes nothing until
+   * save(), so it holds nothing in between.
+   */
+  protected get writesHoldALock(): boolean {
+    return false;
+  }
+  /**
+   * Commit what has been written so far, so no write lock is held across the embedding
+   * request that follows. Called before every request a build makes to the embedder, which
+   * can take seconds per batch on a local CPU model and minutes per update. A build already
+   * keeps whatever it has written (its resume checkpoint is written at persists, so it only
+   * ever lags the committed rows, never leads them), so committing more often costs it
+   * nothing; an update's crawl never reaches here, see `deferEmbedding`. A store that holds
+   * no lock has nothing to release.
+   */
+  protected yieldWriteLock(): void {}
+  /**
+   * The build or update another process is running on this index's file, if any. A store
+   * that is not shared between processes has none; see SqliteSearchIndex for the lease.
+   */
+  jobElsewhere(): JobLease | undefined {
+    return undefined;
+  }
+  /** Re-read what another process committed to this store; see SearchIndex.syncFromStore. */
+  syncFromStore(): void {
+    this.refreshFromStore();
+  }
+  /**
+   * Claim this store for one job across every process sharing it, or throw naming the job
+   * that already holds it. A store not shared between processes has nothing to claim.
+   */
+  protected acquireJobLease(_kind: 'build' | 'update'): void {}
+  /** Give the claim back; a no-op when this handle holds none. */
+  protected releaseJobLease(): void {}
+
+  /**
+   * The guards a job checks before it claims the store, so a refusal never costs the claim
+   * of a job that is running, in this process or another. `isBuilding` above all: a second
+   * call on this handle while its own job runs would otherwise claim the store again and,
+   * refused a moment later, hand back the claim the running job holds.
+   */
+  private beforeJob(library: string | undefined): void {
+    this.refuseIfFaulted();
+    this.refuseIfPaused();
+    if (library) this.assertLibrary(library);
+    if (this.isBuilding) throw new Error('Index build already in progress; poll action:"status".');
+    // What another process committed decides what this job has to do (whether a build has
+    // a checkpoint to carry on from, what an update's stamp is), so it is read first (#68).
+    this.refreshFromStore();
+  }
+
+  /**
+   * Build the index, one job per store across every process sharing it.
+   *
+   * Two processes building one SQLite file destroyed each other's work: a build that finds
+   * no checkpoint to resume starts by emptying the store, so a second Zoteus that looked
+   * while the first had committed nothing yet (an auto-build from zotero_semantic_search
+   * does exactly that) wiped the rows the first was writing, and the first finished with
+   * passages it believed embedded and were not. Measured on 2026-10-01 with fresh processes
+   * searching every two seconds during a 350-item build: 557 of 1967 passages ended
+   * without a vector. The claim is taken before anything is read or reset.
+   */
+  async buildIncremental(fetchPage: PageFetcher, opts: IncrementalBuildOptions = {}): Promise<IndexBuildStatus> {
+    this.beforeJob(opts.library);
+    this.acquireJobLease('build');
+    try {
+      return await this.buildIncrementalClaimed(fetchPage, opts);
+    } finally {
+      this.releaseJobLease();
+    }
+  }
+
+  /** Apply a delta update, one job per store across processes; see `buildIncremental`. */
+  async updateIncremental(opts: IncrementalUpdateOptions): Promise<IndexBuildStatus> {
+    this.beforeJob(opts.library);
+    this.acquireJobLease('update');
+    try {
+      return await this.updateIncrementalClaimed(opts);
+    } finally {
+      this.releaseJobLease();
+    }
+  }
   /**
    * Bring this index's droplist level with the passages it is derived from.
    *
@@ -847,6 +943,7 @@ export abstract class SearchIndexBase implements SearchIndex {
       operation: this.operation,
       itemsFetched: this.itemsFetched,
       itemsRemoved: this.itemsRemoved,
+      ...(this.operation === 'update' ? { itemsChanged: this.itemsChanged } : {}),
       itemsTotal: this.itemsTotal,
       itemsAvailable: this.itemsAvailable,
       phase: this.phase,
@@ -898,9 +995,11 @@ export abstract class SearchIndexBase implements SearchIndex {
 
   status(): SearchIndexStatus {
     const c = this.counts();
+    const elsewhere = this.isBuilding ? undefined : this.jobElsewhere();
     const s: SearchIndexStatus = {
       documents: c.documents,
       paused: this.paused,
+      ...(elsewhere ? { elsewhere } : {}),
       vectors: c.vectors,
       items: c.items,
       storage: this.storage,
@@ -1114,7 +1213,10 @@ export abstract class SearchIndexBase implements SearchIndex {
    * never re-chunked or re-embedded, and only the work since the last commit is redone
    * (#24). `opts.fresh` is how a caller asks for the old behaviour outright.
    */
-  async buildIncremental(fetchPage: PageFetcher, opts: IncrementalBuildOptions = {}): Promise<IndexBuildStatus> {
+  private async buildIncrementalClaimed(
+    fetchPage: PageFetcher,
+    opts: IncrementalBuildOptions = {},
+  ): Promise<IndexBuildStatus> {
     this.refuseIfFaulted();
     this.refuseIfPaused();
     // Before anything is cleared: a build for a different library than the rows held must
@@ -1738,7 +1840,7 @@ export abstract class SearchIndexBase implements SearchIndex {
    * advances then. A failure rolls the store back (where it can) and leaves the previous
    * stamp in place, so the same delta is simply retried next time.
    */
-  async updateIncremental(opts: IncrementalUpdateOptions): Promise<IndexBuildStatus> {
+  private async updateIncrementalClaimed(opts: IncrementalUpdateOptions): Promise<IndexBuildStatus> {
     this.refuseIfFaulted();
     this.refuseIfPaused();
     // Same guard as the full build: a delta for a different library would splice its
@@ -1760,6 +1862,7 @@ export abstract class SearchIndexBase implements SearchIndex {
     this.localApiDegradedAt = undefined;
     this.itemsFetched = 0;
     this.itemsRemoved = 0;
+    this.itemsChanged = 0;
     if (opts.fulltextFor) {
       // An update is the retry for full text as well, but only upwards: an index that
       // already holds body passages does not stop being a full-text index when a metadata
@@ -1788,6 +1891,21 @@ export abstract class SearchIndexBase implements SearchIndex {
     const persist = opts.persist ?? (() => this.save());
 
     const pending: ChunkRecord[] = [];
+    /**
+     * Embedding waits until the delta has committed, on a store whose writes hold a lock.
+     *
+     * An update is one write transaction from its first row to its last, so that a failure
+     * rolls the whole delta back and the index stays at its last good version. Embedding
+     * inside that transaction held SQLite's writer lock for as long as the embedder took,
+     * which on a local CPU model is minutes for a few thousand passages, and every other
+     * Zoteus process sharing the data directory waited on it: in the 2026-10-01 stress test
+     * that was every tool of every other process failing with "database is locked". The
+     * delta keeps its single transaction, and the vectors, which were never part of that
+     * promise (an embedder failure has always left the update successful with passages to
+     * fill in), are added after it commits, a batch at a time with a commit after each.
+     */
+    this.deferEmbedding = this.writesHoldALock;
+    this.deferredIds = [];
     // The keys the index holds, which the upsert loop keeps current: it is both the cap
     // check ("is this item already indexed?") and, at the end, the left side of the
     // deletion diff, so the store is walked once rather than per item.
@@ -1858,6 +1976,9 @@ export abstract class SearchIndexBase implements SearchIndex {
         if (token.cancelled) break;
         const page = await opts.fetchChanged(start);
         if (!crawlVersion && page.lastModifiedVersion) crawlVersion = page.lastModifiedVersion;
+        // The delta's size, from the first page that reports one, so a running update can
+        // say how far through it is rather than only how far it has got.
+        if (!this.itemsChanged && page.totalResults) this.itemsChanged = page.totalResults;
         const pageItems = page.items ?? [];
         if (pageItems.length === 0) break;
         // The items on this page whose body text could NOT be read, which is not the answer
@@ -2099,6 +2220,27 @@ export abstract class SearchIndexBase implements SearchIndex {
         this.persistError = e instanceof Error ? e.message : String(e);
         this.opts.logger?.warn(`Could not persist index: ${this.persistError}`);
       }
+      // The passages the delta set aside, now that it is durable. Each batch commits before
+      // the next request (see `yieldWriteLock`), and a failure here is not the delta's:
+      // what was not embedded is reported as passages without vectors, with the remedy
+      // that fills them, exactly as an embedder failure inside the delta always was.
+      if (this.deferEmbedding) {
+        this.deferEmbedding = false;
+        if (!this.persistError && !token.cancelled) {
+          try {
+            if (await this.embedDeferred(token, embedBatchSize, embedBatchDelayMs)) {
+              this.finalizeVectors();
+              await persist();
+            }
+          } catch (e) {
+            this.rollback();
+            this.opts.logger?.warn(
+              `index update: the changed items are saved, but not all of their passages were embedded: ` +
+                `${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+        }
+      }
       this.buildState = 'done';
       if (reconciled) {
         this.updateNotice =
@@ -2149,6 +2291,8 @@ export abstract class SearchIndexBase implements SearchIndex {
       return this.buildStatus();
     } finally {
       this.cancelToken = null;
+      this.deferEmbedding = false;
+      this.deferredIds = [];
     }
   }
 
@@ -2648,6 +2792,26 @@ export abstract class SearchIndexBase implements SearchIndex {
     );
   }
 
+  /**
+   * Embed the passages an update set aside, reading each one's text back from the store.
+   * Ids rather than records were kept so a large delta (a full-text recovery re-reads the
+   * whole library) does not hold its text in memory twice. A passage the same delta later
+   * replaced or removed is read as it now stands, or skipped. Returns how many it embedded.
+   */
+  private async embedDeferred(token: { cancelled: boolean }, batchSize: number, delayMs: number): Promise<number> {
+    const ids = [...new Set(this.deferredIds)];
+    this.deferredIds = [];
+    const before = this.counts().vectors;
+    for (let i = 0; i < ids.length && this.hasEmbedder && !token.cancelled; i += batchSize) {
+      const batch = ids
+        .slice(i, i + batchSize)
+        .map((id) => this.passage(id))
+        .filter((rec): rec is ChunkRecord => rec !== undefined);
+      if (batch.length) await this.embedPending(batch, token, batchSize, delayMs, true);
+    }
+    return this.counts().vectors - before;
+  }
+
   /** Embed and store queued passages in batches; `force` drains a partial last batch. */
   private async embedPending(
     pending: ChunkRecord[],
@@ -2660,6 +2824,11 @@ export abstract class SearchIndexBase implements SearchIndex {
       pending.length = 0;
       return;
     }
+    if (this.deferEmbedding) {
+      for (const rec of pending) this.deferredIds.push(rec.id);
+      pending.length = 0;
+      return;
+    }
     // Recorded per drain rather than per build, so `embedRate` describes the pacing in
     // force right now even on a job whose caller changed it between passes.
     this.embedBatchInUse = batchSize;
@@ -2667,6 +2836,9 @@ export abstract class SearchIndexBase implements SearchIndex {
     while (pending.length >= (force ? 1 : batchSize)) {
       if (token.cancelled) return;
       const batch = pending.splice(0, Math.min(batchSize, pending.length));
+      // Before the request, not after: the request is the slow part, and a write lock held
+      // across it is a lock every other Zoteus process on this data directory waits on.
+      this.yieldWriteLock();
       const startedAt = Date.now();
       try {
         const vecs = await this.opts.embedder!.embed(batch.map((r) => r.text), 'passage');

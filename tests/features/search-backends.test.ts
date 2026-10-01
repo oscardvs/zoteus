@@ -88,6 +88,61 @@ describe('SQLite index under a second connection', () => {
     await index.close();
     await new Promise((r) => holder.once('exit', r));
   });
+
+  /**
+   * The 2026-10-01 stress test: Claude Desktop's server ran an `action:"update"` that
+   * embedded ~3,000 passages on the CPU, and an update is one write transaction from its
+   * first row to its last (so a failure rolls back whole). Every other Zoteus process on
+   * the machine then failed EVERY tool, whoami included, with "database is locked": opening
+   * the index re-stamped `meta.schemaVersion` unconditionally, that write waited out the
+   * ten-second busy timeout, and the error escaped the context build. Opening a file that
+   * is already at this schema has nothing to write, so it must not wait on a writer at all.
+   */
+  sqliteIt('opens a current index without waiting while another process holds a long write', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zoteus-busy-long-'));
+    const jsonPath = join(dir, 'search-index.json');
+    const open = () =>
+      createSearchIndex({ backend: 'sqlite', jsonPath, embedder: new FakeEmbeddingProvider(), logger: silentLogger });
+    const seeded = await open();
+    await seeded.build(items, { version: 3 });
+    await seeded.save();
+    await seeded.close();
+
+    // Held until this test kills it: longer than any busy timeout, like a running update.
+    const holder = spawn(
+      process.execPath,
+      [
+        '-e',
+        `const { DatabaseSync } = require('node:sqlite');
+         const db = new DatabaseSync(process.argv[1]);
+         db.exec('BEGIN IMMEDIATE');
+         db.exec("INSERT OR REPLACE INTO meta(key, value) VALUES ('holder', '1')");
+         process.stdout.write('locked\\n');
+         setInterval(() => {}, 1000);`,
+        sqliteIndexPath(jsonPath),
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        holder.stdout.once('data', () => resolve());
+        holder.once('error', reject);
+        holder.once('exit', () => reject(new Error('lock holder exited before taking the lock')));
+      });
+
+      const started = Date.now();
+      const index = await open();
+      // Well inside the ten-second busy timeout: the open never asked for the lock.
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(index.storage).toBe('sqlite');
+      expect(index.buildStatus().items).toBe(items.length);
+      // WAL readers do not wait on a writer, so the index is usable, not merely open.
+      expect(await index.query('neural networks', { limit: 1 })).not.toHaveLength(0);
+      await index.close();
+    } finally {
+      holder.kill();
+    }
+  }, 30_000);
 });
 
 const items = [
