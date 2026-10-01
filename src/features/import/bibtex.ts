@@ -13,7 +13,9 @@ import { parseBibtexNames, splitKeywords, type BibCreator, type BibRecord } from
  * What is implemented: entries with `{}` or `()` delimiters, values in braces, in quotes or
  * bare, nested braces, backslash escapes, string concatenation with `#`, `@string` macros
  * (including the twelve month abbreviations BibTeX predefines), `@comment` and `@preamble`
- * skipping, and the LaTeX accent forms real exports contain (see ./latex.ts).
+ * skipping, and the LaTeX accent forms real exports contain (see ./latex.ts). An entry with
+ * no comma after its key, or with no key at all, is read as it was meant and the repair is
+ * reported, so the file can be fixed (see repairKeyComma).
  *
  * What is NOT implemented, said plainly so nobody discovers it in their library: `crossref`
  * inheritance between entries (a `@inproceedings` that takes its `booktitle` from a
@@ -222,6 +224,66 @@ function readField(s: string, i: number, macros: Record<string, string>, end: nu
   return { name, value: parts.join(''), next: i };
 }
 
+/** What {@link repairKeyComma} recovered from an entry whose key ran into its first field. */
+interface KeyRepair {
+  /** The real key, or empty when the entry opened straight on a field. */
+  key: string;
+  /** Where the first field starts: fields are read from here with no comma before the first. */
+  fieldsAt: number;
+  /** That first field's name, for the warning. */
+  firstField: string;
+}
+
+/**
+ * An entry whose citation key, as read, holds whitespace or "=", read again the way it was
+ * meant to be.
+ *
+ * The key is read up to the first comma or closing delimiter, so when the comma after the key
+ * is missing the first field is read as part of the key: `@article{smith2020 title = {A
+ * title}, author = {Doe, Jane}}` came back with the key "smith2020 title = {A title" (the
+ * scan stops at the value's own closing brace) and neither the title nor the author, since
+ * everything after that brace was outside the entry. The first fix from the 2026-10-01 stress
+ * test warned about it and skipped the entry as empty, but repaired nothing.
+ *
+ * Neither character can be part of a real key. BibTeX ends the key at whitespace, so a space
+ * in one is a syntax error there, and an "=" is how a field begins. The real key is therefore
+ * the run before the first of them, and what follows it is fields. Every other character a
+ * key may hold (":", "-", "_", "/", ".", "+" and the rest) stays in the key, so
+ * `doe:2020/x-1+y` never comes here. And when that run is itself followed by "=", there was
+ * no key at all: the entry opened straight on a field (`@article{title = {X}, ...}`), which
+ * is read with an empty key.
+ *
+ * The repair is made only when a `name = value` field really does start where it says. When
+ * none does (`@article{two words, title = {X}}` holds a key with a space in it, not a missing
+ * comma), undefined is returned and the key is kept as written, with a warning that says so.
+ * `@string`, `@preamble` and `@comment` have no key and never come here.
+ */
+function repairKeyComma(
+  s: string,
+  from: number,
+  keyEnd: number,
+  macros: Record<string, string>,
+  end: number,
+): KeyRepair | undefined {
+  const start = skipSpace(s, from);
+  let tokenEnd = start;
+  while (tokenEnd < keyEnd && !/[\s=]/.test(s[tokenEnd]!)) tokenEnd++;
+  const token = s.slice(start, tokenEnd);
+  if (!token) return undefined;
+  const afterToken = skipSpace(s, tokenEnd);
+  const noKey = s[afterToken] === '=';
+  const fieldsAt = noKey ? start : afterToken;
+  const first = readField(s, fieldsAt, macros, end);
+  if (!first) return undefined;
+  return { key: noKey ? '' : token, fieldsAt, firstField: first.name };
+}
+
+/** Part of an entry as written, on one line and at most 60 characters, for a warning to quote. */
+function entryExcerpt(s: string, from: number, to: number): string {
+  const head = s.slice(from, Math.min(to, from + 60)).replace(/\s+/g, ' ').trim();
+  return to > from + 60 ? `${head}…` : head;
+}
+
 /**
  * What to do with a field name that appears twice in one entry.
  *
@@ -289,30 +351,55 @@ export function parseBibtex(text: string): BibtexParseResult {
       continue;
     }
 
+    const opened = i;
     i++; // past the opening delimiter
     let keyEnd = i;
     while (keyEnd < n && text[keyEnd] !== ',' && text[keyEnd] !== close) keyEnd++;
-    const key = text.slice(i, keyEnd).trim();
-    i = keyEnd;
+    const asRead = text.slice(i, keyEnd).trim();
+    // A key cannot hold whitespace or "=". When the text read as one does, the comma after
+    // the key is missing (or the key is), and the first field was read as part of the key.
+    // repairKeyComma reads it again as the key and the fields it was meant to be. Before it,
+    // the entry was reported only as one with no title, and the fields were lost.
+    const malformedKey = /[\s=]/.test(asRead);
+    const repair = malformedKey ? repairKeyComma(text, i, keyEnd, macros, end) : undefined;
+    const key = repair ? repair.key : asRead;
+    i = repair ? repair.fieldsAt : keyEnd;
     const where = `entry "${key || '(no key)'}" (@${type})`;
-    // A key cannot hold whitespace or "=". When it does, the comma after the key is missing,
-    // so the first field (or every field, when it is the last thing before the closing brace)
-    // was read as part of the key. Without this the entry was reported only as one with no
-    // title, which names the symptom and not the typo.
-    if (/[\s=]/.test(key)) {
+    if (repair) {
+      // Said even though nothing was lost: the file is still malformed, and BibTeX itself or
+      // any other tool will not read it the way this did.
+      // The entry as written, up to the "=" of the field the key ran into, which is enough to
+      // find it in the file: "@article{smith2020 title = …".
+      const equals = skipSpace(text, repair.fieldsAt + repair.firstField.length);
+      const excerpt = `@${type}${entryExcerpt(text, opened, equals + 1)} …`;
       warnings.push(
-        `${where}: a citation key cannot contain a space or "=", so the comma after the key is probably missing ` +
-          'and what follows it was read as part of the key rather than as fields.',
+        repair.key
+          ? `${where}: there is no comma between the citation key and the first field ("${excerpt}"), so the entry ` +
+              `was read as if the comma were there: key "${repair.key}", then the field "${repair.firstField}" and ` +
+              'the rest. Add the comma in the file, since other BibTeX tools will not read it this way.'
+          : `${where}: the entry has no citation key and opens straight on the field "${repair.firstField}" ` +
+              `("${excerpt}"), so it was read as if an empty key and a comma came first, and its fields were kept. ` +
+              'Add a key and a comma in the file, since other BibTeX tools will not read it this way.',
+      );
+    } else if (malformedKey) {
+      warnings.push(
+        `${where}: a citation key cannot contain a space or "=", and no "name = value" field follows its first ` +
+          'word, so this is not a missing comma that could be repaired: the key was kept as written. Fix it in the file.',
       );
     }
     // Null-prototype, so that `'constructor' in fields` answers about this file and not
     // about Object.prototype.
     const fields: Record<string, string> = Object.create(null);
     let unreadable: { field: string; opener: string; buried: number; resumed: boolean } | undefined;
-    while (i < n && text[i] === ',') {
-      i++;
-      i = skipSpace(text, i);
-      if (text[i] === close) break; // a trailing comma before the closing brace
+    // After a repair the first field follows the key with no comma, so it is read bare.
+    let bare = Boolean(repair);
+    while (i < n && (bare || text[i] === ',')) {
+      if (!bare) {
+        i++;
+        i = skipSpace(text, i);
+        if (text[i] === close) break; // a trailing comma before the closing brace
+      }
+      bare = false;
       const fieldAt = i;
       const field = readField(text, i, macros, end);
       if (!field) break;

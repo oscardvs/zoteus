@@ -24,7 +24,7 @@ import { detectKind, fetchAttachmentBytes, resolveAttachment, SOURCE_LABEL } fro
 import { DEFAULT_PRECISE_MAX_BYTES, extractPdfPages } from '../features/fulltext/pdf-pages.js';
 import { loadPdfjs, pdfjsUnavailableReason } from '../features/fulltext/pdfjs-loader.js';
 import { mappingTables, toZoteroItem } from '../features/import/mapping.js';
-import { emptyRecordReason } from '../features/import/record.js';
+import { emptyRecordReason, emptyZoteroItemReason, zoteroItemLabel } from '../features/import/record.js';
 import { parseBibliography, sniffFormat, type ImportFormat } from '../features/import/parse.js';
 import { hasTextLayer, scanIdentifiers, type IdentifierHit } from '../features/import/scan-identifiers.js';
 import { validateItem } from '../schema/validate.js';
@@ -43,6 +43,8 @@ import {
   storeLocalAttachment,
 } from '../features/attachments/store.js';
 import type { LibraryRef } from '../api/web-client.js';
+import { ZoteroApiError } from '../api/errors.js';
+import { TranslationServerError } from '../features/citation/translation-server.js';
 
 function err(text: string): ToolHandlerResult {
   return { content: [{ type: 'text', text }], isError: true };
@@ -109,15 +111,73 @@ function noScraperMessage(ctx: ToolContext, url: string): string {
     : `No Zotero translation-server reachable at ${ctx.config.translationServerUrl}, and URL scraping has no built-in ` +
       'fallback. Start one with `docker run -d -p 1969:1969 zotero/translation-server` (or set ' +
       'ZOTEUS_TRANSLATION_SERVER_URL), then retry.';
+  return `${head}${identifierInUrl(url, 'resolves it without one')} ${connectorRoute(ctx)}`;
+}
+
+/**
+ * The way round a URL that cannot be scraped when it is a DOI or arXiv link: the identifier
+ * it names, handed back for action:"by_identifier", which resolves it with no page to scrape.
+ * `resolves` finishes the sentence for the situation. Empty for any other URL.
+ */
+function identifierInUrl(url: string, resolves: string): string {
   const asId = parseIdentifier(url);
-  const viaIdentifier =
-    asId && (asId.type === 'doi' || asId.type === 'arxiv')
-      ? ` That URL is ${asId.type === 'doi' ? 'a DOI' : 'an arXiv'} link, though: action:"by_identifier" with ` +
-        `identifier "${asId.value}" resolves it without one.`
-      : '';
+  if (!asId || (asId.type !== 'doi' && asId.type !== 'arxiv')) return '';
   return (
-    `${head}${viaIdentifier} Otherwise, save the page from your browser with the Zotero Connector` +
+    ` That URL is ${asId.type === 'doi' ? 'a DOI' : 'an arXiv'} link, though: action:"by_identifier" with ` +
+    `identifier "${asId.value}" ${resolves}.`
+  );
+}
+
+/**
+ * The route that saves any page a scraper could not, worded for where the caller is, and as
+ * the fallback after another route (`otherwise`) or as the one route there is.
+ */
+function connectorRoute(ctx: ToolContext, otherwise = true): string {
+  return (
+    `${otherwise ? 'Otherwise, save' : 'Save'} the page from your browser with the Zotero Connector` +
+    (otherwise ? '' : ' instead') +
     (ctx.remoteCaller ? ', and it reaches this server once Zotero syncs.' : '.')
+  );
+}
+
+/**
+ * Why a running translation-server's scrape failed, as the clause after "could not get
+ * metadata from <url>: ".
+ *
+ * Its own answer when it gave one (the status and the line it sends as the body), else what
+ * kept the request from being answered. A timeout is said without the fetcher's own message,
+ * which names the server's origin: on a shared server that is the operator's loopback
+ * address, which says nothing to the person reading.
+ */
+function scrapeFailure(e: unknown): string {
+  if (e instanceof TranslationServerError) return `it answered ${e.status}${e.reason ? ` (${e.reason})` : ''}`;
+  if (e instanceof ZoteroApiError && e.status === 408) return 'it did not answer in time';
+  if (e instanceof SyntaxError) return 'its answer was not the JSON it should have sent';
+  const cause = (e as { cause?: { code?: unknown } } | undefined)?.cause?.code;
+  const message = e instanceof Error ? e.message.replace(/\.$/, '') : String(e);
+  return `the request to it failed (${typeof cause === 'string' ? `${message}: ${cause}` : message})`;
+}
+
+/**
+ * action:"by_url" with a translation-server that is running and still produced nothing.
+ *
+ * The raw "translation-server /web returned 500." used to reach the caller as the whole
+ * answer (the 2026-10-01 stress test), which named neither the page nor anything to do. The
+ * failure is usually the page, not the setup: no translator for the site (501), or a site
+ * that refuses the server's fetch while letting a browser in. So this says which page, what
+ * the server said, and the two routes that do work: the identifier inside a DOI or arXiv
+ * link, and the Zotero Connector, which saves from the browser's own session. The server's
+ * address is named on a local install, where it may be the wrong one; on a shared server it
+ * is the operator's, and it is left out as the other translation-server messages leave it.
+ */
+function scrapeFailedMessage(ctx: ToolContext, url: string, what: string): string {
+  const server = ctx.remoteCaller
+    ? "This server's translation-server"
+    : `The translation-server at ${ctx.config.translationServerUrl}`;
+  const viaIdentifier = identifierInUrl(url, 'resolves it from the identifier alone, with no page to scrape');
+  return (
+    `${server} could not get metadata from ${url}: ${what}, so nothing was saved.` +
+    `${viaIdentifier} ${connectorRoute(ctx, Boolean(viaIdentifier))}`
   );
 }
 
@@ -458,7 +518,15 @@ const importTool: ToolDefinition = {
     }
     // by_url
     if (!args.url) return err('`url` is required for by_url.');
-    const result = await ctx.translation.web(args.url);
+    // Only the scrape is guarded, as on the identifier path above: a save that fails after
+    // the page DID resolve must surface as that failure. A 300 is not a failure either; the
+    // client returns it as `multiple`, answered just below.
+    let result: Awaited<ReturnType<ToolContext['translation']['web']>>;
+    try {
+      result = await ctx.translation.web(args.url);
+    } catch (e) {
+      return err(scrapeFailedMessage(ctx, args.url, scrapeFailure(e)));
+    }
     if (result.multiple) {
       return ok(
         { multiple: result.multiple },
@@ -466,7 +534,7 @@ const importTool: ToolDefinition = {
       );
     }
     const items = result.items ?? [];
-    if (!items.length) return err(`No items found at ${args.url}.`);
+    if (!items.length) return err(scrapeFailedMessage(ctx, args.url, 'it answered with no items'));
     return await maybeSave(ctx, args, items, 'translation-server');
   },
 };
@@ -1207,6 +1275,16 @@ async function importViaTranslationServer(ctx: ToolContext, text: string): Promi
   }
 }
 
+/** The skipped entries, each with its reason, for an error that has no `skipped` field to carry them. */
+function listSkipped(skipped: Array<{ entry: string; reason: string }>): string {
+  return (
+    skipped
+      .slice(0, 5)
+      .map((s) => `${s.entry} (${s.reason})`)
+      .join('; ') + (skipped.length > 5 ? `; and ${skipped.length - 5} more` : '')
+  );
+}
+
 interface FileImportMeta {
   source: string;
   format: string;
@@ -1253,13 +1331,33 @@ async function importFromFile(ctx: ToolContext, args: any): Promise<ToolHandlerR
     if (capped) return capped;
     // Translator output is Zotero-JSON already, so there is nothing here to map and nothing
     // for the schema tables to do. It is also not validated, exactly as the by_identifier
-    // and by_url paths do not validate it: per-entry refusals surface in `failed`.
-    return await finishFileImport(ctx, args, viaServer, {
+    // and by_url paths do not validate it: per-entry refusals surface in `failed`. What it
+    // IS checked for is emptiness, by the same rule the built-in parsers' records go through
+    // below (emptyZoteroItemReason shares it with emptyRecordReason). A translator handed a
+    // malformed entry can answer with an item holding nothing but its itemType and perhaps a
+    // citation key in Extra, and until this check that item went to the preview and, on a
+    // save, into the library as a blank row: the 2026-10-01 stress test's defect, reached
+    // through the path a running translation-server takes.
+    const items: any[] = [];
+    const skipped: Array<{ entry: string; reason: string }> = [];
+    viaServer.forEach((item, index) => {
+      const empty = emptyZoteroItemReason(item);
+      if (empty) skipped.push({ entry: zoteroItemLabel(item, index), reason: empty });
+      else items.push(item);
+    });
+    if (!items.length) {
+      return err(
+        `None of the ${viaServer.length} ${viaServer.length === 1 ? 'entry' : 'entries'} the translation-server read ` +
+          `from this payload could be imported, so nothing was: ${listSkipped(skipped)}.` +
+          (readWarnings.length ? ` Reading the payload reported: ${readWarnings.join(' ')}` : ''),
+      );
+    }
+    return await finishFileImport(ctx, args, items, {
       source: 'translation-server-import',
       format: 'translation-server',
       parsed: viaServer.length,
       warnings: readWarnings,
-      skipped: [],
+      skipped,
     });
   }
 
@@ -1320,15 +1418,10 @@ async function importFromFile(ctx: ToolContext, args: any): Promise<ToolHandlerR
   if (!items.length) {
     // An error result has no `warnings` field, and the reason an entry came out empty is
     // usually in the parser's warnings (the brace that never closed), so they ride along here.
-    const listed =
-      skipped
-        .slice(0, 5)
-        .map((s) => `${s.entry} (${s.reason})`)
-        .join('; ') + (skipped.length > 5 ? `; and ${skipped.length - 5} more` : '');
     const parserSaid = parsed.warnings.slice(0, 5);
     return err(
       `None of the ${parsed.records.length} ${parsed.records.length === 1 ? 'entry' : 'entries'} in this ${format} ` +
-        `payload could be imported, so nothing was: ${listed}.` +
+        `payload could be imported, so nothing was: ${listSkipped(skipped)}.` +
         (parserSaid.length ? ` The parser reported: ${parserSaid.join(' ')}` : ''),
     );
   }

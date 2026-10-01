@@ -4,7 +4,12 @@ import { cslJsonToRecords } from '../../src/features/import/csl-json.js';
 import { decodeLatex } from '../../src/features/import/latex.js';
 import { mappingTables, toZoteroItems } from '../../src/features/import/mapping.js';
 import { parseBibliography, sniffFormat } from '../../src/features/import/parse.js';
-import { emptyRecordReason, parseBibtexNames } from '../../src/features/import/record.js';
+import {
+  emptyRecordReason,
+  emptyZoteroItemReason,
+  parseBibtexNames,
+  zoteroItemLabel,
+} from '../../src/features/import/record.js';
 import { risToRecords } from '../../src/features/import/ris.js';
 
 /**
@@ -260,6 +265,90 @@ describe('a creator field that is mostly whitespace', () => {
   });
 });
 
+describe('a citation key with no comma after it', () => {
+  // The 2026-10-01 stress test: the key was read up to the first comma or closing brace, so
+  // "smith2020 title = {A title" became the key, and the title and the author were both lost
+  // (everything after that brace fell outside the entry). It is now read as it was meant.
+  const REPAIRED = /there is no comma between the citation key and the first field .*read as if the comma were there/;
+
+  it('reads the key and every field, and says what it repaired', () => {
+    const { entries, warnings } = parseBibtex('@article{smith2020 title = {A title}, author = {Doe, Jane}}');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.key).toBe('smith2020');
+    expect({ ...entries[0]!.fields }).toEqual({ title: 'A title', author: 'Doe, Jane' });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(REPAIRED);
+    // Enough to find the entry in the file, and what it was taken to mean.
+    expect(warnings[0]).toContain('"@article{smith2020 title = …"');
+    expect(warnings[0]).toMatch(/key "smith2020", then the field "title"/);
+    expect(warnings[0]).toMatch(/Add the comma in the file/);
+    expect(warnings[0]).not.toMatch(/probably missing/);
+
+    const { records } = bibtexToRecords('@article{smith2020 title = {A title}, author = {Doe, Jane}}');
+    expect(records[0]!.fields).toMatchObject({ title: 'A title', 'citation-key': 'smith2020' });
+    expect(records[0]!.creators).toEqual([{ cslName: 'author', family: 'Doe', given: 'Jane' }]);
+    expect(emptyRecordReason(records[0]!)).toBeUndefined();
+  });
+
+  it('repairs it across a line break, in a parenthesised entry, and when the field is the last one', () => {
+    const wrapped = parseBibtex('@article{smith2020\n  title = {X},\n  year = 2020\n}');
+    expect(wrapped.entries[0]!.key).toBe('smith2020');
+    expect({ ...wrapped.entries[0]!.fields }).toEqual({ title: 'X', year: '2020' });
+    const paren = parseBibtex('@article(smith2020 title = {X}, year = 2020)');
+    expect(paren.entries[0]!.key).toBe('smith2020');
+    expect({ ...paren.entries[0]!.fields }).toEqual({ title: 'X', year: '2020' });
+    const last = parseBibtex('@article{key title={Lost}}');
+    expect(last.entries[0]!.key).toBe('key');
+    expect({ ...last.entries[0]!.fields }).toEqual({ title: 'Lost' });
+    for (const { warnings } of [wrapped, paren, last]) expect(warnings.join(' ')).toMatch(REPAIRED);
+  });
+
+  it('reads an entry with no key at all, opening straight on a field, with an empty key', () => {
+    const { entries, warnings } = parseBibtex('@article{title = {X}, author = {Doe, Jane}}');
+    expect(entries[0]!.key).toBe('');
+    expect({ ...entries[0]!.fields }).toEqual({ title: 'X', author: 'Doe, Jane' });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(
+      /entry "\(no key\)" \(@article\): the entry has no citation key and opens straight on the field "title" \("@article\{title = …"\), so it was read as if an empty key and a comma came first/,
+    );
+    const { records } = bibtexToRecords('@article{title = {X}, author = {Doe, Jane}}');
+    expect(records[0]!.label).toBe('entry 1');
+    expect(records[0]!.fields.title).toBe('X');
+    expect(records[0]!.fields['citation-key']).toBeUndefined();
+  });
+
+  it('leaves a valid key with unusual characters alone', () => {
+    for (const key of ['doe:2020/x-1+y', 'Smith_2020.a', 'van-der-Berg+2021:ch.3']) {
+      const { entries, warnings } = parseBibtex(`@article{${key}, title = {T}}`);
+      expect(entries[0]!.key).toBe(key);
+      expect({ ...entries[0]!.fields }).toEqual({ title: 'T' });
+      expect(warnings).toEqual([]);
+    }
+  });
+
+  it('keeps a key it cannot repair as written, and says it could not', () => {
+    // A key with a space in it and its comma in place is not a missing comma: what follows its
+    // first word is not a field, so nothing is re-read and the fields after the comma stand.
+    const { entries, warnings } = parseBibtex('@article{some key, title = {X}}');
+    expect(entries[0]!.key).toBe('some key');
+    expect({ ...entries[0]!.fields }).toEqual({ title: 'X' });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/not a missing comma that could be repaired: the key was kept as written/);
+  });
+
+  it('does not touch @string, @preamble or @comment, which have no key', () => {
+    const text =
+      '@string{jn = "Journal of Nothing"}\n@preamble{"\\newcommand{\\x}{y}"}\n' +
+      '@comment{jabref-meta: databaseType:bibtex;}\n@article{smith2020 journal = jn, title = {T}}';
+    const { entries, warnings } = parseBibtex(text);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.key).toBe('smith2020');
+    expect({ ...entries[0]!.fields }).toEqual({ journal: 'Journal of Nothing', title: 'T' });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(REPAIRED);
+  });
+});
+
 describe('an entry the parser could read nothing from', () => {
   // The 2026-10-01 stress test: such an entry became an empty item in the preview, and would
   // have become a blank row in the library on a save. The import skips what this flags.
@@ -283,5 +372,66 @@ describe('an entry the parser could read nothing from', () => {
     expect(emptyRecordReason(only('@misc{x, doi = {10.1234/x}}'))).toBeUndefined();
     // No CSL home, so it travels in Extra; an arXiv id there is still a way back to the work.
     expect(emptyRecordReason(only('@misc{x, eprint = {2201.00001}}'))).toBeUndefined();
+  });
+});
+
+describe('an item a translation-server returned with nothing in it', () => {
+  // The same defect on the other by_file path: with a translation-server running, its items
+  // are Zotero JSON and never become a BibRecord, so emptyRecordReason never saw them. What a
+  // translation-server stamps on every item (key, version) and where it is filed is not a work.
+  const BLANK = {
+    key: 'ABCD2345',
+    version: 0,
+    itemType: 'journalArticle',
+    title: '',
+    creators: [],
+    tags: [],
+    collections: [],
+    relations: {},
+    notes: [],
+    extra: 'Citation Key: smith2020',
+  };
+
+  it('flags an item holding only its type and a citation key, as the built-in check would', () => {
+    const reason = emptyZoteroItemReason(BLANK);
+    expect(reason).toMatch(/no title, no creators and no other field \(only a citation key\)/);
+    // One rule, one wording: the item and the record it would have been read as are judged
+    // and described alike, up to the sentence that says who read the entry.
+    const fromRecord = emptyRecordReason(bibtexToRecords('@article{smith2020,}').records[0]!);
+    const head = (r: string | undefined) => r?.split('. ')[0];
+    expect(head(reason)).toBe(head(fromRecord));
+    expect(reason).toMatch(/The translation-server read the entry this way and does not say why/);
+  });
+
+  it('flags the same item with no key at all, with a key in its own field, and with keywords only', () => {
+    expect(emptyZoteroItemReason({ itemType: 'document' })).toMatch(/no other field, so it was not/);
+    expect(emptyZoteroItemReason({ itemType: 'document', citationKey: 'k' })).toMatch(/only a citation key\)/);
+    expect(
+      emptyZoteroItemReason({ ...BLANK, tags: [{ tag: 'orphan', type: 1 }], creators: [{ creatorType: 'author' }] }),
+    ).toMatch(/only a citation key and keywords/);
+  });
+
+  it('keeps anything that names a work: a title, a creator, a field, an Extra line, a note', () => {
+    expect(emptyZoteroItemReason({ ...BLANK, title: 'T' })).toBeUndefined();
+    expect(
+      emptyZoteroItemReason({ ...BLANK, creators: [{ creatorType: 'author', lastName: 'Lovelace', firstName: '' }] }),
+    ).toBeUndefined();
+    expect(emptyZoteroItemReason({ ...BLANK, creators: [{ creatorType: 'author', name: 'CERN' }] })).toBeUndefined();
+    expect(emptyZoteroItemReason({ ...BLANK, DOI: '10.1234/x' })).toBeUndefined();
+    expect(emptyZoteroItemReason({ ...BLANK, date: '1843' })).toBeUndefined();
+    expect(emptyZoteroItemReason({ ...BLANK, extra: 'Citation Key: smith2020\narXiv: 2201.00001' })).toBeUndefined();
+    expect(emptyZoteroItemReason({ ...BLANK, notes: [{ note: '<p>Read this</p>' }] })).toBeUndefined();
+  });
+
+  it('does not judge what is not an item object', () => {
+    expect(emptyZoteroItemReason(null)).toBeUndefined();
+    expect(emptyZoteroItemReason('a string')).toBeUndefined();
+  });
+
+  it('names an item by its citation key wherever the translator put it, else by its position', () => {
+    expect(zoteroItemLabel(BLANK, 0)).toBe('smith2020');
+    expect(zoteroItemLabel({ itemType: 'book', citationKey: 'own2021' }, 1)).toBe('own2021');
+    expect(zoteroItemLabel({ itemType: 'book', extra: 'Note: x\ncitation key:  late2022 ' }, 2)).toBe('late2022');
+    expect(zoteroItemLabel({ itemType: 'book' }, 3)).toBe('entry 4');
   });
 });
