@@ -28,6 +28,26 @@ const ITEM_KEY_BATCH = 50;
 /** The page size a caller that named no `limit` gets, matching zotero_search_items. */
 const DEFAULT_PAGE = 25;
 
+/**
+ * A `tag` or `itemType` filter with its `&&` conjunctions turned into repeated parameters,
+ * which is the only AND either Zotero API understands.
+ *
+ * zotero_search_items documents `&&` as AND ("to-read && 2024"), and neither API has ever
+ * read it that way: both take the whole string as one tag name, so the tool's own example
+ * found nothing, and the cloud refuses an `itemType` written so with HTTP 400 "Invalid
+ * itemType". Measured on 2026-10-01 against a library where 7 items carry both "World
+ * Models" and "method · diffusion": repeated parameters answered 7 on both APIs, the `&&`
+ * spelling 0 on both. Each part keeps its own syntax, so "-attachment && -note" is two
+ * negations and "a || b && c" is (a or b) and c, as Zotero reads repeated parameters.
+ */
+export function splitConjunction(value: string | string[] | undefined): string | string[] | undefined {
+  if (value === undefined) return undefined;
+  const parts = (Array.isArray(value) ? value : [value]).flatMap((v) =>
+    v.includes('&&') ? v.split('&&').map((part) => part.trim()).filter(Boolean) : [v],
+  );
+  return Array.isArray(value) || parts.length > 1 ? parts : parts[0];
+}
+
 export interface LibraryRouterOptions {
   config: ZoteusConfig;
   capabilities: Capabilities;
@@ -242,8 +262,9 @@ export class LibraryRouter {
   }
 
   async searchItems(query: ItemQuery & ReadOpts = {}): Promise<ListResult> {
-    const { library, backend, ...q } = query;
+    const { library, backend, ...rest } = query;
     const lib = library ?? this.defaultLibrary();
+    const q: ItemQuery = { ...rest, tag: splitConjunction(rest.tag), itemType: splitConjunction(rest.itemType) };
     // `top` combined with an `itemType` filter is the one shape neither API answers the
     // way the tool promises, so Zoteus works it out itself (#79).
     if (q.top && q.itemType) return this.topLevelItemsOfType(lib, backend, q);

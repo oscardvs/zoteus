@@ -60,7 +60,8 @@ export type WriteObserver = (
 export interface ItemQuery {
   q?: string;
   qmode?: 'titleCreatorYear' | 'everything';
-  itemType?: string;
+  /** Zotero's filter syntax; several values are ANDed, as repeated parameters. */
+  itemType?: string | string[];
   /**
    * Comma-separated item keys, at most 50 (both APIs). The one way to look items up in
    * bulk without a request each: the search index resolves annotated attachments to their

@@ -946,7 +946,7 @@ function pageOf(keys: string[], start?: number, limit?: number): string[] {
 function matchesSearchSyntax(
   item: any,
   tag: string | string[] | undefined,
-  itemType: string | undefined,
+  itemType: string | string[] | undefined,
 ): boolean {
   const data = item?.data ?? item ?? {};
   const isAnnotation = data.itemType === 'annotation';
