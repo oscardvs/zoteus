@@ -7,13 +7,19 @@ All notable changes to Zoteus are documented here. The format is based on
 ## [Unreleased]
 
 ### Fixed
-- **A long index update in one Zoteus process no longer breaks every tool in the others.**
-  Opening the search index rewrote its schema stamp every time, which needs the database's
-  write lock, and an `action:"update"` holds that lock from its first row to its last (a
-  local embedder can take minutes over a few thousand passages). Any other Zoteus process
-  sharing the data directory then waited out the ten-second busy timeout and failed its
-  whole context build, so every tool, `zotero_whoami` included, answered "database is
-  locked". Opening an index already at the current schema now writes nothing.
+- **Several Zoteus processes can share one search index safely.** Every Claude Code session
+  and Claude Desktop runs its own Zoteus on the same data directory, and sharing one index
+  file did harm in three ways. Opening the index wrote to it, so while another process held
+  the write lock every tool in a newly started one, `zotero_whoami` included, failed with
+  "database is locked". A job held that lock across its embedding requests: an
+  `action:"update"` is one transaction from its first row to its last, so a local embedder
+  over a few thousand passages held it for minutes. And two jobs on one file undid each
+  other: a build with no checkpoint to resume empties the store, so a process that
+  auto-built from a semantic search wiped what another was building (557 of 1,967 passages
+  ended without a vector in a measured run). Opening now writes nothing, a build commits
+  before each embedding request, an update commits its delta first and embeds after it (so
+  a failed update still rolls back whole), and one job per index file runs at a time: the
+  others say which process holds it, read its rows as they commit, and start nothing.
 - **Tag counts from the cloud are real, and `zotero_tag_audit` reads every tag.**
   api.zotero.org answers an unsorted tag listing with `Total-Results: 0` and in no stable
   order. `zotero_list_tags` reported `totalResults: 0` on every cloud-served library, and
@@ -24,6 +30,10 @@ All notable changes to Zoteus are documented here. The format is based on
   `&&`: both took "to-read && 2024" as one tag name and found nothing, and the cloud refused
   an `itemType` written that way with HTTP 400. Zoteus now sends each part as a repeated
   parameter, which is the AND both APIs understand.
+- **A top-level search filtered by tag no longer returns child notes on the desktop.** The
+  desktop runs a tag filter as a sub-search that ignores `top`, so `top:true` with a tag
+  answered 34 items where 17 were child notes. That combination now takes the same route as
+  `top` with an item type (#79); the cloud, which answers it correctly, is unchanged.
 - **Trashed items are found through a tag, item type or key filter on the desktop.** With
   `includeTrashed`, Zotero's local API evaluates `tag`, `itemType` and `itemKey` in a
   sub-search that never sees the trash, so `tag:"x", includeTrashed:true` answered 0 where
@@ -38,10 +48,19 @@ All notable changes to Zoteus are documented here. The format is based on
   only its operator can attach one). A translation-server that could not resolve a DOI no
   longer stops the built-in DOI resolver from trying.
 - **A bibliography entry the parser could read nothing from is skipped, not imported empty.**
-  A malformed BibTeX entry (a missing comma after the key, an unclosed brace), an RIS record
-  with only `TY`, or a CSL-JSON item with only a type became an empty item in the preview,
-  ready to be saved as a blank row. It is now listed under `skipped` with the reason, and
-  the BibTeX warning names the missing comma.
+  A malformed BibTeX entry (an unclosed brace, nothing after the key), an RIS record with
+  only `TY`, or a CSL-JSON item with only a type became an empty item in the preview, ready
+  to be saved as a blank row. It is now listed under `skipped` with the reason, on the
+  translation-server path as well as Zoteus's own parsers.
+- **A BibTeX entry missing the comma after its key is read as meant.** The first field used
+  to be swallowed into the key and lost. The entry is now read as if the comma were there,
+  with a warning quoting the line to fix. When a translation-server leaves entries empty
+  that Zoteus's own parser recovers, Zoteus's reading of the file is used and the result
+  says so.
+- **`by_url` explains a failed scrape.** With a translation-server running, a page it could
+  not read returned the bare "translation-server /web returned 501.". The error now names
+  the page, what the server answered, and what works instead: the identifier inside a DOI
+  or arXiv link, or saving the page with the Zotero Connector.
 - **Long citation style names resolve.** "Chicago Manual of Style 17th edition
   (author-date)", "American Psychological Association 7th edition" and the other titles
   Zotero lists styles under now resolve, and a past edition the CSL repository still
