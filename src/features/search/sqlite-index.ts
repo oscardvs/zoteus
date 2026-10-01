@@ -1048,9 +1048,18 @@ export class SqliteSearchIndex extends SearchIndexBase {
         PRIMARY KEY (folded, term)
       ) WITHOUT ROWID;
     `);
-    this.handle
-      .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
-      .run('schemaVersion', String(this.schemaVersion));
+    // Only when the stamp is not already this one. The DDL above is a no-op on an existing
+    // schema and takes no lock, but a write does, and every open used to make one: a sibling
+    // process holding a long write transaction (an `action:"update"` embedding on the CPU
+    // is one transaction for minutes) then made this open wait out the busy timeout and
+    // fail, and a failed open fails the whole context, every tool with it (the 2026-10-01
+    // stress test). Opening a current index is a read, so it now never waits on a writer.
+    const stamp = String(this.schemaVersion);
+    const stored = this.handle.prepare("SELECT value FROM meta WHERE key = 'schemaVersion'").get() as
+      | { value?: string }
+      | undefined;
+    if (stored?.value === stamp) return;
+    this.handle.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run('schemaVersion', stamp);
   }
 
   private prepareStatements(): void {
