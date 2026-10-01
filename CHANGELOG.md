@@ -4,6 +4,58 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A long index update in one Zoteus process no longer breaks every tool in the others.**
+  Opening the search index rewrote its schema stamp every time, which needs the database's
+  write lock, and an `action:"update"` holds that lock from its first row to its last (a
+  local embedder can take minutes over a few thousand passages). Any other Zoteus process
+  sharing the data directory then waited out the ten-second busy timeout and failed its
+  whole context build, so every tool, `zotero_whoami` included, answered "database is
+  locked". Opening an index already at the current schema now writes nothing.
+- **Tag counts from the cloud are real, and `zotero_tag_audit` reads every tag.**
+  api.zotero.org answers an unsorted tag listing with `Total-Results: 0` and in no stable
+  order. `zotero_list_tags` reported `totalResults: 0` on every cloud-served library, and
+  `zotero_tag_audit`, which pages until it has read that many tags, audited only the first
+  100. Tag listings now ask for `sort=title`, which makes the count true and the order
+  match the desktop app's.
+- **`&&` in a `tag` or `itemType` filter means AND, as documented.** Neither Zotero API reads
+  `&&`: both took "to-read && 2024" as one tag name and found nothing, and the cloud refused
+  an `itemType` written that way with HTTP 400. Zoteus now sends each part as a repeated
+  parameter, which is the AND both APIs understand.
+- **Trashed items are found through a tag, item type or key filter on the desktop.** With
+  `includeTrashed`, Zotero's local API evaluates `tag`, `itemType` and `itemKey` in a
+  sub-search that never sees the trash, so `tag:"x", includeTrashed:true` answered 0 where
+  the cloud answered 55. The desktop path now assembles that answer from reads Zotero gets
+  right. `top` with an `itemType` filter also kept trashed matches off the page they were
+  counted for, on both APIs.
+- **ISBNs, PMIDs and ADS bibcodes are recognised as people write them.** A hyphenated
+  ISBN-13, "PMID: 31452104", a real bibcode such as `2019ApJ...882L..24A` and a DOI written
+  as "doi:10..." used to fail with "Could not parse as a known identifier". They are now
+  read, and with no translation-server the error names what the identifier is, that
+  resolving it needs a translation-server, and what works instead (a hosted server says
+  only its operator can attach one). A translation-server that could not resolve a DOI no
+  longer stops the built-in DOI resolver from trying.
+- **A bibliography entry the parser could read nothing from is skipped, not imported empty.**
+  A malformed BibTeX entry (a missing comma after the key, an unclosed brace), an RIS record
+  with only `TY`, or a CSL-JSON item with only a type became an empty item in the preview,
+  ready to be saved as a blank row. It is now listed under `skipped` with the reason, and
+  the BibTeX warning names the missing comma.
+- **Long citation style names resolve.** "Chicago Manual of Style 17th edition
+  (author-date)", "American Psychological Association 7th edition" and the other titles
+  Zotero lists styles under now resolve, and a past edition the CSL repository still
+  carries resolves to that edition's own style rather than the current one. "Vancouver" now
+  names `nlm-citation-sequence` directly, since the CSL repository renamed `vancouver`.
+- **`zotero_groups` says what `numItems` counts.** It is every item row a group holds,
+  children and the trash included, so it is not comparable with a search's `totalResults`.
+  Every answer that carries a count now says so in `numItemsNote`, with how to count
+  top-level items instead.
+- **A running index job's item count reads as progress.** `zotero_whoami` and the update
+  progress line reported a half-finished job's item count as the size of the index. They
+  now say a job is running, an update says how many changed items it is working through,
+  and passages still waiting for a vector are explained while the job runs.
+
 ## [1.22.3] - 2026-09-30
 
 ### Fixed
