@@ -1,3 +1,4 @@
+import { hostname } from 'node:os';
 import type { EmbedKind, EmbeddingProvider } from './embeddings.js';
 import type { Logger } from '../../lib/logger.js';
 import type { LibraryRef } from '../../api/web-client.js';
@@ -188,10 +189,30 @@ export interface IndexCounts {
   ownWordsPassages: number;
 }
 
+/**
+ * Which process is running a build or update on an index file, as that process recorded it
+ * in the file. One job per file at a time, across processes: see SqliteSearchIndex's lease.
+ */
+export interface JobLease {
+  pid: number;
+  host: string;
+  kind: 'build' | 'update';
+  /** When the job took the lease, ms since the epoch. */
+  since: number;
+  /** When the job last committed, ms since the epoch: its heartbeat. */
+  beat: number;
+}
+
 export interface SearchIndexStatus {
   documents: number;
   /** Whether background index work is durably held until action:"resume" clears it. */
   paused: boolean;
+  /**
+   * A build or update another process is running on this same index file right now. Its
+   * rows reach this process as it commits them, and this process starts no job of its own
+   * until it ends.
+   */
+  elsewhere?: JobLease;
   vectors: number;
   items: number;
   /** Where the index is kept: the legacy JSON file, or SQLite. */
@@ -779,6 +800,17 @@ export interface SearchIndex {
    * fall back to a full rebuild with the reason attached.
    */
   updateBlocker(backend: VersionBackend): string | undefined;
+  /**
+   * The build or update another process is running on this index file, if one is. Optional
+   * so a hand-built test double need not carry it; absent means no store shared with anyone.
+   */
+  jobElsewhere?(): JobLease | undefined;
+  /**
+   * Re-read what another process committed to this index since this handle last looked, so
+   * a decision about it (is it empty? how far has that build got?) is made on the file as
+   * it is now. Cheap when nothing moved. Optional for the same reason as `jobElsewhere`.
+   */
+  syncFromStore?(): void;
   /** Apply a delta update. Fire-and-forget like buildIncremental; poll `buildStatus()`. */
   updateIncremental(opts: IncrementalUpdateOptions): Promise<IndexBuildStatus>;
   query(q: string, opts?: QueryOptions): Promise<SearchHit[]>;
@@ -790,4 +822,32 @@ export interface SearchIndex {
   save(): Promise<void>;
   /** Release the store (the SQLite handle). A no-op for the in-memory backend. */
   close(): Promise<void>;
+}
+
+/**
+ * A build or update refused because another process is running one on the same index file.
+ * Carries the holder so a caller can say who, since when, and that its rows are already
+ * arriving here as it commits them.
+ */
+export class IndexJobElsewhereError extends Error {
+  constructor(
+    readonly holder: JobLease,
+    readonly wanted: 'build' | 'update',
+  ) {
+    super(describeJobElsewhere(holder, wanted));
+    this.name = 'IndexJobElsewhereError';
+  }
+}
+
+/** The sentence for a job another process holds, shared by every caller that refuses one. */
+export function describeJobElsewhere(holder: JobLease, wanted?: 'build' | 'update'): string {
+  const doing = holder.kind === 'update' ? 'updating' : 'building';
+  const since = new Date(holder.since).toISOString().slice(11, 16);
+  const where = holder.host === hostname() ? `process ${holder.pid}` : `process ${holder.pid} on ${holder.host}`;
+  return (
+    `Another Zoteus (${where}) has been ${doing} this search index since ${since} UTC, and one index takes one ` +
+    `job at a time${wanted ? `, so this ${wanted} was not started` : ''}: two would undo each other's work. ` +
+    'Its rows reach this server as it commits them, so poll zotero_index action:"status" to follow it, and ' +
+    'search as soon as it is done. If that process is stuck, stop it from the client that started it.'
+  );
 }

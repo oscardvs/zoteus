@@ -1,6 +1,8 @@
 import { createRequire } from 'node:module';
 import type { DatabaseSync as Database, StatementSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { mkdir, readFile, rename, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { SearchIndexBase } from './index-manager.js';
@@ -27,9 +29,11 @@ import type {
   ChunkRecord,
   IndexCounts,
   IndexSnapshot,
+  JobLease,
   RankedId,
   SearchIndexOptions,
 } from './backend.js';
+import { IndexJobElsewhereError } from './backend.js';
 
 /**
  * Required through createRequire rather than imported: `sqlite` is absent from
@@ -252,6 +256,61 @@ const BUSY_TIMEOUT_MS = 10_000;
  */
 const WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024;
 
+/**
+ * The meta row that says which process is running a build or update on this file.
+ *
+ * One job per file, across processes. Two Zoteus processes share a data directory as a
+ * matter of course (every Claude Code session and Claude Desktop each run one), and two jobs
+ * on one file destroyed each other's work: a build that finds no checkpoint to carry on from
+ * starts by emptying the store, so a second process that started one (an auto-build from a
+ * semantic search is enough) wiped whatever the first had committed, and the first finished
+ * believing in passages and vectors that were gone. Kept in the file itself, taken inside
+ * a write transaction, so two processes cannot both read it free and both take it.
+ */
+const LEASE_KEY = 'jobLease';
+
+/**
+ * How long a lease outlives its last heartbeat (a commit) when its holder cannot be asked
+ * directly. A holder on this machine is asked: a process that no longer exists holds
+ * nothing, however fresh its last commit. One on another machine (a data directory on a
+ * network share) can only be judged by its heartbeat. A build commits at least every few
+ * seconds, but an update's delta is one transaction that can run for a long time on a slow
+ * API, so the margin is generous rather than tight.
+ */
+const LEASE_STALE_REMOTE_MS = 30 * 60 * 1000;
+
+/**
+ * The same for a holder in THIS process (a second handle on the file, which a repair or a
+ * test can open), and for a pid on this machine that answers but has stopped committing for
+ * this long, which is a pid reused by an unrelated process far more often than a build.
+ */
+const LEASE_STALE_LOCAL_MS = 6 * 60 * 60 * 1000;
+
+function parseLease(raw: string | undefined): (JobLease & { token: string }) | undefined {
+  if (!raw) return undefined;
+  try {
+    const l = JSON.parse(raw);
+    if (typeof l?.pid !== 'number' || typeof l?.token !== 'string' || typeof l?.beat !== 'number') return undefined;
+    return l;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a lease's holder is still running, as far as this process can tell. */
+function leaseIsLive(l: JobLease & { token: string }, now = Date.now()): boolean {
+  const age = now - l.beat;
+  if (l.host !== hostname()) return age < LEASE_STALE_REMOTE_MS;
+  if (l.pid === process.pid) return age < LEASE_STALE_REMOTE_MS;
+  try {
+    process.kill(l.pid, 0);
+  } catch (e) {
+    // EPERM: the process exists and belongs to someone else, which still means it exists.
+    if ((e as NodeJS.ErrnoException).code !== 'EPERM') return false;
+  }
+  return age < LEASE_STALE_LOCAL_MS;
+}
+
 export interface SqliteSearchIndexOptions extends SearchIndexOptions {
   /** Database file (':memory:' is accepted, for tests). */
   path: string;
@@ -361,6 +420,8 @@ export class SqliteSearchIndex extends SearchIndexBase {
   private stmts!: Statements;
   /** True while a write transaction is open; save() is what commits it. */
   private inTransaction = false;
+  /** The job lease this handle holds, while it runs a build or update; see LEASE_KEY. */
+  private lease: (JobLease & { token: string }) | undefined;
   /**
    * The meta row as this handle last read or wrote it. What differs from it is what THIS
    * handle changed, and a flush writes only that: two Zoteus processes legitimately share
@@ -2252,11 +2313,109 @@ export class SqliteSearchIndex extends SearchIndexBase {
     }
   }
 
+  protected override get writesHoldALock(): boolean {
+    return true;
+  }
+
+  private storedLease(): (JobLease & { token: string }) | undefined {
+    return parseLease(this.meta(LEASE_KEY));
+  }
+
+  override jobElsewhere(): JobLease | undefined {
+    if (!this.db) return undefined;
+    try {
+      const l = this.storedLease();
+      if (!l || l.token === this.lease?.token || !leaseIsLive(l)) return undefined;
+      return { pid: l.pid, host: l.host, kind: l.kind, since: l.since, beat: l.beat };
+    } catch {
+      // A status read is never worth failing over this; a job start reads it again, under
+      // the write lock, and that read is the one that decides.
+      return undefined;
+    }
+  }
+
+  /**
+   * Take the lease, or throw naming the live job that holds it.
+   *
+   * Read once without a lock first, so a job running elsewhere is refused at once rather
+   * than after waiting out the busy timeout on the lock that job holds, then taken inside
+   * BEGIN IMMEDIATE, which is what makes reading it free and writing it one step.
+   */
+  protected override acquireJobLease(kind: 'build' | 'update'): void {
+    if (!this.db) return;
+    const busy = this.jobElsewhere();
+    if (busy) throw new IndexJobElsewhereError(busy, kind);
+    if (this.inTransaction) this.flush();
+    const db = this.handle;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const stored = this.storedLease();
+      if (stored && stored.token !== this.lease?.token && leaseIsLive(stored)) {
+        throw new IndexJobElsewhereError(stored, kind);
+      }
+      const now = Date.now();
+      const lease = { pid: process.pid, host: hostname(), kind, since: now, beat: now, token: randomUUID() };
+      this.stmts.setMeta.run(LEASE_KEY, JSON.stringify(lease));
+      db.exec('COMMIT');
+      this.lease = lease;
+    } catch (e) {
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        // Nothing to roll back: the transaction already ended, which is the same outcome.
+      }
+      if (isCorruptionError(e)) throw this.noteCorruption(e);
+      throw e;
+    }
+  }
+
+  protected override releaseJobLease(): void {
+    const mine = this.lease;
+    this.lease = undefined;
+    if (!this.db || !mine) return;
+    try {
+      // Whatever the job left uncommitted is committed with the release, exactly as close()
+      // would: a build keeps what it wrote, and a failed update has already rolled back.
+      this.begin();
+      if (this.storedLease()?.token === mine.token) this.handle.prepare('DELETE FROM meta WHERE key = ?').run(LEASE_KEY);
+      this.commit();
+    } catch (e) {
+      // Not worth failing the job over: a lease whose holder has ended is judged stale by
+      // the next process to look (its pid is gone), so a row left behind costs nothing.
+      this.opts.logger?.debug(`search index: could not release the job lease on ${this.file}: ${String(e)}`);
+    }
+  }
+
+  /** The lease's heartbeat, written with each commit a job makes while it holds one. */
+  private beatLease(): void {
+    if (!this.lease) return;
+    if (this.storedLease()?.token !== this.lease.token) return;
+    this.lease.beat = Date.now();
+    this.stmts.setMeta.run(LEASE_KEY, JSON.stringify(this.lease));
+  }
+
+  /**
+   * Commit before an embedding request, so the writer lock is not held across it. Not while
+   * an update is crawling its delta (that transaction is the delta's atomicity), and never
+   * at the cost of the job: a commit that fails for any reason but corruption leaves the
+   * transaction open for the next persist, which reports what is wrong.
+   */
+  protected override yieldWriteLock(): void {
+    if (!this.db || !this.inTransaction || this.deferEmbedding) return;
+    try {
+      this.flush();
+    } catch (e) {
+      if (isCorruptionError(e)) throw this.noteCorruption(e);
+      this.opts.logger?.debug(`Could not commit before an embedding request: ${String(e)}`);
+    }
+  }
+
   /** Write the index-level state and commit whatever the build has inserted so far. */
   private flush(): void {
     if (!this.db) return;
     this.begin();
     this.writeMeta();
+    this.beatLease();
     this.commit();
   }
 
@@ -2297,6 +2456,9 @@ export class SqliteSearchIndex extends SearchIndexBase {
     } catch {
       this.inTransaction = false;
     }
+    // A server shutting down mid-job gives the store back now, rather than leaving the next
+    // process to find out that this pid has gone.
+    this.releaseJobLease();
     try {
       this.truncateWal();
     } catch (e) {
@@ -2482,3 +2644,4 @@ function cosineUneven(a: number[], b: Float32Array, an: number): number {
   if (bn === 0) return 0;
   return dot / (an * bn);
 }
+

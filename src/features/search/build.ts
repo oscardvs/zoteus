@@ -2,7 +2,7 @@ import type { LibraryArgs, ToolContext } from '../../registry/registry.js';
 import { optionalLibrary } from '../../registry/registry.js';
 import type { LibraryRef } from '../../api/web-client.js';
 import type { EmbedRate, IndexBuildStatus, SearchIndex, VersionBackend } from './backend.js';
-import { canonicalLibraryToken, describeLibraryToken, isAddressableLibrary } from './backend.js';
+import { canonicalLibraryToken, describeJobElsewhere, describeLibraryToken, isAddressableLibrary } from './backend.js';
 import { createFulltextSource, type FulltextSource } from './fulltext-source.js';
 import { createOwnWordsSource, fetchChildVersions, type OwnWordsSource } from './own-words-source.js';
 import {
@@ -483,6 +483,18 @@ export interface BuildFulltextOptions {
 }
 
 /**
+ * Refuse, synchronously, a job another process is already running on this index file.
+ * The job itself refuses too (it takes the file's lease, see SqliteSearchIndex), but from
+ * inside a fire-and-forget promise that refusal would only reach the log, and the caller
+ * would be told a build had started.
+ */
+function refuseJobElsewhere(index: SearchIndex, wanted: 'build' | 'update'): void {
+  index.syncFromStore?.();
+  const holder = index.jobElsewhere?.();
+  if (holder) throw new Error(describeJobElsewhere(holder, wanted));
+}
+
+/**
  * Kick off the incremental background index build used by zotero_index and by
  * zotero_semantic_search's auto-build. Fire-and-forget: the build runs on the
  * server event loop; callers poll the returned index's `buildStatus()` for progress.
@@ -530,6 +542,7 @@ export function startIndexBuild(
   if (index.isPaused) {
     throw new Error('Index work is paused. Call zotero_index action:"resume" before build, refresh, or update.');
   }
+  refuseJobElsewhere(index, 'build');
   // Synchronously, before the fire-and-forget job below: a refusal thrown inside the job
   // would only reach the logger, and the tool caller would see a build that "started".
   //
@@ -623,6 +636,9 @@ export function startIndexUpdate(
   if (index.isPaused) {
     throw new Error('Index work is paused. Call zotero_index action:"resume" before build, refresh, or update.');
   }
+  // Before the blocker below, which can turn this update into a full build that empties
+  // the store: the store another process is filling.
+  refuseJobElsewhere(index, 'update');
   const backend: VersionBackend = ctx.router.servesLocally(lib) ? 'local' : 'cloud';
   // Same synchronous guard as startIndexBuild, and for the same reason: the version stamp
   // this update would diff against belongs to the library the index holds, not to `lib`.

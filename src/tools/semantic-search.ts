@@ -4,7 +4,7 @@ import type { ToolContext, ToolDefinition, ToolHandlerResult } from '../registry
 import { libraryArgs } from './common-args.js';
 import { defaultLibrarySplit } from './index-tool.js';
 import { okLibraryContent } from '../registry/registry.js';
-import { canonicalLibraryToken, describeLibraryToken, type SearchHit } from '../features/search/backend.js';
+import { canonicalLibraryToken, describeJobElsewhere, describeLibraryToken, type SearchHit } from '../features/search/backend.js';
 import {
   embedderNotice,
   fulltextNotice,
@@ -598,7 +598,26 @@ const semanticSearch: ToolDefinition = {
     // one, because a plain call has always meant "the index that is here" and adding a
     // library to that sentence would claim more than the stamp may know.
     const about = requested ? ` for ${describeLibraryToken(canonicalLibraryToken(requested))}` : '';
+    // Whether it is empty is a question about the file, and another process may have filled
+    // it since this handle last looked, or be filling it now.
+    index.syncFromStore?.();
     if (index.isEmpty) {
+      // A build another process is running is the one this search is waiting for, and
+      // starting a second (the auto-build below) would empty the store it is filling.
+      const elsewhere = index.jobElsewhere?.();
+      if (elsewhere) {
+        const s = index.buildStatus();
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `The semantic-search index${about} is still empty here. ${describeJobElsewhere(elsewhere)}`,
+            },
+          ],
+          structuredContent: { ...s, autoBuild: false },
+          isError: true,
+        };
+      }
       // A build is already on its way (started here or via zotero_index): report progress.
       if (index.isBuilding) {
         const s = index.buildStatus();
