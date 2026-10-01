@@ -24,7 +24,7 @@ import { detectKind, fetchAttachmentBytes, resolveAttachment, SOURCE_LABEL } fro
 import { DEFAULT_PRECISE_MAX_BYTES, extractPdfPages } from '../features/fulltext/pdf-pages.js';
 import { loadPdfjs, pdfjsUnavailableReason } from '../features/fulltext/pdfjs-loader.js';
 import { mappingTables, toZoteroItem } from '../features/import/mapping.js';
-import { emptyRecordReason } from '../features/import/record.js';
+import { emptyRecordReason, emptyZoteroItemReason, zoteroItemLabel } from '../features/import/record.js';
 import { parseBibliography, sniffFormat, type ImportFormat } from '../features/import/parse.js';
 import { hasTextLayer, scanIdentifiers, type IdentifierHit } from '../features/import/scan-identifiers.js';
 import { validateItem } from '../schema/validate.js';
@@ -1207,6 +1207,16 @@ async function importViaTranslationServer(ctx: ToolContext, text: string): Promi
   }
 }
 
+/** The skipped entries, each with its reason, for an error that has no `skipped` field to carry them. */
+function listSkipped(skipped: Array<{ entry: string; reason: string }>): string {
+  return (
+    skipped
+      .slice(0, 5)
+      .map((s) => `${s.entry} (${s.reason})`)
+      .join('; ') + (skipped.length > 5 ? `; and ${skipped.length - 5} more` : '')
+  );
+}
+
 interface FileImportMeta {
   source: string;
   format: string;
@@ -1253,13 +1263,33 @@ async function importFromFile(ctx: ToolContext, args: any): Promise<ToolHandlerR
     if (capped) return capped;
     // Translator output is Zotero-JSON already, so there is nothing here to map and nothing
     // for the schema tables to do. It is also not validated, exactly as the by_identifier
-    // and by_url paths do not validate it: per-entry refusals surface in `failed`.
-    return await finishFileImport(ctx, args, viaServer, {
+    // and by_url paths do not validate it: per-entry refusals surface in `failed`. What it
+    // IS checked for is emptiness, by the same rule the built-in parsers' records go through
+    // below (emptyZoteroItemReason shares it with emptyRecordReason). A translator handed a
+    // malformed entry can answer with an item holding nothing but its itemType and perhaps a
+    // citation key in Extra, and until this check that item went to the preview and, on a
+    // save, into the library as a blank row: the 2026-10-01 stress test's defect, reached
+    // through the path a running translation-server takes.
+    const items: any[] = [];
+    const skipped: Array<{ entry: string; reason: string }> = [];
+    viaServer.forEach((item, index) => {
+      const empty = emptyZoteroItemReason(item);
+      if (empty) skipped.push({ entry: zoteroItemLabel(item, index), reason: empty });
+      else items.push(item);
+    });
+    if (!items.length) {
+      return err(
+        `None of the ${viaServer.length} ${viaServer.length === 1 ? 'entry' : 'entries'} the translation-server read ` +
+          `from this payload could be imported, so nothing was: ${listSkipped(skipped)}.` +
+          (readWarnings.length ? ` Reading the payload reported: ${readWarnings.join(' ')}` : ''),
+      );
+    }
+    return await finishFileImport(ctx, args, items, {
       source: 'translation-server-import',
       format: 'translation-server',
       parsed: viaServer.length,
       warnings: readWarnings,
-      skipped: [],
+      skipped,
     });
   }
 
@@ -1320,15 +1350,10 @@ async function importFromFile(ctx: ToolContext, args: any): Promise<ToolHandlerR
   if (!items.length) {
     // An error result has no `warnings` field, and the reason an entry came out empty is
     // usually in the parser's warnings (the brace that never closed), so they ride along here.
-    const listed =
-      skipped
-        .slice(0, 5)
-        .map((s) => `${s.entry} (${s.reason})`)
-        .join('; ') + (skipped.length > 5 ? `; and ${skipped.length - 5} more` : '');
     const parserSaid = parsed.warnings.slice(0, 5);
     return err(
       `None of the ${parsed.records.length} ${parsed.records.length === 1 ? 'entry' : 'entries'} in this ${format} ` +
-        `payload could be imported, so nothing was: ${listed}.` +
+        `payload could be imported, so nothing was: ${listSkipped(skipped)}.` +
         (parserSaid.length ? ` The parser reported: ${parserSaid.join(' ')}` : ''),
     );
   }

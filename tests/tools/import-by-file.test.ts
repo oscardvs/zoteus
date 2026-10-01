@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import importTool from '../../src/tools/import.js';
+import { TranslationServerClient } from '../../src/features/citation/translation-server.js';
 import {
   BIBTEX_FIXTURE,
   BIBTEX_FIXTURE_PATH,
@@ -441,6 +442,106 @@ describe('zotero_import action:"by_file" and the translation-server', () => {
     const ctx = makeCtx({ translation: { isUp: vi.fn(async () => true), import: vi.fn(async () => []) } });
     const res = await call({ text: RIS_FIXTURE }, ctx);
     expect(res.structuredContent.format).toBe('ris');
+  });
+});
+
+/**
+ * The empty-entry check on the translation-server path. Its items are Zotero JSON and never
+ * become a BibRecord, so the check the built-in parsers' records go through used to miss
+ * them: a malformed entry the server answered with as an item holding only its itemType (and
+ * a citation key in Extra) was previewed, and saved as a blank row. The translation-server
+ * here is the real client over a fetcher that answers /import as a running server does,
+ * with the `key` and `version` it stamps on every item.
+ */
+describe('zotero_import action:"by_file" empty items from the translation-server', () => {
+  const GOOD = { key: 'GOOD2345', version: 0, itemType: 'journalArticle', title: 'Good', creators: [], tags: [] };
+  const BLANK = {
+    key: 'BLNK2345',
+    version: 0,
+    itemType: 'journalArticle',
+    creators: [],
+    tags: [],
+    extra: 'Citation Key: smith2020',
+  };
+
+  function serverAnswering(items: unknown[]) {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/import')) return new Response(JSON.stringify(items), { status: 200 });
+      return new Response('', { status: 200 }); // the isUp probe
+    });
+    return { translation: new TranslationServerClient('http://127.0.0.1:1969', { fetch } as any), fetch };
+  }
+
+  const MALFORMED = '@article{smith2020 title = {Lost}}\n@article{good, title = {Good}}\n';
+
+  it('skips the empty item instead of previewing it, and names it by its citation key', async () => {
+    const { translation, fetch } = serverAnswering([BLANK, GOOD]);
+    const res = await call({ text: MALFORMED }, makeCtx({ translation }));
+
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/import'))).toBe(true);
+    expect(res.isError).toBeFalsy();
+    const sc = res.structuredContent;
+    expect(sc.format).toBe('translation-server');
+    expect(sc.parsed).toBe(2);
+    expect(sc.count).toBe(1);
+    expect(sc.items).toHaveLength(1);
+    expect(sc.items[0]).toMatchObject({ title: 'Good' });
+    expect(sc.skipped).toEqual([
+      {
+        entry: 'smith2020',
+        reason: expect.stringMatching(
+          /^nothing usable could be read from this entry: no title, no creators and no other field \(only a citation key\).*translation-server read the entry this way/,
+        ),
+      },
+    ]);
+    expect(res.content[0].text).toMatch(/1 entry skipped; see skipped\./);
+  });
+
+  it('never saves the empty item', async () => {
+    const { translation } = serverAnswering([BLANK, GOOD]);
+    const ctx = makeCtx({ translation });
+    const res = await call({ text: MALFORMED, save_to_library: true }, ctx);
+
+    expect(res.isError).toBeFalsy();
+    expect(ctx.web.writeItems).toHaveBeenCalledTimes(1);
+    const written = ctx.web.writeItems.mock.calls[0][1];
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ title: 'Good' });
+    expect(res.content[0].text).toMatch(/Imported 1 of 1/);
+    expect(res.structuredContent.skipped).toEqual([{ entry: 'smith2020', reason: expect.stringMatching(/nothing usable/) }]);
+  });
+
+  it('keeps the warnings reading the payload earned beside what it skipped', async () => {
+    const { translation } = serverAnswering([{ ...BLANK, extra: '' }, GOOD]);
+    const res = await call({ path: latin1Path }, makeCtx({ translation }));
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.warnings.join(' ')).toMatch(/latin1\.bib is not valid UTF-8/);
+    // No citation key anywhere, so it is named by its place in the server's answer.
+    expect(res.structuredContent.skipped).toEqual([{ entry: 'entry 1', reason: expect.stringMatching(/no other field, so/) }]);
+    expect(res.content[0].text).toMatch(/1 warning\(s\) and 1 entry skipped; see warnings and skipped\./);
+  });
+
+  it('refuses, and writes nothing, when every item the server returned is empty', async () => {
+    const { translation } = serverAnswering([BLANK, { ...BLANK, key: 'BLNK3456', extra: 'Citation Key: jones2021' }]);
+    const ctx = makeCtx({ translation });
+    const res = await call({ text: MALFORMED, save_to_library: true }, ctx);
+
+    expect(res.isError).toBe(true);
+    expect(ctx.web.writeItems).not.toHaveBeenCalled();
+    expect(res.content[0].text).toMatch(
+      /^None of the 2 entries the translation-server read from this payload could be imported, so nothing was: smith2020 \(nothing usable.*; jones2021 \(nothing usable/,
+    );
+  });
+
+  it('keeps an untitled item that still names a work', async () => {
+    const untitled = { ...BLANK, creators: [{ creatorType: 'author', firstName: 'Ada', lastName: 'Lovelace' }] };
+    const { translation } = serverAnswering([untitled, { ...BLANK, DOI: '10.1234/x' }]);
+    const res = await call({ text: MALFORMED }, makeCtx({ translation }));
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.items).toHaveLength(2);
+    expect(res.structuredContent.skipped).toBeUndefined();
   });
 });
 

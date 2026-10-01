@@ -92,6 +92,11 @@ title in Extra.
 - Every item produced by the built-in parsers is validated against the Zotero schema before
   the write. An entry the schema refuses is listed in `skipped` with the reason, and the rest
   are still saved.
+- An entry nothing usable could be read from (no title, no creator, and no field beyond its
+  citation key and keywords) is not turned into an item, whichever path read it: the
+  built-in parsers or a translation-server. It is listed in `skipped` with the reason, and
+  never previewed or saved as a blank item. When every entry is like that, the call fails
+  and names them.
 
 Items carry `resolved:bibtex`, `resolved:ris`, `resolved:csljson` or
 `resolved:translation-server-import` in Extra, so where a record came from stays traceable.

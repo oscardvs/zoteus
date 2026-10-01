@@ -4,7 +4,12 @@ import { cslJsonToRecords } from '../../src/features/import/csl-json.js';
 import { decodeLatex } from '../../src/features/import/latex.js';
 import { mappingTables, toZoteroItems } from '../../src/features/import/mapping.js';
 import { parseBibliography, sniffFormat } from '../../src/features/import/parse.js';
-import { emptyRecordReason, parseBibtexNames } from '../../src/features/import/record.js';
+import {
+  emptyRecordReason,
+  emptyZoteroItemReason,
+  parseBibtexNames,
+  zoteroItemLabel,
+} from '../../src/features/import/record.js';
 import { risToRecords } from '../../src/features/import/ris.js';
 
 /**
@@ -283,5 +288,66 @@ describe('an entry the parser could read nothing from', () => {
     expect(emptyRecordReason(only('@misc{x, doi = {10.1234/x}}'))).toBeUndefined();
     // No CSL home, so it travels in Extra; an arXiv id there is still a way back to the work.
     expect(emptyRecordReason(only('@misc{x, eprint = {2201.00001}}'))).toBeUndefined();
+  });
+});
+
+describe('an item a translation-server returned with nothing in it', () => {
+  // The same defect on the other by_file path: with a translation-server running, its items
+  // are Zotero JSON and never become a BibRecord, so emptyRecordReason never saw them. What a
+  // translation-server stamps on every item (key, version) and where it is filed is not a work.
+  const BLANK = {
+    key: 'ABCD2345',
+    version: 0,
+    itemType: 'journalArticle',
+    title: '',
+    creators: [],
+    tags: [],
+    collections: [],
+    relations: {},
+    notes: [],
+    extra: 'Citation Key: smith2020',
+  };
+
+  it('flags an item holding only its type and a citation key, as the built-in check would', () => {
+    const reason = emptyZoteroItemReason(BLANK);
+    expect(reason).toMatch(/no title, no creators and no other field \(only a citation key\)/);
+    // One rule, one wording: the item and the record it would have been read as are judged
+    // and described alike, up to the sentence that says who read the entry.
+    const fromRecord = emptyRecordReason(bibtexToRecords('@article{smith2020,}').records[0]!);
+    const head = (r: string | undefined) => r?.split('. ')[0];
+    expect(head(reason)).toBe(head(fromRecord));
+    expect(reason).toMatch(/The translation-server read the entry this way and does not say why/);
+  });
+
+  it('flags the same item with no key at all, with a key in its own field, and with keywords only', () => {
+    expect(emptyZoteroItemReason({ itemType: 'document' })).toMatch(/no other field, so it was not/);
+    expect(emptyZoteroItemReason({ itemType: 'document', citationKey: 'k' })).toMatch(/only a citation key\)/);
+    expect(
+      emptyZoteroItemReason({ ...BLANK, tags: [{ tag: 'orphan', type: 1 }], creators: [{ creatorType: 'author' }] }),
+    ).toMatch(/only a citation key and keywords/);
+  });
+
+  it('keeps anything that names a work: a title, a creator, a field, an Extra line, a note', () => {
+    expect(emptyZoteroItemReason({ ...BLANK, title: 'T' })).toBeUndefined();
+    expect(
+      emptyZoteroItemReason({ ...BLANK, creators: [{ creatorType: 'author', lastName: 'Lovelace', firstName: '' }] }),
+    ).toBeUndefined();
+    expect(emptyZoteroItemReason({ ...BLANK, creators: [{ creatorType: 'author', name: 'CERN' }] })).toBeUndefined();
+    expect(emptyZoteroItemReason({ ...BLANK, DOI: '10.1234/x' })).toBeUndefined();
+    expect(emptyZoteroItemReason({ ...BLANK, date: '1843' })).toBeUndefined();
+    expect(emptyZoteroItemReason({ ...BLANK, extra: 'Citation Key: smith2020\narXiv: 2201.00001' })).toBeUndefined();
+    expect(emptyZoteroItemReason({ ...BLANK, notes: [{ note: '<p>Read this</p>' }] })).toBeUndefined();
+  });
+
+  it('does not judge what is not an item object', () => {
+    expect(emptyZoteroItemReason(null)).toBeUndefined();
+    expect(emptyZoteroItemReason('a string')).toBeUndefined();
+  });
+
+  it('names an item by its citation key wherever the translator put it, else by its position', () => {
+    expect(zoteroItemLabel(BLANK, 0)).toBe('smith2020');
+    expect(zoteroItemLabel({ itemType: 'book', citationKey: 'own2021' }, 1)).toBe('own2021');
+    expect(zoteroItemLabel({ itemType: 'book', extra: 'Note: x\ncitation key:  late2022 ' }, 2)).toBe('late2022');
+    expect(zoteroItemLabel({ itemType: 'book' }, 3)).toBe('entry 4');
   });
 });
