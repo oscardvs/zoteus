@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { ToolContext, ToolDefinition } from '../registry/registry.js';
 import { ok } from '../registry/registry.js';
 import { canonicalLibraryToken, describeLibraryToken } from '../features/search/backend.js';
+import { progressLine } from '../features/search/build.js';
 import { ATTRIBUTION_LINE, CITEPROC_ATTRIBUTION } from '../lib/notices.js';
 import { VERSION } from '../lib/version.js';
 import { LIVENESS_PATH } from '../api/local-client.js';
@@ -138,8 +139,17 @@ const whoami: ToolDefinition = {
             .boolean()
             .optional()
             .describe('Whether that is the library named in `defaultLibrary`. Present only when the index says which library it holds.'),
-          items: z.number().optional().describe('Library items the index represents.'),
+          items: z
+            .number()
+            .optional()
+            .describe(
+              'Library items the index represents. While state is "building" it is how far the running job has got, not the size of the library: `progress` says how far it has to go.',
+            ),
           state: z.string().optional().describe('Lifecycle of the background index job: "idle", "building", "done" or "error".'),
+          progress: z
+            .string()
+            .optional()
+            .describe('While state is "building": the running job\'s progress line, as zotero_index action:"status" reports it.'),
         })
         .passthrough()
         .optional()
@@ -189,12 +199,18 @@ const whoami: ToolDefinition = {
     // an index that cannot even report itself costs this one field and nothing else.
     const index = indexStatus(ctx);
     const indexLibrary = index?.library;
+    // A running job's item count is how far it has got, and reported bare it reads as the
+    // size of the index: the 2026-10-01 stress test compared 280 to 295 items here against
+    // 350 in the library while a job was still filling it in. The progress line beside it
+    // is the one zotero_index reports, so the two can never disagree.
+    const building = index?.state === 'building';
     const searchIndex = index
       ? {
           ...(indexLibrary ? { library: indexLibrary, libraryLabel: describeLibraryToken(indexLibrary) } : {}),
           ...(indexLibrary ? { holdsDefaultLibrary: indexLibrary === canonicalLibraryToken(lib) } : {}),
           ...(typeof index.items === 'number' ? { items: index.items } : {}),
           ...(index.state ? { state: index.state } : {}),
+          ...(building ? { progress: progressLine(index) } : {}),
         }
       : undefined;
     const structured = {
@@ -271,10 +287,15 @@ const whoami: ToolDefinition = {
       if (indexLibrary === undefined) {
         summary +=
           index && index.items > 0
-            ? ` Search index: ${index.items} items, from a build that did not record which library they came from.`
+            ? building
+              ? ` Search index: ${index.items} items so far, while an index ${index.operation ?? 'build'} is still running: ${searchIndex.progress}.`
+              : ` Search index: ${index.items} items, from a build that did not record which library they came from.`
             : ' Search index: nothing indexed here yet. Run zotero_index action:"build" to make this library searchable by meaning.';
       } else if (searchIndex.holdsDefaultLibrary) {
-        summary += ` Search index holds ${describeLibraryToken(indexLibrary)} (${index?.items ?? 0} items), which is the default library.`;
+        const held = building
+          ? `${index?.items ?? 0} items so far, while an index ${index?.operation ?? 'build'} is still running: ${searchIndex.progress}`
+          : `${index?.items ?? 0} items`;
+        summary += ` Search index holds ${describeLibraryToken(indexLibrary)} (${held}), which is the default library.`;
       } else {
         // The path is worth naming, because the remedy is a file on disk. A hand-built
         // context need not carry one, and "at undefined" would be worse than saying nothing.

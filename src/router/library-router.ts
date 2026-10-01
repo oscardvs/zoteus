@@ -315,7 +315,17 @@ export class LibraryRouter {
       // the named items AND every descendant they have (77 items for three keys, measured);
       // on /items/top it is exactly the keys asked for. Every key here is top-level by
       // construction, so nothing the caller should see is filtered out by asking that way.
-      const page = await itemsOf({ itemKey: batch.join(','), top: true, limit: batch.length });
+      // `includeTrashed` has to ride along: both APIs leave a trashed item out of a keyed
+      // read without it (the cloud answered 1 of 2 keys for `/items/top?itemKey=<trashed>,
+      // <live>` and 2 with it, in the 2026-10-01 stress test), so the trashed matches the
+      // key sets above counted would otherwise vanish from the page they were counted for.
+      // The desktop leaves them out even with it, which LocalApiClient works around.
+      const page = await itemsOf({
+        itemKey: batch.join(','),
+        top: true,
+        limit: batch.length,
+        includeTrashed: filters.includeTrashed,
+      });
       for (const item of page.data) if (item?.key) fetched.set(item.key, item);
     }
 

@@ -127,11 +127,53 @@ describe('zotero_groups', () => {
     const ctx = makeGroupsCtx({ held: [] });
     const res = await groups.handler({}, ctx);
     expect(res.content[0].text).toBe('1 accessible group(s).');
+    // The cloud's rows untouched; the one addition is what their counts count.
     expect(res.structuredContent).toEqual({
       groups: [{ id: 7, name: 'Lab', type: 'PublicOpen', numItems: 3 }],
+      numItemsNote: expect.any(String),
     });
     expect('source' in (res.structuredContent?.groups as any[])[0]).toBe(false);
     expect(res.structuredContent?.note).toBeUndefined();
+  });
+
+  // The 2026-10-01 stress test: the test group reported `numItems: 9` beside a search that
+  // found one item, and the caller was left guessing whether children or the trash made
+  // up the difference. Both APIs count every item row, the trash included; a cloud row
+  // used to say nothing about it and a desktop row said it only in `note`.
+  it('says what numItems counts beside every answer that carries one, cloud or desktop', async () => {
+    const cloud = await groups.handler({}, makeGroupsCtx({ held: [] }));
+    const local = await groups.handler(
+      {},
+      makeGroupsCtx({ key: false, held: [{ id: 6666644, name: 'Zoteus Test', numItems: 10 }] }),
+    );
+    const both = await groups.handler({}, makeGroupsCtx({ held: [{ id: 88, name: 'Local only', numItems: 512 }] }));
+    for (const res of [cloud, local, both]) {
+      const note = res.structuredContent?.numItemsNote as string;
+      expect(note).toMatch(/trash/);
+      expect(note).toMatch(/child\s+attachments, notes and annotations/);
+      // And how to get the number a caller actually wanted to compare.
+      expect(note).toMatch(/zotero_search_items.*top:true.*limit:1/s);
+      expect(note).toMatch(/totalResults/);
+    }
+    // The desktop note no longer claims the two APIs count differently: they run the same
+    // count, each over its own copy.
+    expect(local.structuredContent?.note).not.toMatch(/not the same figure/);
+    expect(local.structuredContent?.note).toMatch(/numItemsNote/);
+  });
+
+  it('adds no numItemsNote when no row carries a count', async () => {
+    const res = await groups.handler({}, makeGroupsCtx({ key: false, held: [{ id: 88, name: 'Lab' }] }));
+    expect(res.structuredContent?.numItemsNote).toBeUndefined();
+  });
+
+  it('documents what numItems counts in the tool description and the output schema', () => {
+    expect(groups.description).toMatch(/numItems` counts ALL the items/);
+    expect(groups.description).toMatch(/trash included/);
+    const shape = (groups.outputSchema as any).shape;
+    const row = shape.groups._def.type._def.shape();
+    expect(row.numItems.description).toMatch(/trash/);
+    expect(row.numItems.description).toMatch(/Not comparable with a zotero_search_items totalResults/);
+    expect(shape.numItemsNote.description).toMatch(/top-level items/);
   });
 
   it('merges both sources into one row per group', async () => {

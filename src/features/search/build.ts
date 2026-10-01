@@ -48,8 +48,16 @@ export function progressLine(s: IndexBuildStatus): string {
   const fulltext = showFulltext ? `, full text of ${s.fulltextItems} items (${s.fulltextPassages} passages)` : '';
   // An update's itemsFetched is the size of the delta, not progress through the library, so
   // rendering it as "7 of 5000" would read as a build that stalled on its first page.
+  //
+  // While it runs, its denominator is the delta (`itemsChanged`), and the item count is the
+  // index as it stands mid-delta rather than a total. Called "items total" throughout, it
+  // was read in the 2026-10-01 stress test as an index holding 280 to 295 items against a
+  // library of 350, with nothing to say a delta was still on its way in.
   if (s.operation === 'update') {
-    return `${s.itemsFetched} changed items re-indexed, ${s.itemsRemoved} removed, ${s.items} items total, ${s.passages} passages, ${s.vectors} vectors${fulltext} (embedder=${s.embedder})`;
+    const running = s.state === 'building';
+    const of = running && s.itemsChanged ? ` of ${s.itemsChanged}` : '';
+    const held = running ? `${s.items} items in the index so far` : `${s.items} items total`;
+    return `${s.itemsFetched}${of} changed items re-indexed, ${s.itemsRemoved} removed, ${held}, ${s.passages} passages, ${s.vectors} vectors${fulltext} (embedder=${s.embedder})`;
   }
   // The full-text pass has finished walking the library, so counting items fetched out of
   // items total would sit at 100% for however long the body crawl runs. Count what is
@@ -199,6 +207,29 @@ export function unembeddedNotice(s: IndexBuildStatus): string {
     ' rate limit is what stopped it, pace the next run with ZOTEUS_EMBED_BATCH_SIZE and' +
     ' ZOTEUS_EMBED_BATCH_DELAY_MS.'
   );
+}
+
+/**
+ * What `passagesWithoutVectors` means while a job is still running, which is the one time
+ * `unembeddedNotice` says nothing.
+ *
+ * The structured status carries the number on every poll, and mid-job it is mostly the
+ * job's own embedding queue rather than a shortfall: the 2026-10-01 stress test watched it
+ * fall from 3,358 to 2,988 during a running job and could not tell whether that was
+ * progress or damage. A build embeds every passage it queues (and a resumed one fills in
+ * the ones its predecessor left), so for a build the queue is the whole story. An update
+ * embeds only the passages of the items it re-indexes, so it promises no more than that,
+ * and anything still missing when it ends is reported by `unembeddedNotice` with its remedy.
+ * Silent once the embedder has failed: nothing is being embedded then, and `embedderNotice`
+ * says why.
+ */
+export function queuedNotice(s: IndexBuildStatus): string {
+  if (s.state !== 'building' || !s.passagesWithoutVectors || !s.embedderActive) return '';
+  return s.operation === 'update'
+    ? ` ${s.passagesWithoutVectors} passage(s) carry no vector yet: this update embeds those of the items it` +
+        ' re-indexes, and reports any still missing when it finishes.'
+    : ` ${s.passagesWithoutVectors} passage(s) are still waiting for a vector, which this build adds as it goes;` +
+        ' they are searchable by keyword meanwhile.';
 }
 
 /**
@@ -403,7 +434,7 @@ export function statusSummary(s: IndexBuildStatus): string {
         s.phase === 'fulltext'
           ? ' Every item\'s metadata is already indexed and searchable — this pass only adds the body text of attachments.'
           : '';
-      return `Index ${job} in progress: ${progressLine(s)}.${searchable} Poll zotero_index action:"status" again shortly.${pause}${notice}`;
+      return `Index ${job} in progress: ${progressLine(s)}.${searchable}${queuedNotice(s)} Poll zotero_index action:"status" again shortly.${pause}${notice}`;
     }
     case 'error': {
       // A failed build keeps what it got; a failed update keeps nothing of its own, because
