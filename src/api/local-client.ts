@@ -86,8 +86,10 @@ export interface LocalGroup {
   /**
    * Items in the group library as the DESKTOP counts them: `SELECT COUNT(*) FROM items
    * WHERE libraryID = ?`, so every row, child attachments, notes, annotations and
-   * trashed items included. The cloud computes its own numItems separately, so the two
-   * need not agree; callers that show this number must say where it came from.
+   * trashed items included. The cloud runs the very same count over its own copy (the
+   * dataserver's Zotero_Group::numItems), so the two agree only as far as the group is
+   * synced; callers that show this number must say where it came from, and that it is
+   * not a count a search would return.
    */
   numItems?: number;
   /** The group's synced METADATA version, not the version of its contents. */

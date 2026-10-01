@@ -13,11 +13,43 @@ import { canonicalLibraryToken } from '../features/search/backend.js';
 const LOCAL_NOTE =
   'Rows with source "local" come from the Zotero desktop app, which serves a group\'s id, ' +
   'name and description only: their `type` and `libraryEditing` are unknown here, not ' +
-  'absent from the group. Their `numItems` is the desktop\'s own count of every row in the ' +
-  'group library, child attachments, notes and trashed items included, so it is not the ' +
-  'same figure the cloud reports. Reading such a group needs no cloud key; writing to any ' +
+  'absent from the group. Their `numItems` is counted over the desktop\'s copy of the ' +
+  'group (see `numItemsNote`). Reading such a group needs no cloud key; writing to any ' +
   'group still does. They carry no `canWrite`: write permission is a property of the cloud ' +
   'API key, and the desktop reports none.';
+
+/**
+ * What `numItems` counts, said beside the number every time one is listed, because the
+ * number alone invites the one comparison it cannot bear.
+ *
+ * Both Zotero APIs compute it the same way, as a plain `SELECT COUNT(*) FROM items WHERE
+ * libraryID = ?` (the desktop in Zotero.Group.toResponseJSONAsync, the cloud in the
+ * dataserver's Zotero_Group::numItems), so it is every item row the library holds: child
+ * attachments, notes and annotations, and everything in the trash. A search counts none
+ * of the trash by default. In the 2026-10-01 stress test the test group reported
+ * `numItems: 9` beside a search that found one item, and the caller could only guess why;
+ * on the same day both APIs reported 10 for that group while `/items` answered 1 and
+ * `/items/trash` 9. Saying it in the tool's description alone was not enough: the note
+ * that said it then was emitted for desktop rows only, and a cloud row said nothing at
+ * all. A top-level count that WOULD compare cannot be had cheaply: on the desktop any
+ * items listing costs the size of the library, whatever its `limit` (#102), and on the
+ * cloud it is one more rate-limited request per group, so the caller is told how to ask
+ * for it instead.
+ */
+const NUM_ITEMS_NOTE =
+  '`numItems` is every item a group library holds: top-level items, their child ' +
+  'attachments, notes and annotations, and everything in the trash (both Zotero APIs count ' +
+  'the library\'s item rows, nothing more). It is therefore not comparable with the ' +
+  '`totalResults` of zotero_search_items, which leaves the trash out unless includeTrashed ' +
+  'is set, and child items out under top:true. For the number of top-level items not in ' +
+  'the trash, call zotero_search_items with library_type:"group", that library_id, top:true ' +
+  'and limit:1, and read `totalResults`. A desktop row counts the desktop\'s copy and a cloud ' +
+  'row the cloud\'s, so the two agree only as far as the group is synced.';
+
+/** `{ numItemsNote }` when any listed row carries a count, and nothing when none does. */
+function numItemsNoteFor(rows: Array<{ numItems?: unknown }>): { numItemsNote?: string } {
+  return rows.some((r) => typeof r.numItems === 'number') ? { numItemsNote: NUM_ITEMS_NOTE } : {};
+}
 
 /**
  * Group libraries the running desktop app holds, or [] when there is no desktop to ask.
@@ -148,7 +180,7 @@ const groups: ToolDefinition = {
   name: 'zotero_groups',
   title: 'List Zotero groups',
   description:
-    'List the group libraries this server can reach, with each group\'s id and name. Use a returned group id with the `library_id`/`library_type:"group"` parameters of other tools to operate on that group library; `library_type` alone does not address a group. With a cloud API key each group the key can access is listed with its type, item count, description and edit permissions, plus `canWrite`: whether this key may write to that group, decided from the key\'s own access map without sending a write, and `writeBlockedReason` naming the remedy when it may not. Without a key the list falls back to the group libraries a running Zotero 10+ desktop app holds, which are exactly the groups still readable, key-free, from that app: those rows carry id, name, description and the desktop\'s own item count, and no type, edit permissions or `canWrite`, because the desktop does not store them. Where both are available every row says which it came from, in `source`: "cloud", "local", or "both" for a group the key can see and the desktop also holds. Rows also carry `indexed`: whether this data directory holds a search index for that group, which is what makes it searchable by meaning. Each library gets its own index file, so several rows can be true, and a false row becomes true after zotero_index action:"build" library_type:"group" library_id:<id>. Writing to a group always goes through the cloud, even when the Zotero desktop app holds that group, and needs a key with write access to it; `libraryEditing` says whether the group itself lets ordinary members edit its library.',
+    'List the group libraries this server can reach, with each group\'s id and name. Use a returned group id with the `library_id`/`library_type:"group"` parameters of other tools to operate on that group library; `library_type` alone does not address a group. With a cloud API key each group the key can access is listed with its type, item count, description and edit permissions, plus `canWrite`: whether this key may write to that group, decided from the key\'s own access map without sending a write, and `writeBlockedReason` naming the remedy when it may not. Without a key the list falls back to the group libraries a running Zotero 10+ desktop app holds, which are exactly the groups still readable, key-free, from that app: those rows carry id, name, description and the desktop\'s own item count, and no type, edit permissions or `canWrite`, because the desktop does not store them. On every row `numItems` counts ALL the items the library holds, child attachments, notes and annotations and the trash included, so it is larger than a zotero_search_items count and is not a number of papers; `numItemsNote` says how to count top-level items instead. Where both are available every row says which it came from, in `source`: "cloud", "local", or "both" for a group the key can see and the desktop also holds. Rows also carry `indexed`: whether this data directory holds a search index for that group, which is what makes it searchable by meaning. Each library gets its own index file, so several rows can be true, and a false row becomes true after zotero_index action:"build" library_type:"group" library_id:<id>. Writing to a group always goes through the cloud, even when the Zotero desktop app holds that group, and needs a key with write access to it; `libraryEditing` says whether the group itself lets ordinary members edit its library.',
   inputSchema: {},
   outputSchema: z
     .object({
@@ -159,7 +191,12 @@ const groups: ToolDefinition = {
               id: z.number().describe('Group id; pass it as library_id together with library_type:"group".'),
               name: z.string().optional().describe('Group name.'),
               type: z.string().optional().describe('Zotero group type, e.g. "Private" or "PublicClosed"; absent on a desktop-only row.'),
-              numItems: z.number().optional().describe("Item count. A desktop row counts every row it holds, so it differs from the cloud's figure."),
+              numItems: z
+                .number()
+                .optional()
+                .describe(
+                  'Every item the library holds: top-level items, child attachments, notes and annotations, and the trash. Not comparable with a zotero_search_items totalResults; see numItemsNote. A desktop row counts the desktop\'s copy, a cloud row the cloud\'s.',
+                ),
               description: z.string().optional().describe('Group description.'),
               libraryEditing: z.string().optional().describe('Who may edit the group library, e.g. "members" or "admins"; absent on a desktop-only row.'),
               source: z.string().optional().describe('Where the row came from: "cloud", "local", or "both".'),
@@ -184,6 +221,12 @@ const groups: ToolDefinition = {
         )
         .describe('The group libraries this server can reach.'),
       note: z.string().optional().describe('What a desktop-served row does and does not say; present only when one is listed.'),
+      numItemsNote: z
+        .string()
+        .optional()
+        .describe(
+          'What `numItems` counts (every item, children and the trash included) and how to count top-level items instead; present whenever a row carries numItems.',
+        ),
     })
     .passthrough(),
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
@@ -213,8 +256,9 @@ const groups: ToolDefinition = {
         };
       }
       const localVerdict = await indexedVerdict(ctx, held.map((g) => g.id));
+      const rows = held.map((g) => ({ ...localEntry(g), ...localVerdict(g.id) }));
       return ok(
-        { groups: held.map((g) => ({ ...localEntry(g), ...localVerdict(g.id) })), note: LOCAL_NOTE },
+        { groups: rows, note: LOCAL_NOTE, ...numItemsNoteFor(rows) },
         `${held.length} group(s) held by the Zotero desktop app, which serves them with no cloud key. Reading them works; writing to a group still needs a key with write access to it.`,
       );
     }
@@ -243,10 +287,11 @@ const groups: ToolDefinition = {
         ...verdict(Number(id)),
       };
     });
-    // Nothing local to fold in: the answer is the cloud's, unchanged down to its wording.
+    // Nothing local to fold in: the answer is the cloud's, unchanged down to its wording,
+    // apart from saying what its counts count.
     if (!held.length) {
       return ok(
-        { groups: groupList },
+        { groups: groupList, ...numItemsNoteFor(groupList) },
         `${groupList.length} accessible group(s).${writableSentence(groupList)}${readOnlySentence(ctx)}`,
       );
     }
@@ -262,7 +307,7 @@ const groups: ToolDefinition = {
       ...localOnly.map((g) => ({ ...localEntry(g), ...verdict(g.id) })),
     ];
     return ok(
-      { groups: merged, ...(localOnly.length ? { note: LOCAL_NOTE } : {}) },
+      { groups: merged, ...(localOnly.length ? { note: LOCAL_NOTE } : {}), ...numItemsNoteFor(merged) },
       `${merged.length} group(s): ${groupList.length} the API key can access` +
         (localOnly.length
           ? `, ${localOnly.length} held only by the Zotero desktop app.`
