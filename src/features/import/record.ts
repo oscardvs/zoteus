@@ -127,6 +127,45 @@ export function parseRisName(raw: string, cslName: string): BibCreator {
   return { cslName, family: words[words.length - 1]!, given: words.slice(0, -1).join(' ') };
 }
 
+/**
+ * The Extra label a citation key travels under when it has no field of its own, which is how
+ * Zotero itself and Better BibTeX have long written one ("Citation Key: lovelace1843"), and
+ * how the RIS leg keeps an `ID` tag. A line under it is bookkeeping, not bibliographic content.
+ */
+export const CITATION_KEY_EXTRA_LABEL = 'Citation Key';
+
+/**
+ * Why a record would become an empty item, or undefined when it holds something worth saving.
+ *
+ * "Something" is deliberately little: a title, one named creator, any field other than the
+ * citation key, or any Extra line other than the citation key. Keywords alone do not count,
+ * since tags name what a work is about, not which work it is. What is left when all of that is
+ * missing is a record that was opened and never filled, which in practice means the parser
+ * could not read the entry: a brace that never closed swallowed every field, a missing comma
+ * after the key folded the fields into it, or an RIS record held nothing between its TY and
+ * its ER. Until the 2026-10-01 stress test such a record still became an item, a `document`
+ * (or whatever its type said) carrying at most a citation key, and the warning that explained
+ * the broken entry sat beside an `items` list that contained it, ready to be saved as a blank
+ * row in the library. The reason returned here is what the import reports in `skipped`.
+ */
+export function emptyRecordReason(record: BibRecord): string | undefined {
+  const hasField = Object.entries(record.fields).some(([name, value]) => name !== 'citation-key' && value.trim());
+  const hasCreator = record.creators.some((c) => c.family || c.given || c.literal);
+  const keyLine = new RegExp(`^${CITATION_KEY_EXTRA_LABEL}:`, 'i');
+  const hasExtra = record.extra.some((line) => line.trim() && !keyLine.test(line.trim()));
+  if (hasField || hasCreator || hasExtra) return undefined;
+  const had = [
+    record.fields['citation-key']?.trim() || record.extra.some((line) => keyLine.test(line.trim())) ? 'a citation key' : '',
+    record.tags.some((t) => t.trim()) ? 'keywords' : '',
+  ].filter(Boolean);
+  return (
+    'nothing usable could be read from this entry: no title, no creators and no other field' +
+    (had.length ? ` (only ${had.join(' and ')})` : '') +
+    ', so it was not turned into an item, which would have been empty. The warnings say what went wrong in ' +
+    'the entry when the parser could tell; fix it and import the file again.'
+  );
+}
+
 /** Split a keyword field the way every exporter writes one: on semicolons, else commas. */
 export function splitKeywords(raw: string): string[] {
   const parts = raw.includes(';') ? raw.split(';') : raw.split(',');

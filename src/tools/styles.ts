@@ -7,7 +7,10 @@ const styles: ToolDefinition = {
   name: 'zotero_styles',
   title: 'Resolve CSL citation styles',
   description:
-    'Resolve a human citation-style name to a valid CSL style id and confirm it is available, or list common style aliases. `action: "resolve"` maps names like "APA 7th", "IEEE", "Vancouver", "Chicago", "MLA", "Nature" to the correct CSL id (e.g. apa, ieee, modern-language-association) and verifies the style can be fetched; pass the returned `styleId` as the `style` argument to zotero_format_bibliography or zotero_bibliography. `action: "list"` returns the built-in common aliases (any id from the CSL styles repository also works). Dependent styles are resolved to their independent parent automatically when formatting.',
+    'Resolve a human citation-style name to a valid CSL style id and confirm it is available, or list common style aliases. `action: "resolve"` maps names like "APA 7th", "IEEE", "Vancouver", "Chicago", "MLA", "Nature" to the correct CSL id (e.g. apa, ieee, modern-language-association) and verifies the style can be fetched; pass the returned `styleId` as the `style` argument to zotero_format_bibliography or zotero_bibliography. `action: "list"` returns the built-in common aliases (any id from the CSL styles repository also works). Dependent styles are resolved to their independent parent automatically when formatting. ' +
+    'Long names resolve too, including the titles Zotero lists styles under ("Chicago Manual of Style 17th edition (author-date)", ' +
+    '"American Psychological Association 7th edition"), and a past edition the CSL repository still carries (Chicago 16th and 17th, ' +
+    'APA 6th, AMA 10th) resolves to that edition\'s own style rather than to the current one. A name it cannot read is tried as a CSL id as given.',
   inputSchema: {
     action: z
       .enum(['list', 'resolve'])

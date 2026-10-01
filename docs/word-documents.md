@@ -133,8 +133,9 @@ links to library items. Plugin refresh of this output remains unverified, as des
 ## Styles
 
 `style` accepts the same names and ids as `zotero_styles` and
-`zotero_format_bibliography`: `"apa"`, `"APA 7th"`, `"ieee"`, `"chicago author-date"`, or any
-id from the CSL styles repository.
+`zotero_format_bibliography`: `"apa"`, `"APA 7th"`, `"ieee"`, `"chicago author-date"`, a long
+name such as `"Chicago Manual of Style 17th edition (author-date)"`, or any id from the CSL
+styles repository.
 
 The document is **stamped with the style you asked for**, not with the independent parent that
 a dependent style resolves to for rendering. That matters: the stamped URL is what Word

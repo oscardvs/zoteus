@@ -20,6 +20,11 @@ describe('parseIdentifier', () => {
     expect(parseIdentifier('https://dx.doi.org/10.1234/abc')).toEqual({ type: 'doi', value: '10.1234/abc' });
   });
 
+  it('classifies a DOI with the "doi:" a reference list prints before it', () => {
+    expect(parseIdentifier('doi:10.1038/nature12373')).toEqual({ type: 'doi', value: '10.1038/nature12373' });
+    expect(parseIdentifier('DOI: 10.1038/nature12373')).toEqual({ type: 'doi', value: '10.1038/nature12373' });
+  });
+
   it('classifies arXiv new-style ids with and without /abs/ prefix', () => {
     expect(parseIdentifier('2201.00001')).toEqual({ type: 'arxiv', value: '2201.00001' });
     expect(parseIdentifier('https://arxiv.org/abs/2201.00001v2')).toEqual({ type: 'arxiv', value: '2201.00001v2' });
@@ -31,6 +36,45 @@ describe('parseIdentifier', () => {
 
   it('classifies ISBNs', () => {
     expect(parseIdentifier('9783161484100')).toEqual({ type: 'isbn', value: '9783161484100' });
+  });
+
+  // The 2026-10-01 stress test: an ISBN-13 as printed, with its hyphens, came back as "Could
+  // not parse as a known identifier" from a message that listed ISBN as accepted.
+  it('classifies ISBNs as books print them: hyphens, spaces, an ISBN prefix, ISBN-10 with X', () => {
+    const isbn13 = { type: 'isbn', value: '9780262033848' };
+    expect(parseIdentifier('978-0-262-03384-8')).toEqual(isbn13);
+    expect(parseIdentifier('978 0 262 03384 8')).toEqual(isbn13);
+    expect(parseIdentifier('ISBN 978-0-262-03384-8')).toEqual(isbn13);
+    expect(parseIdentifier('ISBN-13: 978-0-262-03384-8')).toEqual(isbn13);
+    expect(parseIdentifier('isbn13 9780262033848')).toEqual(isbn13);
+    expect(parseIdentifier('0-8044-2957-x')).toEqual({ type: 'isbn', value: '080442957X' });
+    expect(parseIdentifier('ISBN-10: 0-262-03384-4')).toEqual({ type: 'isbn', value: '0262033844' });
+  });
+
+  it('does not read a date or a short number run as an ISBN', () => {
+    expect(parseIdentifier('2020-01-15')).toBeNull();
+    expect(parseIdentifier('978-0-262')).toBeNull();
+    expect(parseIdentifier('978--0-262-03384-8')).toBeNull();
+  });
+
+  it('classifies PMIDs as PubMed prints and links them', () => {
+    const pmid = { type: 'pmid', value: '31452104' };
+    expect(parseIdentifier('31452104')).toEqual(pmid);
+    expect(parseIdentifier('PMID: 31452104')).toEqual(pmid);
+    expect(parseIdentifier('pmid:31452104')).toEqual(pmid);
+    expect(parseIdentifier('https://pubmed.ncbi.nlm.nih.gov/31452104/')).toEqual(pmid);
+    expect(parseIdentifier('https://www.ncbi.nlm.nih.gov/pubmed/31452104')).toEqual(pmid);
+  });
+
+  // The pattern was nineteen digits, which no bibcode is, so every real one fell through.
+  it('classifies real ADS bibcodes, bare or as an ADS link, keeping their case', () => {
+    expect(parseIdentifier('2019ApJ...882L..24A')).toEqual({ type: 'bibcode', value: '2019ApJ...882L..24A' });
+    expect(parseIdentifier('2018A&A...616A...1G')).toEqual({ type: 'bibcode', value: '2018A&A...616A...1G' });
+    expect(parseIdentifier('2020arXiv200203839S')).toEqual({ type: 'bibcode', value: '2020arXiv200203839S' });
+    expect(parseIdentifier('https://ui.adsabs.harvard.edu/abs/2019ApJ...882L..24A/abstract')).toEqual({
+      type: 'bibcode',
+      value: '2019ApJ...882L..24A',
+    });
   });
 
   it('returns null for free text and unknown URLs', () => {

@@ -4,7 +4,7 @@ import { cslJsonToRecords } from '../../src/features/import/csl-json.js';
 import { decodeLatex } from '../../src/features/import/latex.js';
 import { mappingTables, toZoteroItems } from '../../src/features/import/mapping.js';
 import { parseBibliography, sniffFormat } from '../../src/features/import/parse.js';
-import { parseBibtexNames } from '../../src/features/import/record.js';
+import { emptyRecordReason, parseBibtexNames } from '../../src/features/import/record.js';
 import { risToRecords } from '../../src/features/import/ris.js';
 
 /**
@@ -257,5 +257,31 @@ describe('a creator field that is mostly whitespace', () => {
       { cslName: 'author', family: 'Lovelace', given: 'Ada' },
       { cslName: 'author', literal: 'Smith and Sons' },
     ]);
+  });
+});
+
+describe('an entry the parser could read nothing from', () => {
+  // The 2026-10-01 stress test: such an entry became an empty item in the preview, and would
+  // have become a blank row in the library on a save. The import skips what this flags.
+  const only = (text: string) => bibtexToRecords(text).records[0]!;
+
+  it('flags an entry that holds only its key, in all three formats', () => {
+    expect(emptyRecordReason(only('@misc{x,}'))).toMatch(/no title, no creators and no other field \(only a citation key\)/);
+    expect(emptyRecordReason(risToRecords('TY  - JOUR\nID  - abc\nER  - \n').records[0]!)).toMatch(/only a citation key/);
+    expect(emptyRecordReason(cslJsonToRecords('[{"id":"x"}]').records[0]!)).toMatch(/only a citation key/);
+    expect(emptyRecordReason(risToRecords('TY  - JOUR\nER  - \n').records[0]!)).toMatch(/other field, so it was not/);
+  });
+
+  it('counts keywords as nothing, since they do not say which work this is', () => {
+    expect(emptyRecordReason(only('@misc{x, keywords = {a, b}}'))).toMatch(/only a citation key and keywords/);
+  });
+
+  it('keeps anything that names a work: a title, a creator, a date, an identifier, or a line for Extra', () => {
+    expect(emptyRecordReason(only('@misc{x, title = {T}}'))).toBeUndefined();
+    expect(emptyRecordReason(only('@misc{x, author = {Ada Lovelace}}'))).toBeUndefined();
+    expect(emptyRecordReason(only('@misc{x, year = {1843}}'))).toBeUndefined();
+    expect(emptyRecordReason(only('@misc{x, doi = {10.1234/x}}'))).toBeUndefined();
+    // No CSL home, so it travels in Extra; an arXiv id there is still a way back to the work.
+    expect(emptyRecordReason(only('@misc{x, eprint = {2201.00001}}'))).toBeUndefined();
   });
 });

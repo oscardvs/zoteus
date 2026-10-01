@@ -23,7 +23,8 @@ import { arxivItem, fromScholarWork, parseIdentifier, bareDoi, type ResolvedItem
 import { detectKind, fetchAttachmentBytes, resolveAttachment, SOURCE_LABEL } from '../features/attachments/resolve.js';
 import { DEFAULT_PRECISE_MAX_BYTES, extractPdfPages } from '../features/fulltext/pdf-pages.js';
 import { loadPdfjs, pdfjsUnavailableReason } from '../features/fulltext/pdfjs-loader.js';
-import { mappingTables, toZoteroItems } from '../features/import/mapping.js';
+import { mappingTables, toZoteroItem } from '../features/import/mapping.js';
+import { emptyRecordReason } from '../features/import/record.js';
 import { parseBibliography, sniffFormat, type ImportFormat } from '../features/import/parse.js';
 import { hasTextLayer, scanIdentifiers, type IdentifierHit } from '../features/import/scan-identifiers.js';
 import { validateItem } from '../schema/validate.js';
@@ -48,16 +49,123 @@ function err(text: string): ToolHandlerResult {
 }
 
 /**
- * Built-in resolution fallback used when no translation-server is reachable.
- * Handles arXiv ids (direct Atom fetch) and DOIs (OpenAlex primary, Crossref
- * fallback — the same scholar providers zotero_scholar uses). ISBN/PMID/
- * bibcodes and web URLs cannot be resolved server-side and return a clear error.
+ * The identifier kinds a translation-server resolves and Zoteus itself cannot, each with the
+ * nearest thing that does work without one. Every alternative named here is one that
+ * succeeds where the call failed: a DOI or an arXiv id resolves on the built-in path below,
+ * and the desktop app's Add Item by Identifier runs the same translators a translation-server
+ * does.
  */
-async function resolveBuiltin(ctx: ToolContext, id: string): Promise<{ items: ResolvedItem[]; source: string }> {
+const NO_BUILTIN_RESOLVER: Record<string, { what: string; plural: string; instead: string }> = {
+  isbn: { what: 'an ISBN', plural: 'ISBNs', instead: 'if the book has a DOI, import that instead' },
+  pmid: {
+    what: 'a PubMed id (PMID)',
+    plural: 'PMIDs',
+    instead: "the PubMed record usually lists the article's DOI, so import that instead",
+  },
+  bibcode: {
+    what: 'an ADS bibcode',
+    plural: 'ADS bibcodes',
+    instead: 'the ADS record usually lists a DOI or an arXiv id, so import one of those instead',
+  },
+};
+
+/** What action:"by_identifier" takes, for a message about an identifier it did not recognise. */
+const ACCEPTED_IDENTIFIERS =
+  'action:"by_identifier" takes a DOI (10.1109/…), an arXiv id (2301.12345), an ISBN-10 or ISBN-13 (hyphens ' +
+  'allowed), a PMID, or an ADS bibcode (2019ApJ...882L..24A). A web page goes to action:"by_url" instead.';
+
+/**
+ * What a caller can do about having no translation-server, worded for who can act on it.
+ *
+ * On a shared (hosted) Zoteus the caller cannot start one: the server is not on their
+ * machine, and ZOTEUS_TRANSLATION_SERVER_URL is the operator's setting. Telling them to `docker
+ * run` sends them off to install something the server they are talking to will never see,
+ * which is what the 2026-10-01 stress test's ISBN would have been told had it been parsed at
+ * all. So the hosted wording names who can attach one, the way an OCR refusal on a shared
+ * server names its operator (get-fulltext.ts), and the local wording keeps the one command
+ * that fixes it. The loopback address is left out of the hosted wording: it is where the
+ * operator's process looked, which says nothing to the person reading.
+ */
+function translationServerRemedy(ctx: ToolContext): string {
+  if (ctx.remoteCaller) {
+    return 'This shared Zoteus has no translation-server, and only its operator can attach one (ZOTEUS_TRANSLATION_SERVER_URL).';
+  }
+  return (
+    `No translation-server answered at ${ctx.config.translationServerUrl}: start one with ` +
+    '`docker run -d -p 1969:1969 zotero/translation-server` (or point ZOTEUS_TRANSLATION_SERVER_URL at one), then retry.'
+  );
+}
+
+/**
+ * Why action:"by_url" cannot run here, and what can.
+ *
+ * A DOI or arXiv link is the one kind of URL with a way round: it names an identifier the
+ * built-in resolver takes, so the message hands that identifier back rather than leaving the
+ * caller to install a scraper the call never needed.
+ */
+function noScraperMessage(ctx: ToolContext, url: string): string {
+  const head = ctx.remoteCaller
+    ? `URL scraping needs a Zotero translation-server and has no built-in fallback. ${translationServerRemedy(ctx)}`
+    : `No Zotero translation-server reachable at ${ctx.config.translationServerUrl}, and URL scraping has no built-in ` +
+      'fallback. Start one with `docker run -d -p 1969:1969 zotero/translation-server` (or set ' +
+      'ZOTEUS_TRANSLATION_SERVER_URL), then retry.';
+  const asId = parseIdentifier(url);
+  const viaIdentifier =
+    asId && (asId.type === 'doi' || asId.type === 'arxiv')
+      ? ` That URL is ${asId.type === 'doi' ? 'a DOI' : 'an arXiv'} link, though: action:"by_identifier" with ` +
+        `identifier "${asId.value}" resolves it without one.`
+      : '';
+  return (
+    `${head}${viaIdentifier} Otherwise, save the page from your browser with the Zotero Connector` +
+    (ctx.remoteCaller ? ', and it reaches this server once Zotero syncs.' : '.')
+  );
+}
+
+/** The desktop route that resolves what the built-in path cannot, worded for where the caller is. */
+function addByIdentifierRoute(ctx: ToolContext): string {
+  return (
+    'add it with Add Item by Identifier (the wand button) in the Zotero desktop app, which runs the same translators' +
+    (ctx.remoteCaller ? ', and the item reaches this server once Zotero syncs' : '')
+  );
+}
+
+/**
+ * Built-in resolution fallback, used when no translation-server is reachable or when the one
+ * that is could not resolve the identifier (`translationMiss` is then what it answered).
+ * Handles arXiv ids (direct Atom fetch) and DOIs (OpenAlex primary, Crossref fallback: the
+ * same scholar providers zotero_scholar uses). ISBNs, PMIDs and bibcodes have no keyless
+ * source here, so they are recognised and refused by name, with the reason and what works
+ * instead; they used to share one "Could not parse" with genuinely unrecognisable input,
+ * which blamed the identifier for what was the server's limitation.
+ */
+async function resolveBuiltin(
+  ctx: ToolContext,
+  id: string,
+  translationMiss?: string,
+): Promise<{ items: ResolvedItem[]; source: string }> {
   const parsed = parseIdentifier(id);
   if (!parsed) {
     throw new Error(
-      `Could not parse "${id}" as a known identifier. Try a DOI (10.…), arXiv id (YYMM.NNNNN), ISBN, PMID, or ADS bibcode — or start a translation-server for URL imports.`,
+      (translationMiss
+        ? `The translation-server could not resolve "${id}" (${translationMiss}), and it is not an identifier Zoteus ` +
+          'can resolve itself either, so nothing was found. '
+        : `"${id}" is not an identifier Zoteus recognises, so nothing was looked up. `) + ACCEPTED_IDENTIFIERS,
+    );
+  }
+  const unresolvable = NO_BUILTIN_RESOLVER[parsed.type];
+  if (unresolvable) {
+    const shown = parsed.value === id.trim() ? '' : ` (read as ${parsed.value})`;
+    if (translationMiss) {
+      throw new Error(
+        `"${id}" is ${unresolvable.what}${shown}, and the translation-server could not resolve it (${translationMiss}). ` +
+          `Zoteus has no built-in resolver for ${unresolvable.plural}, only for DOIs and arXiv ids, so nothing was found. ` +
+          `Check the identifier; otherwise, ${unresolvable.instead}. Nothing was saved.`,
+      );
+    }
+    throw new Error(
+      `"${id}" is ${unresolvable.what}${shown}, and resolving ${unresolvable.plural} needs a Zotero translation-server: ` +
+        `Zoteus has a built-in resolver only for DOIs and arXiv ids. ${translationServerRemedy(ctx)} ` +
+        `Otherwise, ${unresolvable.instead}; or ${addByIdentifierRoute(ctx)}. Nothing was saved.`,
     );
   }
   switch (parsed.type) {
@@ -72,12 +180,6 @@ async function resolveBuiltin(ctx: ToolContext, id: string): Promise<{ items: Re
       if (!work) throw new Error(`No scholarly record found for DOI "${doi}".`);
       return { items: [fromScholarWork(work, doi)], source: 'scholar' };
     }
-    case 'pmid':
-      throw new Error(`PMID resolution requires a translation-server (no built-in source). Start one or set ZOTEUS_TRANSLATION_SERVER_URL, then retry.`);
-    case 'isbn':
-      throw new Error(`ISBN resolution requires a translation-server (no built-in source). Start one or set ZOTEUS_TRANSLATION_SERVER_URL, then retry.`);
-    case 'bibcode':
-      throw new Error(`ADS bibcode resolution requires a translation-server (no built-in source). Start one or set ZOTEUS_TRANSLATION_SERVER_URL, then retry.`);
     default:
       throw new Error(`Unsupported identifier type "${parsed.type}".`);
   }
@@ -103,7 +205,9 @@ const importTool: ToolDefinition = {
     'written, which makes a file import a free preview of what would be created. ' +
     'When a Zotero translation-server is reachable (ZOTEUS_TRANSLATION_SERVER_URL, default http://127.0.0.1:1969) it is the primary path ' +
     'for identifiers and URLs; with none running, DOI and arXiv ids fall back to built-in resolution (OpenAlex/Crossref and the arXiv API), ' +
-    'and the result then carries a `source` field ("scholar" or "arxiv"). ISBN/PMID/bibcode and web URLs require a translation-server. ' +
+    'and the result then carries a `source` field ("scholar" or "arxiv"). ISBN/PMID/bibcode and web URLs require a translation-server ' +
+    '(a hosted Zoteus has none unless its operator attached one); without one the call fails with an error that names what the ' +
+    'identifier was recognised as and what works instead. ' +
     'Set `check_duplicates:true` to compare what was resolved against your library first: matching items are reported under `duplicates` ' +
     '(matched on normalised DOI, then ISBN, then normalised title plus year, all exact comparisons rather than similarity; a title match ' +
     'with no year on one side needs a title of at least four words or a creator surname both records share, and says so), and a save that ' +
@@ -117,7 +221,12 @@ const importTool: ToolDefinition = {
       .describe(
         'What to resolve: "by_identifier" takes `identifier` (DOI, ISBN, PMID, arXiv id, ADS bibcode); "by_url" scrapes `url` and needs a translation-server; "by_file" parses a BibTeX/RIS/CSL-JSON bibliography from `text` or `path`; "by_pdf" reads a PDF at `path` or `attachment_key` and resolves the DOI or arXiv id printed in it.',
       ),
-    identifier: z.string().optional().describe('DOI (10.…), arXiv id (YYMM.NNNNN), ISBN, PMID, or ADS bibcode.'),
+    identifier: z
+      .string()
+      .optional()
+      .describe(
+        'DOI (10.…), arXiv id (YYMM.NNNNN), ISBN-10 or ISBN-13 (hyphens and an "ISBN" prefix are fine), PMID, or ADS bibcode (e.g. 2019ApJ...882L..24A). ISBN, PMID and bibcode need a translation-server.',
+      ),
     url: z.string().optional().describe('Web page URL to scrape (needs a translation-server).'),
     text: z
       .string()
@@ -320,19 +429,28 @@ const importTool: ToolDefinition = {
     // A URL with no translation-server is unresolvable server-side; say so plainly. An
     // identifier is not in that position: DOIs and arXiv ids have built-in fallbacks below,
     // and the ones that do not (ISBN/PMID/bibcode) are named as such by resolveBuiltin.
-    if (!tsUp && args.action === 'by_url') {
-      return err(
-        `No Zotero translation-server reachable at ${ctx.config.translationServerUrl}, and URL scraping has no built-in fallback. Start one with \`docker run -d -p 1969:1969 zotero/translation-server\` (or set ZOTEUS_TRANSLATION_SERVER_URL), then retry.`,
-      );
-    }
+    if (!tsUp && args.action === 'by_url') return err(noScraperMessage(ctx, args.url));
     if (args.action === 'by_identifier') {
+      // What the translation-server said when it could not resolve the identifier. A 400 or
+      // 501 from it is a throw, not an empty list, and the throw used to end the call right
+      // here: a DOI the translation-server had no translator for never reached the built-in
+      // resolver that would have found it, although the comment below promised it would.
+      // Only the lookup is guarded: a save that fails after the translation-server DID
+      // resolve must surface as that failure, not send the identifier round again.
+      let translationMiss: string | undefined;
       if (tsUp) {
-        const items = await ctx.translation.search(args.identifier);
-        if (items.length) return await maybeSave(ctx, args, items, 'translation-server');
+        let found: any[] = [];
+        try {
+          found = (await ctx.translation.search(args.identifier)) ?? [];
+        } catch (e) {
+          translationMiss = e instanceof Error ? e.message.replace(/\.$/, '') : String(e);
+        }
+        if (found.length) return await maybeSave(ctx, args, found, 'translation-server');
+        translationMiss ??= 'it returned no items';
       }
       // translation-server down (or the identifier failed): try the built-in path.
       try {
-        const { items, source } = await resolveBuiltin(ctx, args.identifier);
+        const { items, source } = await resolveBuiltin(ctx, args.identifier, translationMiss);
         return await maybeSave(ctx, args, items, source);
       } catch (e) {
         return err(e instanceof Error ? e.message : String(e));
@@ -1174,22 +1292,44 @@ async function importFromFile(ctx: ToolContext, args: any): Promise<ToolHandlerR
 
   const schema = await loadSchema(ctx);
   const tables = mappingTables(schema);
-  const mapped = toZoteroItems(parsed.records, tables);
-  const labels = parsed.records.map((r) => r.label);
 
-  // Validated before the write, not after: #77's `Imported 0 of 1` came from Zotero refusing
-  // one item with no error of its own, and a file import multiplies that by the entry count.
+  // Two gates stand between an entry and `items`, applied in entry order so `skipped` reads
+  // like the file. First, an entry the parser could read nothing from is not an item at all
+  // (emptyRecordReason says why): the 2026-10-01 stress test's malformed BibTeX entry was
+  // warned about correctly and STILL came back as an empty `document` in the preview, which a
+  // save would have written as a blank row. Every save goes through this same list, so
+  // skipping it here is what keeps it out of the library too. Second, an item Zotero's schema
+  // would refuse is validated before the write, not after: #77's `Imported 0 of 1` came from
+  // Zotero refusing one item with no error of its own, and a file import multiplies that by
+  // the entry count.
   const items: any[] = [];
   const skipped: Array<{ entry: string; reason: string }> = [];
-  mapped.items.forEach((item, index) => {
-    const problems = schema ? validateItem(schema, item).errors : [];
-    if (problems.length) skipped.push({ entry: labels[index] ?? `entry ${index + 1}`, reason: problems.join(' ') });
-    else items.push(item);
-  });
+  const mappingWarnings: string[] = [];
+  for (const record of parsed.records) {
+    const empty = emptyRecordReason(record);
+    if (empty) {
+      skipped.push({ entry: record.label, reason: empty });
+      continue;
+    }
+    const mapped = toZoteroItem(record, tables);
+    mappingWarnings.push(...mapped.warnings);
+    const problems = schema ? validateItem(schema, mapped.item).errors : [];
+    if (problems.length) skipped.push({ entry: record.label, reason: problems.join(' ') });
+    else items.push(mapped.item);
+  }
   if (!items.length) {
+    // An error result has no `warnings` field, and the reason an entry came out empty is
+    // usually in the parser's warnings (the brace that never closed), so they ride along here.
+    const listed =
+      skipped
+        .slice(0, 5)
+        .map((s) => `${s.entry} (${s.reason})`)
+        .join('; ') + (skipped.length > 5 ? `; and ${skipped.length - 5} more` : '');
+    const parserSaid = parsed.warnings.slice(0, 5);
     return err(
-      `All ${mapped.items.length} entries in this ${format} payload were refused by Zotero's schema, so nothing ` +
-        `was imported: ${skipped.slice(0, 5).map((s) => `${s.entry} (${s.reason})`).join('; ')}`,
+      `None of the ${parsed.records.length} ${parsed.records.length === 1 ? 'entry' : 'entries'} in this ${format} ` +
+        `payload could be imported, so nothing was: ${listed}.` +
+        (parserSaid.length ? ` The parser reported: ${parserSaid.join(' ')}` : ''),
     );
   }
 
@@ -1198,7 +1338,7 @@ async function importFromFile(ctx: ToolContext, args: any): Promise<ToolHandlerR
     format,
     parsed: parsed.records.length,
     mapping: tables.origin,
-    warnings: [...readWarnings, ...parsed.warnings, ...mapped.warnings],
+    warnings: [...readWarnings, ...parsed.warnings, ...mappingWarnings],
     skipped,
   });
 }
