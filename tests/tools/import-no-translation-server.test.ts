@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import importTool from '../../src/tools/import.js';
+import { TranslationServerClient } from '../../src/features/citation/translation-server.js';
+import { ZoteroApiError } from '../../src/api/errors.js';
 
 /**
  * zotero_import with no translation-server, which is every hosted deployment and most local
@@ -216,5 +218,139 @@ describe('zotero_import by_url without a translation-server', () => {
     expect(text(arxiv)).toMatch(
       /That URL is an arXiv link, though: action:"by_identifier" with identifier "2201\.00001"/,
     );
+  });
+});
+
+/**
+ * by_url with a translation-server that IS running and cannot scrape the page.
+ *
+ * The 2026-10-01 stress test: the raw "translation-server /web returned 500." was the whole
+ * answer, naming neither the page, nor what the server said, nor anything to do. The
+ * translation-server here is the real client over a fetcher that answers as a running one
+ * does: 200 to the probe, and whatever the case needs to /web.
+ */
+describe('zotero_import by_url when the translation-server is up but cannot scrape the page', () => {
+  const PAGE = 'https://example.com/paper';
+
+  function scrapingCtx(web: () => Promise<Response>, opts: { remote?: boolean } = {}): any {
+    const ctx = makeCtx({ remote: opts.remote, up: true });
+    const fetch = vi.fn(async (url: string) =>
+      url.endsWith('/web') ? web() : new Response('', { status: 200 }),
+    );
+    ctx.translation = new TranslationServerClient('http://127.0.0.1:1969', { fetch } as any);
+    return ctx;
+  }
+
+  const answering = (status: number, body: string) => async () => new Response(body, { status });
+
+  it('says which page failed, what the server answered, and what works instead (501, local)', async () => {
+    const ctx = scrapingCtx(answering(501, 'No translators available\n'));
+    const res: any = await importTool.handler({ action: 'by_url', url: PAGE }, ctx);
+    expect(res.isError).toBe(true);
+    const msg = text(res);
+    expect(msg).toBe(
+      'The translation-server at http://127.0.0.1:1969 could not get metadata from https://example.com/paper: ' +
+        'it answered 501 (No translators available), so nothing was saved. Save the page from your browser ' +
+        'with the Zotero Connector instead.',
+    );
+    // Not the raw client error, and not a remedy for a server that is missing: this one ran.
+    expect(msg).not.toMatch(/\/web returned|docker|No translation-server answered/i);
+  });
+
+  it('words it for a shared server without the operator address (500, hosted)', async () => {
+    const ctx = scrapingCtx(answering(500, 'An error occurred retrieving the document\n'), {
+      remote: true,
+    });
+    const msg = text(await importTool.handler({ action: 'by_url', url: PAGE }, ctx));
+    expect(msg).toMatch(
+      /^This server's translation-server could not get metadata from https:\/\/example\.com\/paper: it answered 500 \(An error occurred retrieving the document\), so nothing was saved\./,
+    );
+    expect(msg).toMatch(
+      /Save the page from your browser with the Zotero Connector instead, and it reaches this server once Zotero syncs\.$/,
+    );
+    expect(msg).not.toMatch(/127\.0\.0\.1|docker/i);
+  });
+
+  it('says the request failed when the server dropped it, with the cause', async () => {
+    const ctx = scrapingCtx(async () => {
+      throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } });
+    });
+    const res: any = await importTool.handler({ action: 'by_url', url: PAGE }, ctx);
+    expect(res.isError).toBe(true);
+    expect(text(res)).toMatch(
+      /could not get metadata from https:\/\/example\.com\/paper: the request to it failed \(fetch failed: ECONNRESET\), so nothing was saved\./,
+    );
+  });
+
+  it('says it did not answer in time, without the fetcher message that names its address', async () => {
+    const ctx = scrapingCtx(
+      async () => {
+        throw new ZoteroApiError({
+          status: 408,
+          message:
+            'http://127.0.0.1:1969 took longer than the 30s budget to answer, with no throttling signal.',
+        });
+      },
+      { remote: true },
+    );
+    const msg = text(await importTool.handler({ action: 'by_url', url: PAGE }, ctx));
+    expect(msg).toMatch(
+      /could not get metadata from https:\/\/example\.com\/paper: it did not answer in time, so nothing was saved\./,
+    );
+    expect(msg).not.toMatch(/127\.0\.0\.1/);
+  });
+
+  it('hands back the identifier for a DOI or arXiv link, on either failure', async () => {
+    const doi = text(
+      await importTool.handler(
+        { action: 'by_url', url: 'https://doi.org/10.1038/s41586-021-03819-2' },
+        scrapingCtx(answering(501, 'No translators available')),
+      ),
+    );
+    expect(doi).toMatch(
+      /it answered 501 \(No translators available\), so nothing was saved\. That URL is a DOI link, though: action:"by_identifier" with identifier "10\.1038\/s41586-021-03819-2" resolves it from the identifier alone, with no page to scrape\. Otherwise, save the page/,
+    );
+    const arxiv = text(
+      await importTool.handler(
+        { action: 'by_url', url: 'https://arxiv.org/abs/2201.00001' },
+        scrapingCtx(async () => {
+          throw new TypeError('fetch failed');
+        }),
+      ),
+    );
+    expect(arxiv).toMatch(/the request to it failed \(fetch failed\)/);
+    expect(arxiv).toMatch(
+      /That URL is an arXiv link, though: action:"by_identifier" with identifier "2201\.00001"/,
+    );
+  });
+
+  it('says so the same way when the server answers with no items', async () => {
+    const msg = text(
+      await importTool.handler({ action: 'by_url', url: PAGE }, scrapingCtx(answering(200, '[]'))),
+    );
+    expect(msg).toMatch(
+      /could not get metadata from https:\/\/example\.com\/paper: it answered with no items, so nothing was saved\./,
+    );
+  });
+
+  it('still returns the choices a page offers (300), as a result and not an error', async () => {
+    const choices = { url: PAGE, session: 's1', items: { a: 'Choice A', b: 'Choice B' } };
+    const res: any = await importTool.handler(
+      { action: 'by_url', url: PAGE },
+      scrapingCtx(answering(300, JSON.stringify(choices))),
+    );
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.multiple).toEqual(choices);
+    expect(text(res)).toMatch(/The page offers multiple items/);
+  });
+
+  it('resolves a page the server can scrape, as before', async () => {
+    const res: any = await importTool.handler(
+      { action: 'by_url', url: PAGE },
+      scrapingCtx(answering(200, JSON.stringify([{ itemType: 'webpage', title: 'A page' }]))),
+    );
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.source).toBe('translation-server');
+    expect(res.structuredContent.items[0]).toMatchObject({ itemType: 'webpage', title: 'A page' });
   });
 });
