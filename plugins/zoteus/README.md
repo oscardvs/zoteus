@@ -35,7 +35,7 @@ The plugin has two parts:
 
 ## What it runs, sends and stores
 
-When the plugin starts, it runs `npx -y @oscardvs/zoteus@1.22.3`. On first use, that downloads this exact published version of the package from the npm registry. The package is built from this repository and published with npm provenance.
+When the plugin starts, it runs `npx -y @oscardvs/zoteus@1.22.4`. On first use, that downloads this exact published version of the package from the npm registry. The package is built from this repository and published with npm provenance.
 
 The server contacts only what a request needs:
 
