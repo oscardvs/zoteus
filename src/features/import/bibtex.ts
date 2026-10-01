@@ -295,6 +295,16 @@ export function parseBibtex(text: string): BibtexParseResult {
     const key = text.slice(i, keyEnd).trim();
     i = keyEnd;
     const where = `entry "${key || '(no key)'}" (@${type})`;
+    // A key cannot hold whitespace or "=". When it does, the comma after the key is missing,
+    // so the first field (or every field, when it is the last thing before the closing brace)
+    // was read as part of the key. Without this the entry was reported only as one with no
+    // title, which names the symptom and not the typo.
+    if (/[\s=]/.test(key)) {
+      warnings.push(
+        `${where}: a citation key cannot contain a space or "=", so the comma after the key is probably missing ` +
+          'and what follows it was read as part of the key rather than as fields.',
+      );
+    }
     // Null-prototype, so that `'constructor' in fields` answers about this file and not
     // about Object.prototype.
     const fields: Record<string, string> = Object.create(null);
@@ -336,7 +346,21 @@ export function parseBibtex(text: string): BibtexParseResult {
           'Balance the delimiter and import the file again.',
       );
     } else if (text[i] === close) i++;
-    else warnings.push(`${where} is not closed properly; what was read of it was kept.`);
+    else {
+      // Either the file ended inside the entry, or reading stopped on text that is not a
+      // field: a missing comma between two fields, or no `name = value` shape at all. The
+      // second used to share the first's "what was read of it was kept", which said nothing
+      // about where it stopped and was simply untrue for an entry that had no field before
+      // the stop and is therefore skipped as empty.
+      const stoppedAt = (text.slice(i, i + 40).split('\n')[0] ?? '').trim();
+      warnings.push(
+        stoppedAt
+          ? `${where}: reading stopped at "${stoppedAt}", which is neither a "name = value" field nor the end of ` +
+              'the entry (a missing comma between two fields does this); ' +
+              (Object.keys(fields).length ? 'the fields before it were kept.' : 'no field came before it.')
+          : `${where} is not closed properly; what was read of it was kept.`,
+      );
+    }
     entries.push({ type, key, fields });
   }
 

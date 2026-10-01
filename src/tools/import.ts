@@ -23,7 +23,8 @@ import { arxivItem, fromScholarWork, parseIdentifier, bareDoi, type ResolvedItem
 import { detectKind, fetchAttachmentBytes, resolveAttachment, SOURCE_LABEL } from '../features/attachments/resolve.js';
 import { DEFAULT_PRECISE_MAX_BYTES, extractPdfPages } from '../features/fulltext/pdf-pages.js';
 import { loadPdfjs, pdfjsUnavailableReason } from '../features/fulltext/pdfjs-loader.js';
-import { mappingTables, toZoteroItems } from '../features/import/mapping.js';
+import { mappingTables, toZoteroItem } from '../features/import/mapping.js';
+import { emptyRecordReason } from '../features/import/record.js';
 import { parseBibliography, sniffFormat, type ImportFormat } from '../features/import/parse.js';
 import { hasTextLayer, scanIdentifiers, type IdentifierHit } from '../features/import/scan-identifiers.js';
 import { validateItem } from '../schema/validate.js';
@@ -1291,22 +1292,44 @@ async function importFromFile(ctx: ToolContext, args: any): Promise<ToolHandlerR
 
   const schema = await loadSchema(ctx);
   const tables = mappingTables(schema);
-  const mapped = toZoteroItems(parsed.records, tables);
-  const labels = parsed.records.map((r) => r.label);
 
-  // Validated before the write, not after: #77's `Imported 0 of 1` came from Zotero refusing
-  // one item with no error of its own, and a file import multiplies that by the entry count.
+  // Two gates stand between an entry and `items`, applied in entry order so `skipped` reads
+  // like the file. First, an entry the parser could read nothing from is not an item at all
+  // (emptyRecordReason says why): the 2026-10-01 stress test's malformed BibTeX entry was
+  // warned about correctly and STILL came back as an empty `document` in the preview, which a
+  // save would have written as a blank row. Every save goes through this same list, so
+  // skipping it here is what keeps it out of the library too. Second, an item Zotero's schema
+  // would refuse is validated before the write, not after: #77's `Imported 0 of 1` came from
+  // Zotero refusing one item with no error of its own, and a file import multiplies that by
+  // the entry count.
   const items: any[] = [];
   const skipped: Array<{ entry: string; reason: string }> = [];
-  mapped.items.forEach((item, index) => {
-    const problems = schema ? validateItem(schema, item).errors : [];
-    if (problems.length) skipped.push({ entry: labels[index] ?? `entry ${index + 1}`, reason: problems.join(' ') });
-    else items.push(item);
-  });
+  const mappingWarnings: string[] = [];
+  for (const record of parsed.records) {
+    const empty = emptyRecordReason(record);
+    if (empty) {
+      skipped.push({ entry: record.label, reason: empty });
+      continue;
+    }
+    const mapped = toZoteroItem(record, tables);
+    mappingWarnings.push(...mapped.warnings);
+    const problems = schema ? validateItem(schema, mapped.item).errors : [];
+    if (problems.length) skipped.push({ entry: record.label, reason: problems.join(' ') });
+    else items.push(mapped.item);
+  }
   if (!items.length) {
+    // An error result has no `warnings` field, and the reason an entry came out empty is
+    // usually in the parser's warnings (the brace that never closed), so they ride along here.
+    const listed =
+      skipped
+        .slice(0, 5)
+        .map((s) => `${s.entry} (${s.reason})`)
+        .join('; ') + (skipped.length > 5 ? `; and ${skipped.length - 5} more` : '');
+    const parserSaid = parsed.warnings.slice(0, 5);
     return err(
-      `All ${mapped.items.length} entries in this ${format} payload were refused by Zotero's schema, so nothing ` +
-        `was imported: ${skipped.slice(0, 5).map((s) => `${s.entry} (${s.reason})`).join('; ')}`,
+      `None of the ${parsed.records.length} ${parsed.records.length === 1 ? 'entry' : 'entries'} in this ${format} ` +
+        `payload could be imported, so nothing was: ${listed}.` +
+        (parserSaid.length ? ` The parser reported: ${parserSaid.join(' ')}` : ''),
     );
   }
 
@@ -1315,7 +1338,7 @@ async function importFromFile(ctx: ToolContext, args: any): Promise<ToolHandlerR
     format,
     parsed: parsed.records.length,
     mapping: tables.origin,
-    warnings: [...readWarnings, ...parsed.warnings, ...mapped.warnings],
+    warnings: [...readWarnings, ...parsed.warnings, ...mappingWarnings],
     skipped,
   });
 }
