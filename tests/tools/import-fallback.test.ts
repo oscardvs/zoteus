@@ -179,12 +179,25 @@ describe('zotero_import built-in fallback', () => {
 
   it('returns a clear error for ISBN/PMID/bibcode without translation-server', async () => {
     const { client } = await connect();
-    const res: any = await client.callTool({
-      name: 'zotero_import',
-      arguments: { action: 'by_identifier', identifier: '9783161484100' },
-    });
-    expect(res.isError).toBe(true);
-    expect(res.content[0]!.text).toMatch(/translation-server/);
+    // The hyphenated ISBN-13 is the 2026-10-01 stress test's case: it used to be reported as
+    // "Could not parse as a known identifier" rather than as an ISBN this server cannot resolve.
+    for (const [identifier, kind] of [
+      ['9783161484100', 'an ISBN'],
+      ['978-3-16-148410-0', 'an ISBN'],
+      ['PMID: 31452104', 'a PubMed id'],
+      ['2019ApJ...882L..24A', 'an ADS bibcode'],
+    ] as const) {
+      const res: any = await client.callTool({
+        name: 'zotero_import',
+        arguments: { action: 'by_identifier', identifier },
+      });
+      expect(res.isError).toBe(true);
+      expect(res.content[0]!.text).toContain(`is ${kind}`);
+      expect(res.content[0]!.text).toMatch(/needs a Zotero translation-server/);
+      expect(res.content[0]!.text).not.toMatch(/Could not parse/);
+    }
+    // Only the key probe left the process: no built-in source was asked about any of them.
+    expect(requested).toEqual([KEY_PROBE]);
   });
 
   it('returns a clear error for URL scraping without translation-server', async () => {
