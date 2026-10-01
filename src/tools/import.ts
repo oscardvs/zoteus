@@ -1345,6 +1345,23 @@ async function importFromFile(ctx: ToolContext, args: any): Promise<ToolHandlerR
       if (empty) skipped.push({ entry: zoteroItemLabel(item, index), reason: empty });
       else items.push(item);
     });
+    // A translator that left entries empty may simply not read what Zoteus's own parser
+    // does: a BibTeX entry missing the comma after its key is repaired by bibtex.ts and is
+    // an empty item from the translator. So when this path skipped anything and the payload
+    // is a format Zoteus parses, the reading that recovers more of the file is the one used,
+    // and the result says so. When it recovers nothing more, the translator's reading stands,
+    // since its field mapping is the richer one.
+    if (skipped.length) {
+      const own = usableEntriesOwnParse(args, text);
+      if (own && own.usable > items.length) {
+        return importFromFileBuiltin(ctx, args, text, [
+          ...readWarnings,
+          `The translation-server read ${skipped.length} of the ${viaServer.length} entries in this payload as ` +
+            `empty, and Zoteus's own ${own.format} parser read ${own.usable} usable entries where it read ` +
+            `${items.length}, so this import uses Zoteus's reading of the file.`,
+        ]);
+      }
+    }
     if (!items.length) {
       return err(
         `None of the ${viaServer.length} ${viaServer.length === 1 ? 'entry' : 'entries'} the translation-server read ` +
@@ -1361,6 +1378,33 @@ async function importFromFile(ctx: ToolContext, args: any): Promise<ToolHandlerR
     });
   }
 
+  return importFromFileBuiltin(ctx, args, text, readWarnings);
+}
+
+/**
+ * How many entries Zoteus's own parser reads from a payload without finding them empty, or
+ * undefined when the payload is not a format it parses (or does not parse at all). A count
+ * only: it decides which reading of a file to use, before either is mapped or validated.
+ */
+function usableEntriesOwnParse(args: any, text: string): { format: ImportFormat; usable: number } | undefined {
+  const requested: ImportFormat | undefined =
+    args.format && args.format !== 'auto' ? (args.format as ImportFormat) : undefined;
+  const format = requested ?? sniffFormat(text);
+  if (!format) return undefined;
+  try {
+    return { format, usable: parseBibliography(text, format).records.filter((r) => !emptyRecordReason(r)).length };
+  } catch {
+    return undefined;
+  }
+}
+
+/** by_file through Zoteus's own BibTeX, RIS and CSL-JSON parsers. */
+async function importFromFileBuiltin(
+  ctx: ToolContext,
+  args: any,
+  text: string,
+  readWarnings: string[],
+): Promise<ToolHandlerResult> {
   const requested: ImportFormat | undefined =
     args.format && args.format !== 'auto' ? (args.format as ImportFormat) : undefined;
   const format = requested ?? sniffFormat(text);

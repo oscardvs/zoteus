@@ -497,7 +497,9 @@ describe('zotero_import action:"by_file" empty items from the translation-server
     return { translation: new TranslationServerClient('http://127.0.0.1:1969', { fetch } as any), fetch };
   }
 
-  const MALFORMED = '@article{smith2020 title = {Lost}}\n@article{good, title = {Good}}\n';
+  // An entry neither reader can recover: nothing follows its key. (One missing only the comma
+  // after its key is a different case, recovered by Zoteus's own parser; see below.)
+  const MALFORMED = '@article{smith2020,}\n@article{good, title = {Good}}\n';
 
   it('skips the empty item instead of previewing it, and names it by its citation key', async () => {
     const { translation, fetch } = serverAnswering([BLANK, GOOD]);
@@ -547,10 +549,26 @@ describe('zotero_import action:"by_file" empty items from the translation-server
     expect(res.content[0].text).toMatch(/1 warning\(s\) and 1 entry skipped; see warnings and skipped\./);
   });
 
+  it("uses Zoteus's own reading when it recovers entries the translation-server left empty", async () => {
+    // The translator reads the entry with no comma after its key as an empty item; bibtex.ts
+    // repairs it, so its reading of this payload has two usable entries to the server's one.
+    const { translation } = serverAnswering([BLANK, GOOD]);
+    const ctx = makeCtx({ translation });
+    const res = await call({ text: '@article{smith2020 title = {Recovered}}\n@article{good, title = {Good}}\n' }, ctx);
+
+    expect(res.isError).toBeFalsy();
+    const sc = res.structuredContent;
+    expect(sc.format).toBe('bibtex');
+    expect(sc.items.map((i: any) => i.title)).toEqual(['Recovered', 'Good']);
+    expect(sc.skipped ?? []).toEqual([]);
+    expect(sc.warnings.join(' ')).toMatch(/read 1 of the 2 entries in this payload as empty.*so this import uses Zoteus's reading/);
+  });
+
   it('refuses, and writes nothing, when every item the server returned is empty', async () => {
     const { translation } = serverAnswering([BLANK, { ...BLANK, key: 'BLNK3456', extra: 'Citation Key: jones2021' }]);
     const ctx = makeCtx({ translation });
-    const res = await call({ text: MALFORMED, save_to_library: true }, ctx);
+    // Empty to Zoteus's own parser too, so there is no better reading to fall back to.
+    const res = await call({ text: '@article{smith2020,}\n@article{jones2021,}\n', save_to_library: true }, ctx);
 
     expect(res.isError).toBe(true);
     expect(ctx.web.writeItems).not.toHaveBeenCalled();
