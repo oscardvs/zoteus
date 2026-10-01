@@ -18,6 +18,7 @@ docker run -d -p 1969:1969 zotero/translation-server
 
 ## `zotero_styles` — resolve CSL styles
 - `resolve` maps a human name ("APA 7th", "IEEE", "Vancouver", "Chicago", "MLA", "Nature", …) to a valid CSL id and confirms it can be fetched.
+  Long names work as well, including the titles Zotero lists styles under: "Chicago Manual of Style 17th edition (author-date)" resolves to `chicago-author-date-17th-edition`, and "American Psychological Association 7th edition" to `apa`. A past edition the CSL repository still carries (Chicago 16th and 17th, APA 6th, AMA 10th) resolves to that edition's own style, not to the current one. A name it cannot read is tried as a CSL id as given.
 - `list` returns the built-in common aliases. Any id from the [CSL styles repository](https://github.com/citation-style-language/styles) works too. Dependent styles are resolved to their independent parent automatically.
 
 ## `zotero_format_bibliography` — citeproc, any style, no library needed
