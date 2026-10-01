@@ -126,6 +126,19 @@ describe('searchItems with top and an itemType filter (#79)', () => {
     expect(topRead?.[0].includeTrashed).toBe(true);
   });
 
+  it('carries includeTrashed into the keyed page read, on both APIs', async () => {
+    // Both APIs leave a trashed item out of a keyed read that does not ask for the trash
+    // (the cloud answered 1 of 2 keys for a trashed and a live one in the 2026-10-01 stress
+    // test), so a trashed match the key sets counted would vanish from its own page.
+    for (const localApi of [true, false]) {
+      const { router, web, local } = makeRouter({ localApi });
+      await router.searchItems({ itemType: 'attachment', top: true, includeTrashed: true, limit: 10 });
+      const reads = localApi ? local.listItems.mock.calls : web.listItems.mock.calls;
+      expect(reads.length).toBeGreaterThan(0);
+      for (const call of reads) expect(queryOf(localApi ? 'local' : 'web', call).includeTrashed).toBe(true);
+    }
+  });
+
   it('pages coherently: every page disjoint, together the whole filtered set', async () => {
     const { router } = makeRouter({ localApi: true });
     const seen: string[] = [];
