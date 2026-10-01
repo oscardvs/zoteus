@@ -265,10 +265,19 @@ export class LibraryRouter {
     const { library, backend, ...rest } = query;
     const lib = library ?? this.defaultLibrary();
     const q: ItemQuery = { ...rest, tag: splitConjunction(rest.tag), itemType: splitConjunction(rest.itemType) };
-    // `top` combined with an `itemType` filter is the one shape neither API answers the
-    // way the tool promises, so Zoteus works it out itself (#79).
+    // `top` combined with an `itemType` filter is a shape neither API answers the way the
+    // tool promises, so Zoteus works it out itself (#79).
     if (q.top && q.itemType) return this.topLevelItemsOfType(lib, backend, q);
-    if (await this.route(lib, backend)) return this.local!.listItems(q, lib);
+    if (await this.route(lib, backend)) {
+      // So is `top` with a `tag` filter, on the desktop alone: it runs the tag as a
+      // sub-search that ignores `top` (the cause of #79 again), so tagged child notes came
+      // back as top-level items. Measured 2026-10-01: `/items/top?tag=HILDA-reviewed`
+      // answered 34 on the desktop, 17 of them child notes, where the cloud answered the
+      // 17 top-level items that carry the tag. The cloud is right about tags, so only the
+      // desktop pays the key intersection.
+      if (q.top && q.tag) return this.topLevelItemsOfType(lib, 'local', q);
+      return this.local!.listItems(q, lib);
+    }
     return this.web.listItems(lib, q);
   }
 
@@ -291,6 +300,10 @@ export class LibraryRouter {
    *
    * The true answer for that library is zero standalone attachments, which is what this
    * method returns on both backends.
+   *
+   * It also answers `top` with a `tag` filter on the desktop, which drops `top` the same way
+   * (see searchItems). Nothing below depends on which filter it is: the first read applies
+   * whatever filters came in, and the second is the top-level key set alone.
    *
    * Both APIs are correct about `top` with no `itemType` in play (`/items/top` alone gave
    * 320 of 1302, none with a `parentItem`; `/items/top?itemKey=<child>` answers with
