@@ -421,6 +421,8 @@ export abstract class SearchIndexBase implements SearchIndex {
   private operation: 'build' | 'update' = 'build';
   private itemsFetched = 0;
   private itemsRemoved = 0;
+  /** An update's delta size; see IndexBuildStatus.itemsChanged. */
+  private itemsChanged = 0;
   protected itemsTotal = 0;
   protected itemsAvailable = 0;
   /** Which pass of a build is running; see IndexBuildStatus.phase (#23). */
@@ -847,6 +849,7 @@ export abstract class SearchIndexBase implements SearchIndex {
       operation: this.operation,
       itemsFetched: this.itemsFetched,
       itemsRemoved: this.itemsRemoved,
+      ...(this.operation === 'update' ? { itemsChanged: this.itemsChanged } : {}),
       itemsTotal: this.itemsTotal,
       itemsAvailable: this.itemsAvailable,
       phase: this.phase,
@@ -1760,6 +1763,7 @@ export abstract class SearchIndexBase implements SearchIndex {
     this.localApiDegradedAt = undefined;
     this.itemsFetched = 0;
     this.itemsRemoved = 0;
+    this.itemsChanged = 0;
     if (opts.fulltextFor) {
       // An update is the retry for full text as well, but only upwards: an index that
       // already holds body passages does not stop being a full-text index when a metadata
@@ -1858,6 +1862,9 @@ export abstract class SearchIndexBase implements SearchIndex {
         if (token.cancelled) break;
         const page = await opts.fetchChanged(start);
         if (!crawlVersion && page.lastModifiedVersion) crawlVersion = page.lastModifiedVersion;
+        // The delta's size, from the first page that reports one, so a running update can
+        // say how far through it is rather than only how far it has got.
+        if (!this.itemsChanged && page.totalResults) this.itemsChanged = page.totalResults;
         const pageItems = page.items ?? [];
         if (pageItems.length === 0) break;
         // The items on this page whose body text could NOT be read, which is not the answer

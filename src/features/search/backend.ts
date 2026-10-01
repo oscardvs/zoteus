@@ -359,6 +359,17 @@ export interface IndexBuildStatus extends SearchIndexStatus {
   operation: 'build' | 'update';
   /** Items pulled from the Zotero API so far. On an update: the CHANGED items processed. */
   itemsFetched: number;
+  /**
+   * On an update, the size of its delta as Zotero reported it on the first page: the
+   * denominator `itemsFetched` is counting towards. Absent on a build, whose denominator
+   * is `itemsTotal`, and 0 until that page has come back.
+   *
+   * Without it a running update offered only its numerator and the index's current size,
+   * and in the 2026-10-01 stress test that size (280 to 295 items, against 350 in the
+   * library) was read as the index coming up short of the library, when it was a delta
+   * still on its way in.
+   */
+  itemsChanged?: number;
   /** Items an update removed because the library no longer holds them (0 for a build). */
   itemsRemoved: number;
   /** Total items expected (0 = not yet known). Capped by the build limit. */

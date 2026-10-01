@@ -146,6 +146,44 @@ describe('zotero_whoami says which context answered and why this library is the 
     expect(mismatch.content[0].text).not.toContain('at undefined');
   });
 
+  // The 2026-10-01 stress test compared this count (280 to 295) with the 350 items in the
+  // library while a job was still filling the index in, and nothing here said so.
+  it('calls a running job\'s item count a running one, with the progress beside it', async () => {
+    const running = await whoami.handler(
+      {},
+      whoamiCtx({
+        cloud: KEY_USER,
+        search: searchStub({
+          status: {
+            library: 'user',
+            state: 'building',
+            operation: 'update',
+            items: 285,
+            itemsFetched: 12,
+            itemsChanged: 70,
+            itemsRemoved: 0,
+            passages: 4000,
+            vectors: 642,
+            embedder: 'local',
+          },
+        }),
+      }),
+    );
+    const index = running.structuredContent?.searchIndex as any;
+    expect(index).toMatchObject({ items: 285, state: 'building' });
+    expect(index.progress).toContain('12 of 70 changed items re-indexed');
+    expect(running.content[0].text).toMatch(
+      /Search index holds the personal library \(285 items so far, while an index update is still running: 12 of 70 changed items/,
+    );
+
+    const settled = await whoami.handler(
+      {},
+      whoamiCtx({ cloud: KEY_USER, search: searchStub({ status: { library: 'user', items: 350 } }) }),
+    );
+    expect((settled.structuredContent?.searchIndex as any).progress).toBeUndefined();
+    expect(settled.content[0].text).toMatch(/Search index holds the personal library \(350 items\), which is the default library/);
+  });
+
   it('says nothing has been indexed yet rather than inventing a library', async () => {
     const res = await whoami.handler(
       {},
