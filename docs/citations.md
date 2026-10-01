@@ -16,6 +16,8 @@ docker run -d -p 1969:1969 zotero/translation-server
 # then (optional) set ZOTEUS_TRANSLATION_SERVER_URL if not on the default port
 ```
 
+Identifiers are read as they are usually printed: an ISBN with hyphens, spaces or an `ISBN` prefix (`978-0-262-03384-8`), a PMID as `PMID: 31452104` or a PubMed link, a DOI with a `doi:` prefix, and an ADS bibcode such as `2019ApJ...882L..24A`. The error for an ISBN, PMID or bibcode says what the identifier was recognised as and that resolving it needs a translation-server. A shared (hosted) Zoteus has none unless its operator attached one, and its caller cannot start one, so there the error names the operator instead of the `docker run` command, and points at what works without one: the work's DOI, or Add Item by Identifier in the Zotero desktop app.
+
 ## `zotero_styles` — resolve CSL styles
 - `resolve` maps a human name ("APA 7th", "IEEE", "Vancouver", "Chicago", "MLA", "Nature", …) to a valid CSL id and confirms it can be fetched.
   Long names work as well, including the titles Zotero lists styles under: "Chicago Manual of Style 17th edition (author-date)" resolves to `chicago-author-date-17th-edition`, and "American Psychological Association 7th edition" to `apa`. A past edition the CSL repository still carries (Chicago 16th and 17th, APA 6th, AMA 10th) resolves to that edition's own style, not to the current one. A name it cannot read is tried as a CSL id as given.

@@ -28,10 +28,22 @@ describe('zotero_import', () => {
   it('degrades gracefully when the translation-server is down', async () => {
     const ctx = makeCtx();
     ctx.translation.isUp = vi.fn(async () => false);
+    // An ISBN, which only a translation-server resolves, so the answer names it as the cause.
+    const res = await importTool.handler({ action: 'by_identifier', identifier: '978-3-16-148410-0' }, ctx);
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/needs a Zotero translation-server/i);
+    expect(ctx.translation.search).not.toHaveBeenCalled();
+  });
+
+  it('does not blame the translation-server for input that is not an identifier', async () => {
+    // "10.1/x" is not a DOI: a DOI prefix has at least four digits. It used to be answered with
+    // "Could not parse ... or start a translation-server", which named the wrong remedy.
+    const ctx = makeCtx();
+    ctx.translation.isUp = vi.fn(async () => false);
     const res = await importTool.handler({ action: 'by_identifier', identifier: '10.1/x' }, ctx);
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/translation-server/i);
-    expect(ctx.translation.search).not.toHaveBeenCalled();
+    expect(res.content[0].text).toMatch(/"10\.1\/x" is not an identifier Zoteus recognises/);
+    expect(res.content[0].text).not.toMatch(/docker/i);
   });
 
   it('resolves an identifier without saving by default', async () => {

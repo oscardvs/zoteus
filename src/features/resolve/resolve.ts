@@ -12,8 +12,11 @@ export function parseIdentifier(v: string): { type: IdentifierType; value: strin
   const s = v.trim();
   if (!s) return null;
 
-  // DOI with or without the https://doi.org/ or https://dx.doi.org/ prefix
-  const doi = s.match(/^(?:https?:\/\/(?:dx\.)?doi\.org\/)?(10\.[0-9]{4,}(?:\.[0-9]+)*\/\S+)$/i);
+  // DOI with or without the https://doi.org/ or https://dx.doi.org/ prefix, or the "doi:"
+  // a reference list prints before it. Refusing "doi:10.1038/…" was the same failure as the
+  // hyphenated ISBN below: an identifier as commonly written, turned away by a message that
+  // lists its kind as accepted.
+  const doi = s.match(/^(?:https?:\/\/(?:dx\.)?doi\.org\/|doi:\s*)?(10\.[0-9]{4,}(?:\.[0-9]+)*\/\S+)$/i);
   if (doi?.[1]) return { type: 'doi', value: doi[1] };
 
   // arXiv ids, also via arxiv.org/abs/ export.arxiv.org/abs/ or /pdf/

@@ -20,6 +20,11 @@ describe('parseIdentifier', () => {
     expect(parseIdentifier('https://dx.doi.org/10.1234/abc')).toEqual({ type: 'doi', value: '10.1234/abc' });
   });
 
+  it('classifies a DOI with the "doi:" a reference list prints before it', () => {
+    expect(parseIdentifier('doi:10.1038/nature12373')).toEqual({ type: 'doi', value: '10.1038/nature12373' });
+    expect(parseIdentifier('DOI: 10.1038/nature12373')).toEqual({ type: 'doi', value: '10.1038/nature12373' });
+  });
+
   it('classifies arXiv new-style ids with and without /abs/ prefix', () => {
     expect(parseIdentifier('2201.00001')).toEqual({ type: 'arxiv', value: '2201.00001' });
     expect(parseIdentifier('https://arxiv.org/abs/2201.00001v2')).toEqual({ type: 'arxiv', value: '2201.00001v2' });

@@ -13,7 +13,9 @@ import importTool from '../../src/tools/import.js';
  * of identifier the built-in path cannot resolve, on both deployments, since a hosted caller
  * cannot act on "docker run".
  */
-function makeCtx(opts: { remote?: boolean; up?: boolean; search?: (id: string) => Promise<any[]> } = {}): any {
+function makeCtx(
+  opts: { remote?: boolean; up?: boolean; search?: (id: string) => Promise<any[]> } = {},
+): any {
   return {
     config: { translationServerUrl: 'http://127.0.0.1:1969' },
     remoteCaller: opts.remote ?? false,
@@ -31,11 +33,27 @@ function makeCtx(opts: { remote?: boolean; up?: boolean; search?: (id: string) =
 const text = (res: any): string => res.content[0]!.text;
 
 const UNRESOLVABLE: Array<{ identifier: string; recognisedAs: RegExp; plural: RegExp }> = [
-  { identifier: '978-0-262-03384-8', recognisedAs: /is an ISBN \(read as 9780262033848\)/, plural: /resolving ISBNs/ },
+  {
+    identifier: '978-0-262-03384-8',
+    recognisedAs: /is an ISBN \(read as 9780262033848\)/,
+    plural: /resolving ISBNs/,
+  },
   { identifier: '9780262033848', recognisedAs: /is an ISBN,/, plural: /resolving ISBNs/ },
-  { identifier: 'ISBN 0-8044-2957-X', recognisedAs: /is an ISBN \(read as 080442957X\)/, plural: /resolving ISBNs/ },
-  { identifier: 'PMID: 31452104', recognisedAs: /is a PubMed id \(PMID\) \(read as 31452104\)/, plural: /resolving PMIDs/ },
-  { identifier: '2019ApJ...882L..24A', recognisedAs: /is an ADS bibcode,/, plural: /resolving ADS bibcodes/ },
+  {
+    identifier: 'ISBN 0-8044-2957-X',
+    recognisedAs: /is an ISBN \(read as 080442957X\)/,
+    plural: /resolving ISBNs/,
+  },
+  {
+    identifier: 'PMID: 31452104',
+    recognisedAs: /is a PubMed id \(PMID\) \(read as 31452104\)/,
+    plural: /resolving PMIDs/,
+  },
+  {
+    identifier: '2019ApJ...882L..24A',
+    recognisedAs: /is an ADS bibcode,/,
+    plural: /resolving ADS bibcodes/,
+  },
 ];
 
 describe('zotero_import by_identifier without a translation-server, on a local install', () => {
@@ -63,30 +81,43 @@ describe('zotero_import by_identifier without a translation-server, on a local i
   }
 
   it('points an ISBN at the DOI route that does work here', async () => {
-    const res: any = await importTool.handler({ action: 'by_identifier', identifier: '978-0-262-03384-8' }, makeCtx());
+    const res: any = await importTool.handler(
+      { action: 'by_identifier', identifier: '978-0-262-03384-8' },
+      makeCtx(),
+    );
     expect(text(res)).toMatch(/if the book has a DOI, import that instead/);
   });
 
   it('keeps the unrecognisable-input message for input that really is not an identifier', async () => {
-    const res: any = await importTool.handler({ action: 'by_identifier', identifier: 'the role of metadata' }, makeCtx());
+    const res: any = await importTool.handler(
+      { action: 'by_identifier', identifier: 'the role of metadata' },
+      makeCtx(),
+    );
     expect(res.isError).toBe(true);
-    expect(text(res)).toMatch(/"the role of metadata" is not an identifier Zoteus recognises, so nothing was looked up/);
+    expect(text(res)).toMatch(
+      /"the role of metadata" is not an identifier Zoteus recognises, so nothing was looked up/,
+    );
     // It lists what IS accepted, with the forms that used to fail.
     expect(text(res)).toMatch(/ISBN-10 or ISBN-13 \(hyphens allowed\)/);
     expect(text(res)).toMatch(/2019ApJ\.\.\.882L\.\.24A/);
-    expect(text(res)).not.toMatch(/—/);
+    expect(text(res)).not.toContain(String.fromCharCode(0x2014));
   });
 });
 
 describe('zotero_import by_identifier without a translation-server, on a shared (hosted) server', () => {
   for (const { identifier, recognisedAs } of UNRESOLVABLE) {
     it(`tells a hosted caller about "${identifier}" without sending them to install Docker`, async () => {
-      const res: any = await importTool.handler({ action: 'by_identifier', identifier }, makeCtx({ remote: true }));
+      const res: any = await importTool.handler(
+        { action: 'by_identifier', identifier },
+        makeCtx({ remote: true }),
+      );
       expect(res.isError).toBe(true);
       const msg = text(res);
       expect(msg).toMatch(recognisedAs);
       expect(msg).toMatch(/needs a Zotero translation-server/);
-      expect(msg).toMatch(/This shared Zoteus has no translation-server, and only its operator can attach one \(ZOTEUS_TRANSLATION_SERVER_URL\)/);
+      expect(msg).toMatch(
+        /This shared Zoteus has no translation-server, and only its operator can attach one \(ZOTEUS_TRANSLATION_SERVER_URL\)/,
+      );
       // Neither a command the caller cannot run nor the operator's loopback address.
       expect(msg).not.toMatch(/docker/i);
       expect(msg).not.toMatch(/127\.0\.0\.1/);
@@ -105,7 +136,10 @@ describe('zotero_import by_identifier when the translation-server is up but has 
     // resolver ran, although the code's own comment said it would.
     const ctx = makeCtx({ up: true, search: refuses });
     ctx.scholar.lookup = vi.fn(async () => ({ title: 'Found by OpenAlex', type: 'article' }));
-    const res: any = await importTool.handler({ action: 'by_identifier', identifier: '10.1234/example' }, ctx);
+    const res: any = await importTool.handler(
+      { action: 'by_identifier', identifier: '10.1234/example' },
+      ctx,
+    );
     expect(res.isError).toBeFalsy();
     expect(res.structuredContent.source).toBe('scholar');
     expect(res.structuredContent.items[0].title).toBe('Found by OpenAlex');
@@ -113,36 +147,56 @@ describe('zotero_import by_identifier when the translation-server is up but has 
 
   it('says the translation-server tried, for an ISBN, rather than telling the caller to start one', async () => {
     const ctx = makeCtx({ up: true, search: refuses });
-    const res: any = await importTool.handler({ action: 'by_identifier', identifier: '978-0-262-03384-8' }, ctx);
+    const res: any = await importTool.handler(
+      { action: 'by_identifier', identifier: '978-0-262-03384-8' },
+      ctx,
+    );
     expect(res.isError).toBe(true);
     const msg = text(res);
-    expect(msg).toMatch(/is an ISBN \(read as 9780262033848\), and the translation-server could not resolve it \(No translator could resolve/);
+    expect(msg).toMatch(
+      /is an ISBN \(read as 9780262033848\), and the translation-server could not resolve it \(No translator could resolve/,
+    );
     expect(msg).toMatch(/no built-in resolver for ISBNs/);
     expect(msg).not.toMatch(/docker|No translation-server answered/i);
   });
 
   it('treats an empty answer the same way', async () => {
     const ctx = makeCtx({ up: true, search: async () => [] });
-    const res: any = await importTool.handler({ action: 'by_identifier', identifier: 'PMID: 31452104' }, ctx);
+    const res: any = await importTool.handler(
+      { action: 'by_identifier', identifier: 'PMID: 31452104' },
+      ctx,
+    );
     expect(res.isError).toBe(true);
-    expect(text(res)).toMatch(/the translation-server could not resolve it \(it returned no items\)/);
+    expect(text(res)).toMatch(
+      /the translation-server could not resolve it \(it returned no items\)/,
+    );
   });
 });
 
 describe('zotero_import by_url without a translation-server', () => {
   it('names the missing translation-server on a local install, with the command that starts one', async () => {
-    const res: any = await importTool.handler({ action: 'by_url', url: 'https://example.com/paper' }, makeCtx());
+    const res: any = await importTool.handler(
+      { action: 'by_url', url: 'https://example.com/paper' },
+      makeCtx(),
+    );
     expect(res.isError).toBe(true);
-    expect(text(res)).toMatch(/No Zotero translation-server reachable at http:\/\/127\.0\.0\.1:1969, and URL scraping has no built-in fallback/);
+    expect(text(res)).toMatch(
+      /No Zotero translation-server reachable at http:\/\/127\.0\.0\.1:1969, and URL scraping has no built-in fallback/,
+    );
     expect(text(res)).toMatch(/docker run/);
     expect(text(res)).toMatch(/Zotero Connector/);
   });
 
   it('names the operator, not Docker, on a shared server', async () => {
-    const res: any = await importTool.handler({ action: 'by_url', url: 'https://example.com/paper' }, makeCtx({ remote: true }));
+    const res: any = await importTool.handler(
+      { action: 'by_url', url: 'https://example.com/paper' },
+      makeCtx({ remote: true }),
+    );
     expect(res.isError).toBe(true);
     const msg = text(res);
-    expect(msg).toMatch(/URL scraping needs a Zotero translation-server and has no built-in fallback/);
+    expect(msg).toMatch(
+      /URL scraping needs a Zotero translation-server and has no built-in fallback/,
+    );
     expect(msg).toMatch(/only its operator can attach one \(ZOTEUS_TRANSLATION_SERVER_URL\)/);
     expect(msg).not.toMatch(/docker|127\.0\.0\.1/i);
   });
@@ -152,8 +206,15 @@ describe('zotero_import by_url without a translation-server', () => {
       { action: 'by_url', url: 'https://doi.org/10.1038/s41586-021-03819-2' },
       makeCtx({ remote: true }),
     );
-    expect(text(doi)).toMatch(/That URL is a DOI link, though: action:"by_identifier" with identifier "10\.1038\/s41586-021-03819-2"/);
-    const arxiv: any = await importTool.handler({ action: 'by_url', url: 'https://arxiv.org/abs/2201.00001' }, makeCtx());
-    expect(text(arxiv)).toMatch(/That URL is an arXiv link, though: action:"by_identifier" with identifier "2201\.00001"/);
+    expect(text(doi)).toMatch(
+      /That URL is a DOI link, though: action:"by_identifier" with identifier "10\.1038\/s41586-021-03819-2"/,
+    );
+    const arxiv: any = await importTool.handler(
+      { action: 'by_url', url: 'https://arxiv.org/abs/2201.00001' },
+      makeCtx(),
+    );
+    expect(text(arxiv)).toMatch(
+      /That URL is an arXiv link, though: action:"by_identifier" with identifier "2201\.00001"/,
+    );
   });
 });
