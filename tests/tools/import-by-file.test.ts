@@ -327,10 +327,12 @@ describe('zotero_import action:"by_file" empty entries', () => {
   const EMPTY_ENTRIES: Array<{ name: string; text: string; entry: string; warning?: RegExp }> = [
     { name: 'an entry with no fields', text: '@misc{x,}\n@article{good, title={Good}}\n', entry: 'x' },
     {
-      name: 'a missing comma after the key',
-      text: '@article{key title={Lost}}\n@article{good, title={Good}}\n',
-      entry: 'key title={Lost',
-      warning: /a citation key cannot contain a space or "=", so the comma after the key is probably missing/,
+      // A missing comma after the key is repaired now (see below); a key with a space in it
+      // and nothing readable after its first word is not, and holds no field at all.
+      name: 'a key with a space and no field after it',
+      text: '@article{key title}\n@article{good, title={Good}}\n',
+      entry: 'key title',
+      warning: /a citation key cannot contain a space or "=".*not a missing comma that could be repaired/,
     },
     {
       name: 'a body that is not fields at all',
@@ -408,6 +410,29 @@ describe('zotero_import action:"by_file" empty entries', () => {
     expect(res.structuredContent.items).toHaveLength(1);
     expect(res.structuredContent.skipped).toBeUndefined();
     expect(res.structuredContent.warnings.join(' ')).toMatch(/untitled: no title could be read from this entry/);
+  });
+
+  it('imports an entry whose key has no comma after it, repaired, instead of skipping it', async () => {
+    // The stress test's entry used to land in `skipped` as empty, its title and author lost.
+    const ctx = makeCtx();
+    const text = '@article{smith2020 title = {A title}, author = {Doe, Jane}}\n@article{good, title={Good}}\n';
+    const res = await call({ text, save_to_library: true }, ctx);
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.skipped).toBeUndefined();
+    const written = ctx.web.writeItems.mock.calls[0][1];
+    expect(written).toHaveLength(2);
+    expect(written[0]).toMatchObject({
+      itemType: 'journalArticle',
+      title: 'A title',
+      creators: [{ creatorType: 'author', lastName: 'Doe', firstName: 'Jane' }],
+    });
+    // In its own field where the schema has one, else in Extra: either way, the key alone.
+    expect(written[0].citationKey ?? written[0].extra).toMatch(/^(Citation Key: )?smith2020$/m);
+    expect(res.structuredContent.warnings.join(' ')).toMatch(
+      /entry "smith2020" \(@article\): there is no comma between the citation key and the first field .*read as if the comma were there/,
+    );
+    expect(res.content[0].text).toMatch(/Imported 2 of 2/);
   });
 });
 

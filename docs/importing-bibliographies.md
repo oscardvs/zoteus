@@ -48,7 +48,10 @@ abbreviations, `@comment` and `@preamble` skipping, `--` page ranges, and the La
 forms real exports contain (`\"{o}`, `\'e`, `\c{c}`, `\v{r}`, `\H{o}`, `\ss`, `\o`, `\l` and
 the rest). Not supported: `crossref` inheritance between entries, user-defined `\newcommand`
 macros, and math mode. A `crossref` is reported as a warning on the entry rather than
-silently producing a half-filled item.
+silently producing a half-filled item. An entry missing the comma after its key
+(`@article{smith2020 title = {…}, …}`) is read as if the comma were there, and one with no
+key at all (`@article{title = {…}, …}`) with an empty key; both keep every field and get a
+warning that quotes the entry, since other BibTeX tools will not read it that way.
 
 RIS: `TAG  - value` lines (one to three spaces before the dash), values continuing on
 following lines, repeated tags (every `AU` an author, every `KW` a keyword), `ER`
