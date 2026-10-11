@@ -57,7 +57,18 @@ export function progressLine(s: IndexBuildStatus): string {
     const running = s.state === 'building';
     const of = running && s.itemsChanged ? ` of ${s.itemsChanged}` : '';
     const held = running ? `${s.items} items in the index so far` : `${s.items} items total`;
-    return `${s.itemsFetched}${of} changed items re-indexed, ${s.itemsRemoved} removed, ${held}, ${s.passages} passages, ${s.vectors} vectors${fulltext} (embedder=${s.embedder})`;
+    // The catch-up rides on after the delta's own items are counted, so an update whose
+    // itemsFetched has stopped moving may still be working — the #106 experiments read
+    // exactly that shape as a stalled job. Said here, where a poller is looking: still
+    // resolving what Zotero named (the census), or counting through the re-read.
+    const catchup = running
+      ? s.catchupCensus
+        ? ", full-text catch-up reading Zotero's extraction census"
+        : s.catchupTotal
+          ? `, full-text catch-up ${s.catchupScanned} of ${s.catchupTotal} body texts re-read`
+          : ''
+      : '';
+    return `${s.itemsFetched}${of} changed items re-indexed, ${s.itemsRemoved} removed, ${held}, ${s.passages} passages, ${s.vectors} vectors${fulltext}${catchup} (embedder=${s.embedder})`;
   }
   // The full-text pass has finished walking the library, so counting items fetched out of
   // items total would sit at 100% for however long the body crawl runs. Count what is
