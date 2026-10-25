@@ -20,6 +20,33 @@ const COLLECTION_PAGE = 100;
 export const MAX_COLLECTIONS = 10_000;
 
 /**
+ * The collections of `read` that are not in the trash.
+ *
+ * api.zotero.org keeps a trashed collection in its ordinary /collections listing, flagged
+ * `data.deleted: true`, while the desktop app leaves it out (its local API lists through
+ * `Zotero.Collections.getByLibrary` without `includeTrashed`, read in Zotero 10's
+ * server_localAPI.js). So the same library listed a collection from the cloud that the user
+ * had deleted, and did not from the desktop. Zotero flags every subcollection when it trashes
+ * a collection; one whose own flag is missing but whose parent, or any ancestor, is flagged
+ * sits in the trash all the same, and listing it would leave a row whose parent is absent.
+ * An ancestor that was never read (a capped crawl) cannot be judged, so it is kept.
+ */
+function outsideTrash(read: any[]): any[] {
+  const byKey = new Map(read.map((c) => [c?.key ?? c?.data?.key, c]));
+  const trashed = (c: any): boolean => {
+    const seen = new Set<string>();
+    for (let at = c; at; at = byKey.get(at.data?.parentCollection)) {
+      if (at.data?.deleted) return true;
+      const key = at.key ?? at.data?.key;
+      if (seen.has(key)) return false;
+      seen.add(key);
+    }
+    return false;
+  };
+  return read.filter((c) => !trashed(c));
+}
+
+/**
  * Keys per `?itemKey=` request. Both APIs cap that list at 50, so a full page of 100
  * results is two requests rather than one refusal.
  */
@@ -514,6 +541,10 @@ export class LibraryRouter {
    * pinned to the API that served its first page, so a desktop app that goes away halfway
    * fails the read instead of splicing two APIs' pages. `complete` is false when `cap`
    * stopped the crawl or Zotero reported more than it served.
+   *
+   * Collections in the trash are dropped from `data` and from `totalResults` (see
+   * {@link outsideTrash}), after the crawl: the pages are counted with them in, so `start`
+   * has to be too.
    */
   async listAllCollections(
     opts: ReadOpts & { top?: boolean } = {},
@@ -544,8 +575,13 @@ export class LibraryRouter {
         break;
       }
     }
-    const data = [...byKey.values()].slice(0, cap);
-    return { data, totalResults: Math.max(reported, byKey.size), complete: !capped && data.length >= reported };
+    const read = [...byKey.values()].slice(0, cap);
+    const data = outsideTrash(read);
+    return {
+      data,
+      totalResults: Math.max(reported, byKey.size) - (read.length - data.length),
+      complete: !capped && read.length >= reported,
+    };
   }
 
   /**
