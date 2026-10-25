@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -121,26 +121,21 @@ describe('zotero_pdf_images', () => {
       expect(texts(res)[0]).toMatch(/Zotero cloud storage/);
     });
 
-    it('does not save by default, and saves under the data dir when asked', async () => {
+    it('writes nothing to disk, even with the retired save:true, and says so', async () => {
+      // The tool is annotated read-only, which clients act on by running it without asking.
       const c = ctx(figurePdf());
-      const quiet = await pdfImages.handler(
-        { item_key: 'PARENT01', mode: 'pages', pages: '1', dpi: 72 },
-        c,
-      );
-      if (unavailable(quiet)) return;
-      await expect(stat(join(dataDir, 'pdf-images'))).rejects.toThrow();
       const res = await pdfImages.handler(
         { item_key: 'PARENT01', mode: 'pages', pages: '1-2', dpi: 72, format: 'png', save: true },
         c,
       );
+      if (unavailable(res)) return;
+      expect(res.isError).toBeFalsy();
       const sc = res.structuredContent as any;
-      const expected = [
-        join(dataDir, 'pdf-images', 'ATT01', 'page-001.png'),
-        join(dataDir, 'pdf-images', 'ATT01', 'page-002.png'),
-      ];
-      expect(sc.pages.map((p: any) => p.path)).toEqual(expected);
-      for (const p of expected) expect(isPng(new Uint8Array(await readFile(p)))).toBe(true);
-      expect(sc.notice).toContain('Files saved under');
+      expect(sc.pages.map((p: any) => p.page)).toEqual([1, 2]);
+      expect(sc.pages.every((p: any) => p.path === undefined)).toBe(true);
+      expect(imageBlocks(res).map((b) => isPng(decode(b.data)))).toEqual([true, true]);
+      expect(sc.notice).toContain('Nothing was written to disk');
+      expect(await readdir(dataDir)).toEqual([]);
     });
 
     it('returns metadata only with inline:false', async () => {
@@ -193,7 +188,7 @@ describe('zotero_pdf_images', () => {
   });
 
   describe('mode:"figures"', () => {
-    it('extracts the figure, saves it locally by default, returns it inline, and explains what it skipped', async () => {
+    it('extracts the figure, returns it inline without writing a file, and explains what it skipped', async () => {
       const res = await pdfImages.handler(
         { item_key: 'PARENT01', mode: 'figures', pages: '1-2' },
         ctx(figurePdf()),
@@ -203,7 +198,6 @@ describe('zotero_pdf_images', () => {
       const sc = res.structuredContent as any;
       expect(sc.mode).toBe('figures');
       expect(sc.images).toHaveLength(1);
-      const path = join(dataDir, 'pdf-images', 'ATT01', 'page-001-image-001.png');
       expect(sc.images[0]).toMatchObject({
         page: 1,
         index: 1,
@@ -214,16 +208,16 @@ describe('zotero_pdf_images', () => {
         bbox: { x: 40, y: 60, width: 120, height: 90 },
         coversPage: false,
         inline: true,
-        path,
       });
-      expect(isPng(new Uint8Array(await readFile(path)))).toBe(true);
+      expect(sc.images[0].path).toBeUndefined();
+      expect(await readdir(dataDir)).toEqual([]);
       const [img] = imageBlocks(res);
       expect(img.mimeType).toBe('image/png');
       expect(isPng(decode(img.data))).toBe(true);
       expect(sc.skipped).toEqual({ tiny: 1, duplicate: 2, undecodable: 0 });
       expect(sc.notice).toMatch(/Skipped 1 image\(s\) under 32 px/);
       expect(sc.notice).toMatch(/Folded 2 repeat\(s\)/);
-      expect(sc.notice).toContain('Files saved under');
+      expect(sc.notice).not.toContain('saved');
       expect(texts(res)[0]).toMatch(/1 embedded image\(s\) on pages 1-2/);
     });
 
@@ -262,15 +256,18 @@ describe('zotero_pdf_images', () => {
   });
 
   describe('on a shared server', () => {
-    it('refuses save:true and explains whose disk it would be', async () => {
-      const c = ctx(figurePdf(), { remoteCaller: true });
+    it('accepts the retired save:true, writes nothing, and still returns the figure', async () => {
       const res = await pdfImages.handler(
         { item_key: 'PARENT01', mode: 'figures', pages: '1', save: true },
-        c,
+        ctx(figurePdf(), { remoteCaller: true }),
       );
-      expect(res.isError).toBe(true);
-      expect(texts(res)[0]).toMatch(/shared server/);
-      expect(c.router.getItem).not.toHaveBeenCalled();
+      if (unavailable(res)) return;
+      expect(res.isError).toBeFalsy();
+      const sc = res.structuredContent as any;
+      expect(sc.images[0].inline).toBe(true);
+      expect(sc.images[0].path).toBeUndefined();
+      expect(sc.notice).toContain('Nothing was written to disk');
+      expect(await readdir(dataDir)).toEqual([]);
     });
 
     it('does not save figures by default, and still returns them inline', async () => {

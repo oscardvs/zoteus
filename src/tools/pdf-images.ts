@@ -1,7 +1,5 @@
 import { z } from 'zod';
 import { attachmentIdentity, provenance } from './common-output.js';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
 import type {
   ImageToolHandlerResult,
   ToolContent,
@@ -52,17 +50,12 @@ export const DEFAULT_MAX_IMAGES = 16;
 export const HARD_MAX_IMAGES = 40;
 export const INLINE_BUDGET_BASE64 = 5 * 1024 * 1024;
 
-/** Where saved images go: `<data dir>/pdf-images/<attachment key>/<file>`. */
-export const SAVE_SUBDIR = 'pdf-images';
-
 function err(text: string): ToolHandlerResult {
   return { content: [{ type: 'text', text }], isError: true };
 }
 
 const toBase64 = (bytes: Uint8Array): string =>
   Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
-const ext = (mimeType: string): string => (mimeType === 'image/png' ? 'png' : 'jpg');
-const pad = (n: number): string => String(n).padStart(3, '0');
 const mbText = (bytes: number): string =>
   `${(bytes / (1024 * 1024)).toFixed(bytes < 1024 * 1024 ? 2 : 1)} MB`;
 
@@ -109,7 +102,7 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
   name: 'zotero_pdf_images',
   title: 'Look at PDF pages and figures as images (read-only)',
   description:
-    'See a PDF the way a reader does. Text extraction (zotero_get_fulltext) loses figures, turns tables into run-together numbers, drops most equations, and returns nothing for a scanned page with no text layer; this tool returns pictures instead. Pass a parent `item_key` (its PDF attachment is resolved automatically, exactly as zotero_get_fulltext does) or an attachment key, a `mode`, and `pages` ("3" or "3-7", 1-based; default "1"). `mode:"pages"` renders whole pages and returns them as image content blocks you can look at, followed by a JSON block with each page\'s pixel size and byte count: the default resolution keeps body text legible (about 1568 px on the long edge, which is also as much as the model is shown), `dpi` (36 to 300) overrides it for small print, and `format` is "jpeg" (default, quality 80) or "png" (sharper line art, larger). `mode:"figures"` extracts the raster images embedded in those pages, the way pdfimages does: photographs, plots and diagrams stored as images, and on a scanned PDF the page image itself (reported with coversPage:true); each comes back with its page, pixel size, position on the page in points from the top left, the image inline (`inline`, default true; very large ones as a 2000 px preview) and, on a local install, the file it was saved to under the Zoteus data directory (`save`, on by default locally, not offered on a shared server). A figure drawn as vectors (most matplotlib, TikZ and PDF-exported plots) is lines in the content stream, not an image, so it does not appear in figures mode; render the page with mode:"pages" to see it. Caps: `max_pages` per call (default 4, at most 8; a longer span is cut and the notice says how to continue), `max_images` (default 16, at most 40), images under `min_size` px on a side skipped (default 32: icons, rules, bullets), an image repeated across pages returned once, files above 20 MB not parsed, and about 5 MB of inline image data per response, beyond which pages or figures are left out with a notice naming them and the remedy (fewer pages, lower `dpi`, format:"jpeg", or the next span). A PDF whose encryption only restricts printing opens normally; one that needs a password to open is refused with a clear message; an EPUB has no pages to draw. The file is read from the running Zotero desktop app, else the local Zotero storage folder, else Zotero cloud storage. Read-only: nothing in the library changes. Use it when a question is about a figure, a table, an equation, a diagram or a scanned document; use zotero_get_fulltext when the words are what matters.',
+    'See a PDF the way a reader does. Text extraction (zotero_get_fulltext) loses figures, turns tables into run-together numbers, drops most equations, and returns nothing for a scanned page with no text layer; this tool returns pictures instead. Pass a parent `item_key` (its PDF attachment is resolved automatically, exactly as zotero_get_fulltext does) or an attachment key, a `mode`, and `pages` ("3" or "3-7", 1-based; default "1"). `mode:"pages"` renders whole pages and returns them as image content blocks you can look at, followed by a JSON block with each page\'s pixel size and byte count: the default resolution keeps body text legible (about 1568 px on the long edge, which is also as much as the model is shown), `dpi` (36 to 300) overrides it for small print, and `format` is "jpeg" (default, quality 80) or "png" (sharper line art, larger). `mode:"figures"` extracts the raster images embedded in those pages, the way pdfimages does: photographs, plots and diagrams stored as images, and on a scanned PDF the page image itself (reported with coversPage:true); each comes back with its page, pixel size, position on the page in points from the top left, and the image inline (`inline`, default true; very large ones as a 2000 px preview). A figure drawn as vectors (most matplotlib, TikZ and PDF-exported plots) is lines in the content stream, not an image, so it does not appear in figures mode; render the page with mode:"pages" to see it. Caps: `max_pages` per call (default 4, at most 8; a longer span is cut and the notice says how to continue), `max_images` (default 16, at most 40), images under `min_size` px on a side skipped (default 32: icons, rules, bullets), an image repeated across pages returned once, files above 20 MB not parsed, and about 5 MB of inline image data per response, beyond which pages or figures are left out with a notice naming them and the remedy (fewer pages, lower `dpi`, format:"jpeg", or the next span). A PDF whose encryption only restricts printing opens normally; one that needs a password to open is refused with a clear message; an EPUB has no pages to draw. The file is read from the running Zotero desktop app, else the local Zotero storage folder, else Zotero cloud storage. Read-only: it writes nothing, neither to the library nor to disk. Use it when a question is about a figure, a table, an equation, a diagram or a scanned document; use zotero_get_fulltext when the words are what matters.',
   inputSchema: {
     item_key: z.string().describe('Parent item key or attachment key.'),
     mode: z
@@ -169,13 +162,13 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
       .boolean()
       .optional()
       .describe(
-        'Return the images themselves as image content blocks (default true). With false, only metadata and saved paths.',
+        'Return the images themselves as image content blocks (default true). With false, only their metadata.',
       ),
     save: z
       .boolean()
       .optional()
       .describe(
-        'Also write each image under the Zoteus data directory and return its path. Default: true for figures on a local install, false otherwise. Not available on a shared server.',
+        'Retired, and has no effect: this tool writes no files (it is read-only). Still accepted so a call that passes it is not refused.',
       ),
     ...libraryArgs,
   },
@@ -196,7 +189,6 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
               mimeType: z.string().describe('"image/jpeg" or "image/png".'),
               bytes: z.number().describe('Size of the rendered image.'),
               inline: z.boolean().describe('Whether this page is also one of the image blocks in `content`.'),
-              path: z.string().optional().describe('File it was saved to, when `save` was on.'),
             })
             .passthrough(),
         )
@@ -226,7 +218,6 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
                 .passthrough()
                 .optional()
                 .describe('The smaller copy actually shown inline, when the original was too large.'),
-              path: z.string().optional().describe('File it was saved to, when `save` was on.'),
             })
             .passthrough(),
         )
@@ -242,7 +233,7 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
         .optional()
         .describe('Pages painting their text as small stencil bitmaps (a scan with no text layer), with how many.'),
       inlineBase64Chars: z.number().describe('Base64 characters of image data in this response, against the inline budget.'),
-      notice: z.string().optional().describe('Scanned pages, vector-only pages, caps hit and files saved, in one sentence.'),
+      notice: z.string().optional().describe('Scanned pages, vector-only pages and caps hit, in one sentence.'),
       provenance,
     })
     .passthrough(),
@@ -252,12 +243,6 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
     const mode: 'pages' | 'figures' = args.mode;
     const wantInline: boolean = args.inline ?? true;
     const shared = Boolean(ctx.remoteCaller);
-    if (args.save && shared) {
-      return err(
-        "This Zoteus is a shared server, so a file it saved would sit on the operator's disk, not on yours. Omit `save` and read the images inline (the default), or run Zoteus locally to keep files.",
-      );
-    }
-    const save: boolean = args.save ?? (mode === 'figures' && !shared);
 
     const selection = selectPages(args.pages ?? '1', args.max_pages ?? DEFAULT_MAX_PAGES);
     if (!selection) return err('`pages` must look like "3" or "3-7".');
@@ -296,10 +281,17 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
       fileSource: file.source,
     };
     const readFrom = file.source ? ` Read from ${SOURCE_LABEL[file.source]}.` : '';
-    const saveDir = join(ctx.config.dataDir, SAVE_SUBDIR, basename(key));
     const format: ImageFormat | undefined = args.format;
     const maxImagePixels = shared ? SHARED_IMAGE_PIXEL_LIMIT : LOCAL_IMAGE_PIXEL_LIMIT;
     const notices: string[] = [];
+    // `save` used to write each image under the data directory, on by default for figures on
+    // a local install. A tool annotated read-only must not write: clients run it without
+    // asking on the strength of that hint, and ZOTEUS_READ_ONLY keeps it. So the argument is
+    // accepted and does nothing, and a caller who asked for files is told none were written.
+    const retiredSave =
+      args.save === true
+        ? 'Nothing was written to disk: `save` is retired, because this tool is read-only; the images come back inline unless inline:false.'
+        : undefined;
     const continueWith = selection.deferred
       ? ` Pages ${describePages(range(selection.deferred))} were not processed: max_pages is ${args.max_pages ?? DEFAULT_MAX_PAGES} per call (at most ${HARD_MAX_PAGES}); call again with pages:"${selection.deferred.from}-${Math.min(selection.deferred.to, selection.deferred.from + HARD_MAX_PAGES - 1)}".`
       : '';
@@ -331,18 +323,12 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
       const dropped = wantInline ? result.rendered.filter((p) => !plan.inline.has(p)) : [];
       if (dropped.length) {
         notices.push(
-          `Pages ${describePages(dropped.map((p) => p.page))} were rendered but not returned inline: the response budget is about ${mbText(INLINE_BUDGET_BASE64)} of image data and these would exceed it. Ask for fewer pages, a lower dpi, or format:"jpeg"${save ? '; the saved files hold them at full size' : ', or pass save:true on a local install to keep the files'}.`,
+          `Pages ${describePages(dropped.map((p) => p.page))} were rendered but not returned inline: the response budget is about ${mbText(INLINE_BUDGET_BASE64)} of image data and these would exceed it. Ask for fewer pages, a lower dpi, or format:"jpeg".`,
         );
       }
-      if (save) await mkdir(saveDir, { recursive: true });
       const pages = [];
       const images: ToolContent[] = [];
       for (const p of result.rendered) {
-        let path: string | undefined;
-        if (save) {
-          path = join(saveDir, `page-${pad(p.page)}.${ext(p.mimeType)}`);
-          await writeFile(path, p.bytes);
-        }
         const inline = plan.inline.has(p);
         if (inline) images.push({ type: 'image', data: toBase64(p.bytes), mimeType: p.mimeType });
         pages.push({
@@ -353,10 +339,9 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
           mimeType: p.mimeType,
           bytes: p.bytes.byteLength,
           inline,
-          path,
         });
       }
-      if (save) notices.push(`Files saved under ${saveDir}.`);
+      if (retiredSave) notices.push(retiredSave);
       if (continueWith) notices.push(continueWith.trim());
       const first = result.rendered[0]!;
       const notice = notices.join(' ') || undefined;
@@ -407,15 +392,9 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
       ? planInline(result.images, inlineSize, INLINE_BUDGET_BASE64)
       : { inline: new Set<ExtractedImage>(), used: 0 };
     const dropped = wantInline ? result.images.filter((img) => !plan.inline.has(img)) : [];
-    if (save && result.images.length) await mkdir(saveDir, { recursive: true });
     const images: ToolContent[] = [];
     const listed = [];
     for (const img of result.images) {
-      let path: string | undefined;
-      if (save) {
-        path = join(saveDir, `page-${pad(img.page)}-image-${pad(img.index)}.${ext(img.mimeType)}`);
-        await writeFile(path, img.bytes);
-      }
       const inline = plan.inline.has(img);
       if (inline) {
         const shown = img.preview ?? img;
@@ -441,7 +420,6 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
                 bytes: img.preview.bytes.byteLength,
               }
             : undefined,
-        path,
       });
     }
 
@@ -490,16 +468,16 @@ const pdfImages: ToolDefinition<ImageToolHandlerResult> = {
     }
     if (dropped.length) {
       notices.push(
-        `${dropped.length} image(s) (pages ${describePages(dropped.map((d) => d.page))}) were not returned inline: the response budget is about ${mbText(INLINE_BUDGET_BASE64)} of image data. Ask for fewer pages or a smaller max_images${save ? '; the saved files hold them' : ''}.`,
+        `${dropped.length} image(s) (pages ${describePages(dropped.map((d) => d.page))}) were not returned inline: the response budget is about ${mbText(INLINE_BUDGET_BASE64)} of image data. Ask for fewer pages or a smaller max_images.`,
       );
     }
-    if (save && result.images.length) notices.push(`Files saved under ${saveDir}.`);
+    if (retiredSave) notices.push(retiredSave);
     if (continueWith) notices.push(continueWith.trim());
     const notice = notices.join(' ') || undefined;
     const summary =
       `${result.images.length} embedded image(s) on pages ${describePages(processed)} of ${args.item_key} (${result.numPages} pages)` +
       (result.images.length
-        ? `: ${images.length} returned inline${save ? `, ${result.images.length} saved` : ''}.`
+        ? `: ${images.length} returned inline.`
         : '.') +
       readFrom +
       (notice ? ` ${notice}` : '');
