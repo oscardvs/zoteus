@@ -45,7 +45,7 @@ export function registerEvidenceTablePrompt(server: McpServer): void {
       const scope = item_keys
         ? `Use exactly these item keys: [${item_keys}]. Call zotero_get_item on each for the title, creators and date. Do not search for more.`
         : collection
-          ? `Take the studies from the "${collection}" collection. Resolve that name to a collection key first with zotero_list_collections, then call zotero_search_items with collectionKey set to that key and top:true, so that child notes and attachments do not become rows. Note that zotero_semantic_search accepts only q, limit, mode and auto_build: it cannot be scoped to a collection, and an undeclared argument is refused before anything runs.`
+          ? `Take the studies from the "${collection}" collection. Resolve that name to a collection key first with zotero_list_collections, then call zotero_search_items with collectionKey set to that key and top:true, so that child notes and attachments do not become rows. Note that zotero_semantic_search takes a query, a limit, a mode and a library, and no collection: it cannot be scoped to a collection, and an undeclared argument is refused before anything runs.`
           : `Find the studies with zotero_semantic_search, q set to the question. If meaning search is unavailable, fall back to zotero_search_items with top:true.`;
 
       return userMessage(

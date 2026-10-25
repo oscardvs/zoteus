@@ -159,3 +159,92 @@ describe('a library with more collections than one page (#90)', () => {
     });
   });
 });
+
+/**
+ * A cloud library whose /collections listing holds trashed collections, the way api.zotero.org
+ * serves them: in the ordinary listing, counted in Total-Results, flagged `data.deleted: true`.
+ */
+function libraryWithTrash(rows: Array<{ key: string; name: string; parent?: string; deleted?: boolean }>) {
+  const all = rows.map((r) => ({
+    key: r.key,
+    version: 1,
+    data: { key: r.key, name: r.name, parentCollection: r.parent ?? false, ...(r.deleted ? { deleted: true } : {}) },
+    meta: { numItems: 1 },
+  }));
+  const web = {
+    listCollections: vi.fn(async (_lib: unknown, q: { top?: boolean; limit?: number; start?: number } = {}) => {
+      const listed = q.top ? all.filter((c) => c.data.parentCollection === false) : all;
+      const limit = Math.min(q.limit ?? 25, 100);
+      const start = q.start ?? 0;
+      return { data: listed.slice(start, start + limit), totalResults: listed.length, lastModifiedVersion: 7 };
+    }),
+    getCollection: vi.fn(async (_lib: unknown, key: string) => all.find((c) => c.key === key) ?? null),
+  };
+  const capabilities = { cloud: { userID: 19552201, username: 'u', access: {} }, localApi: false, localGroupIds: [] };
+  const router = new LibraryRouter({
+    config: loadConfig({ ZOTEUS_LOCAL: 'off' } as any),
+    capabilities: capabilities as any,
+    web: web as any,
+  });
+  const context: any = { config: { libraryType: 'user' }, capabilities, router, web };
+  return { ctx: context, web, router };
+}
+
+describe('collections in the trash', () => {
+  const rows = [
+    { key: 'LIVE0001', name: 'Thesis' },
+    { key: 'TRASH001', name: 'Old drafts', deleted: true },
+    { key: 'TRASHSUB', name: 'Chapter 1', parent: 'TRASH001', deleted: true },
+    // Zotero flags every subcollection it trashes; one that somehow lost the flag is still
+    // inside a trashed parent, and listing it would leave a row with no parent in the list.
+    { key: 'UNFLAGGD', name: 'Chapter 2', parent: 'TRASH001' },
+    { key: 'LIVESUB1', name: 'Methods', parent: 'LIVE0001' },
+  ];
+
+  it('zotero_list_collections leaves them out, and out of totalResults', async () => {
+    const { ctx: c } = libraryWithTrash(rows);
+    const res: any = await listCollections.handler({}, c);
+    expect(res.structuredContent.collections.map((x: any) => x.key)).toEqual(['LIVESUB1', 'LIVE0001']);
+    expect(res.structuredContent.totalResults).toBe(2);
+    expect(res.structuredContent.complete).toBe(true);
+    expect(textOf(res)).not.toContain('Old drafts');
+    expect(textOf(res)).toContain('2 collection(s).');
+  });
+
+  it('does not find a trashed collection by name', async () => {
+    const { ctx: c } = libraryWithTrash(rows);
+    const res: any = await listCollections.handler({ q: 'drafts' }, c);
+    expect(res.structuredContent.collections).toEqual([]);
+    expect(res.structuredContent.totalResults).toBe(0);
+  });
+
+  it('leaves them out of the top-level listing too', async () => {
+    const { ctx: c } = libraryWithTrash(rows);
+    const res: any = await listCollections.handler({ top: true }, c);
+    expect(res.structuredContent.collections.map((x: any) => x.key)).toEqual(['LIVE0001']);
+    expect(res.structuredContent.totalResults).toBe(1);
+  });
+
+  it('gives zotero_manage_collections list the same answer', async () => {
+    const { ctx: c } = libraryWithTrash(rows);
+    const res: any = await manageCollections.handler({ action: 'list' }, c);
+    expect(res.structuredContent.collections.map((x: any) => x.key)).toEqual(['LIVESUB1', 'LIVE0001']);
+    expect(res.structuredContent.totalResults).toBe(2);
+  });
+
+  it('still reads every page when the trash sits on the first one', async () => {
+    // Paging counts the trashed rows, because the API does: a crawl that advanced `start` by
+    // the live rows only would read part of page one twice and stop short of the end.
+    const many = [
+      ...Array.from({ length: 60 }, (_, i) => ({ key: `T${String(i).padStart(7, '0')}`, name: `Gone ${i}`, deleted: true })),
+      ...Array.from({ length: 190 }, (_, i) => ({ key: `L${String(i).padStart(7, '0')}`, name: `Kept ${i}` })),
+    ];
+    const { router, web } = libraryWithTrash(many);
+    const all = await router.listAllCollections();
+    expect(web.listCollections.mock.calls.map((call) => call[1]!.start)).toEqual([0, 100, 200]);
+    expect(all.data).toHaveLength(190);
+    expect(all.data.every((x: any) => !x.data.deleted)).toBe(true);
+    expect(all.totalResults).toBe(190);
+    expect(all.complete).toBe(true);
+  });
+});

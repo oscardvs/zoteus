@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Smoke test for the issue fixes: spawn the built server over real stdio.
 // Verifies: (a) zotero_get_fulltext exposes `fallback`, (b) zotero_semantic_search
-// exposes `auto_build` and returns actionable auto-build guidance on an empty index,
+// still accepts the retired `auto_build` and answers an empty index with the zotero_index
+// call that builds it, never a build of its own,
 // (c) zotero_index reports async build state.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -35,11 +36,13 @@ const res2 = await client.callTool({ name: 'zotero_semantic_search', arguments: 
 const text2 = String(res2.content?.[0]?.text ?? '');
 check('auto_build:false returns bare guidance', res2.isError === true && /run zotero_index/i.test(text2), text2.slice(0, 120));
 
-// Empty index → auto_build kicks in with actionable guidance (build may error later
-// without a cloud key; the point is the first response starts the build, not a bare error).
+// Empty index, no arguments → the same guidance, and no build: the tool is read-only, so a
+// first-use build is zotero_index's to start.
 const res = await client.callTool({ name: 'zotero_semantic_search', arguments: { q: 'anything' } });
 const text = String(res.content?.[0]?.text ?? '');
-check('empty index returns auto-build guidance', res.isError === true && /background build|being built|zotero_index/i.test(text), text.slice(0, 120));
+check('empty index names the build call', res.isError === true && /run zotero_index/i.test(text), text.slice(0, 120));
+const idle = await client.callTool({ name: 'zotero_index', arguments: { action: 'status' } });
+check('empty index started no build', idle.structuredContent?.state !== 'building', `state=${idle.structuredContent?.state}`);
 
 // zotero_index status reports the async build state machine.
 const st = await client.callTool({ name: 'zotero_index', arguments: { action: 'status' } });

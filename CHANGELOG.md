@@ -4,6 +4,39 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Collections in the Zotero trash no longer show up in collection listings.**
+  api.zotero.org keeps a trashed collection in its ordinary `/collections` listing, flagged
+  `data.deleted: true`, and counts it in `Total-Results`; the desktop app leaves it out. So a
+  library read from the cloud listed collections the user had deleted, in
+  `zotero_list_collections`, `zotero_manage_collections action:"list"` and the
+  `zotero://collections` resource, and a lookup by name could find one. They are now dropped
+  from every listing and from `totalResults`, after the crawl, so paging still counts them the
+  way the API does. A subcollection whose own flag is missing but whose parent is in the trash
+  is dropped with it.
+- **`zotero_evidence_table` and `zotero_word_document` declare `destructiveHint: true`.**
+  Both take `overwrite: true`, which replaces a file that already exists, and the old contents
+  are gone: not the "additive updates only" a false hint promises. OpenAI's plugin scan flagged
+  both. `zotero_attachment`, which takes the same argument, already declared it. Nothing changes
+  in what they do; without `overwrite` neither ever replaces a file.
+
+### Changed
+- **`zotero_semantic_search` no longer starts an index build.** On an empty index it used to
+  start a background crawl of the whole library (`auto_build`, on by default), which wrote an
+  index file, could create a new one for a named library, and spent embedding-API calls when an
+  API embedder was configured, all from a tool annotated `readOnlyHint: true` that clients run
+  without asking. It now answers an empty index with an error naming the `zotero_index
+  action:"build"` call for that library, and reports progress while a build runs, as before.
+  `auto_build` is still accepted, so no call is refused, and has no effect.
+- **`zotero_pdf_images` writes no files.** On a local install it saved every figure under
+  `<data dir>/pdf-images/` by default (and pages with `save: true`), so a tool annotated
+  read-only wrote to disk on every figures call. The images come back inline, as they always
+  did. `save` is still accepted and does nothing; with `save: true` the notice says no file was
+  written. Both tools stay read-only, and stay available under `ZOTEUS_READ_ONLY`, which keeps
+  only read-only tools.
+
 ## [1.23.0] - 2026-10-19
 
 ### Fixed

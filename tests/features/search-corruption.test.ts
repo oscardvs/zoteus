@@ -134,8 +134,8 @@ describe('opening an index that cannot be read', () => {
   });
 
   sqliteIt('does not look like a library awaiting its first build', async () => {
-    // `zotero_semantic_search` auto-builds an empty index. Reporting empty here would
-    // start a full library crawl on top of the fault.
+    // `zotero_semantic_search` answers an empty index by asking for a build. Reporting
+    // empty here would send the caller off to start a full library crawl on top of the fault.
     const { index } = await openCorrupted();
     expect(index.isEmpty).toBe(false);
     expect(index.updateBlocker('local')).toBeTruthy();

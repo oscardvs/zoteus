@@ -56,7 +56,8 @@ export class CorruptSearchIndex extends SearchIndexBase {
 
   /**
    * Reported non-empty so that nothing mistakes this for a library awaiting its first
-   * build and helpfully starts one — `zotero_semantic_search`'s `auto_build` would.
+   * build and sends the caller off to start one, as `zotero_semantic_search` does for an
+   * empty index.
    */
   override get isEmpty(): boolean {
     return false;

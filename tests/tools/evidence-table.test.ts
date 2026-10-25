@@ -99,10 +99,11 @@ function bodyLines(table: string): string[] {
 
 describe('zotero_evidence_table rendering', () => {
   it('is not annotated read-only, because save_path writes a file, and does not open the world', () => {
-    // A client auto-approves on readOnlyHint, and a file write (or, with overwrite:true, a
-    // file replaced) is exactly what that approval must never cover.
+    // A client auto-approves on readOnlyHint, and a file write is exactly what that approval
+    // must never cover. Destructive, because overwrite:true replaces a file and its old
+    // contents are gone.
     expect(evidenceTable.annotations?.readOnlyHint).toBe(false);
-    expect(evidenceTable.annotations?.destructiveHint).toBe(false);
+    expect(evidenceTable.annotations?.destructiveHint).toBe(true);
     expect(evidenceTable.annotations?.openWorldHint).toBe(false);
   });
 
