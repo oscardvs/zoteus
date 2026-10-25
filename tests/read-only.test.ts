@@ -77,4 +77,18 @@ describe('tool annotations', () => {
     expect(diskWriters.map((t) => t.name).sort()).toEqual(['zotero_evidence_table', 'zotero_word_document']);
     for (const t of diskWriters) expect(t.annotations?.readOnlyHint).toBe(false);
   });
+
+  it('marks every tool that can replace an existing file destructive', () => {
+    // OpenAI's plugin scan (2026-10-25) flagged zotero_evidence_table and
+    // zotero_word_document: `overwrite: true` replaces a file and its old contents are gone,
+    // which is not the "additive updates only" a false destructiveHint promises.
+    // zotero_attachment already declared it for the same argument.
+    const replacers = tools.filter((t) => 'overwrite' in (t.inputSchema ?? {}));
+    expect(replacers.map((t) => t.name).sort()).toEqual([
+      'zotero_attachment',
+      'zotero_evidence_table',
+      'zotero_word_document',
+    ]);
+    for (const t of replacers) expect(t.annotations?.destructiveHint).toBe(true);
+  });
 });

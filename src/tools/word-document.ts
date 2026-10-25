@@ -199,7 +199,10 @@ const wordDocument: ToolDefinition = {
       provenance,
     })
     .passthrough(),
-  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  // Destructive because `overwrite:true` replaces an existing .docx, usually one the user has
+  // been editing, and nothing keeps the old one. Without it nothing is ever replaced: the
+  // default path is new on every call and an existing `save_path` is refused.
+  annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   handler: async (args, ctx) => {
     const now = new Date();
     const wantBibliography = args.bibliography !== false;

@@ -326,11 +326,13 @@ const evidenceTable: ToolDefinition = {
       provenance,
     })
     .passthrough(),
-  // Not read-only: `save_path` writes a file, and `overwrite:true` replaces one. A client
-  // auto-approves on readOnlyHint, and a file write is exactly what that approval must not
-  // cover. Nothing here touches the library, so it is not destructive in the sense the hint
-  // carries (zotero_word_document, which also writes a file, declares the same).
-  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  // Not read-only: `save_path` writes a file. A client auto-approves on readOnlyHint, and a
+  // file write is exactly what that approval must not cover. Destructive, because
+  // `overwrite:true` replaces a file that already exists and its old contents are gone: the
+  // hint covers the tool's environment, not only the library, and its false means "additive
+  // updates only". The default refuses to overwrite, which is what the hint cannot express.
+  // zotero_word_document and zotero_attachment, which take the same `overwrite`, say the same.
+  annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   handler: async (args, ctx) => {
     const rows = args.rows as EvidenceRow[];
     const question = args.question as string;
