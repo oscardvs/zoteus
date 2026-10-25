@@ -212,18 +212,20 @@ describe('zotero_semantic_search is library-aware', () => {
     expect(res.content[0]!.text).toContain('This index holds group 4523');
   });
 
-  it('auto-builds the configured group rather than stamping the personal library over it', async () => {
+  it('starts no crawl on an empty index, so first use cannot stamp the wrong library', async () => {
     const { ctx, web, search } = makeCtx(GROUP_DEFAULT);
 
-    // First use on an empty index: the automatic build used to crawl the group and stamp
-    // 'user', which set up exactly the erase above without the user ever calling zotero_index.
+    // First use on an empty index once started an automatic build, which at one point
+    // crawled the group and stamped 'user'. A search no longer builds at all: the build is
+    // zotero_index's, whose stamp is checked above.
     const res = await semanticSearch.handler({ q: 'anything' }, ctx);
     expect(res.isError).toBe(true);
-    expect((res.structuredContent as any).autoBuild).toBe(true);
+    expect((res.structuredContent as any).autoBuild).toBe(false);
+    expect(res.content[0]!.text).toContain('Run zotero_index action:"build" first');
 
-    await settled(search);
-    expect(web.listItems.mock.calls[0]![0]).toEqual({ type: 'group', id: 4523 });
-    expect(search.buildStatus().library).toBe('group:4523');
+    expect(web.listItems).not.toHaveBeenCalled();
+    expect(search.isEmpty).toBe(true);
+    expect(search.buildStatus().library).toBeUndefined();
   });
 });
 

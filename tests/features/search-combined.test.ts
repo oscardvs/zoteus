@@ -450,11 +450,11 @@ describe('zotero_semantic_search across several libraries', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('builds a named library into its OWN index rather than stamping the default file', async () => {
-    // The bug this closes: with the default index empty, an auto_build for an explicitly
-    // named group used to crawl the group and write its rows (and its stamp) into the
-    // personal library's file.
-    const { ctx, indexes, dir, search } = await makeCtx({
+  it('names the build for a library with no index, and creates nothing for it', async () => {
+    // A search is read-only. With the default index empty, naming a group used to create
+    // the group's store and crawl the group into it; now it hands over the zotero_index call
+    // for that group and leaves both files as they were.
+    const { ctx, web, indexes, dir, search } = await makeCtx({
       user: makeItems(2, 'U', 'kalman'),
       'group:4523': makeItems(4, 'G', 'kalman'),
     });
@@ -462,13 +462,11 @@ describe('zotero_semantic_search across several libraries', () => {
     const res = await semanticSearch.handler({ q: 'kalman', library_type: 'group', library_id: 4523 }, ctx);
 
     expect(res.isError).toBe(true);
-    expect(res.content[0]!.text).toContain('background build was started');
-    const group = indexes.peek('group:4523')!;
-    await settled(group);
-
-    expect(group.buildStatus().library).toBe('group:4523');
-    expect(group.buildStatus().items).toBe(4);
-    // The default library's index is untouched: still empty, still unstamped.
+    expect(res.content[0]!.text).toContain(
+      'Run zotero_index action:"build" library_type:"group" library_id:4523 first',
+    );
+    expect(web.listItems).not.toHaveBeenCalled();
+    expect(await indexes.exists('group:4523')).toBe(false);
     expect(search.isEmpty).toBe(true);
     expect(search.buildStatus().library).toBeUndefined();
     rmSync(dir, { recursive: true, force: true });

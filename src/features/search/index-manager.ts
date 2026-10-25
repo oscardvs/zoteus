@@ -658,8 +658,8 @@ export abstract class SearchIndexBase implements SearchIndex {
    *
    * Two processes building one SQLite file destroyed each other's work: a build that finds
    * no checkpoint to resume starts by emptying the store, so a second Zoteus that looked
-   * while the first had committed nothing yet (an auto-build from zotero_semantic_search
-   * does exactly that) wiped the rows the first was writing, and the first finished with
+   * while the first had committed nothing yet (an auto-build from zotero_semantic_search,
+   * since retired, did exactly that) wiped the rows the first was writing, and the first finished with
    * passages it believed embedded and were not. Measured on 2026-10-01 with fresh processes
    * searching every two seconds during a 350-item build: 557 of 1967 passages ended
    * without a vector. The claim is taken before anything is read or reset.
@@ -1080,9 +1080,9 @@ export abstract class SearchIndexBase implements SearchIndex {
   }
 
   get isEmpty(): boolean {
-    // Never "empty" while faulted: an empty index invites a helpful automatic first build
-    // (zotero_semantic_search's auto_build does exactly that), and building into a store
-    // that cannot be read is not help.
+    // Never "empty" while faulted: an empty index invites a first build (an empty-index
+    // search tells the caller to run one), and building into a store that cannot be read
+    // is not help.
     if (this.fault) return false;
     return this.counts().documents === 0;
   }

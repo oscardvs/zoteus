@@ -15,7 +15,6 @@ import {
   progressLine,
   staleVectorsNotice,
   unembeddedNotice,
-  startIndexBuild,
   truncationNotice,
   unaddressableLibrary,
   unreachableLibrary,
@@ -271,18 +270,23 @@ async function combinedSearch(
   );
 }
 
-/** How to build an index for this library, in the caller's own tool vocabulary. */
-function buildHint(library: string): string {
+/** The zotero_index call that builds this library's index, in the caller's own tool vocabulary. */
+function buildCall(library: string): string {
   return library === 'user'
-    ? 'Build it with zotero_index action:"build" library_type:"user".'
-    : `Build it with zotero_index action:"build" library_type:"group" library_id:${library.slice('group:'.length)}.`;
+    ? 'zotero_index action:"build" library_type:"user"'
+    : `zotero_index action:"build" library_type:"group" library_id:${library.slice('group:'.length)}`;
+}
+
+/** How to build an index for this library, as a sentence. */
+function buildHint(library: string): string {
+  return `Build it with ${buildCall(library)}.`;
 }
 
 const semanticSearch: ToolDefinition = {
   name: 'zotero_semantic_search',
   title: 'Semantic / hybrid library search',
   description:
-    'Search the library by meaning, not just keywords. Combines BM25 keyword scoring with vector similarity (when an embedding provider is configured) via reciprocal-rank fusion, and returns the best-matching items with a snippet and score. By default it searches item metadata and abstracts; if the index was built with `fulltext` on (zotero_index fulltext:true, or ZOTEUS_INDEX_FULLTEXT=true) it also searches the body text of attachments, and a hit whose snippet came from a PDF body is marked source:"fulltext". It ALSO searches the words the reader wrote — child notes and PDF annotations (highlight text and comments) — unless that was turned off (ZOTEUS_INDEX_OWN_WORDS=false); a hit from one is marked source:"note" or source:"annotation" and is attributed to the item it hangs off, so an item with forty annotations is one result rather than forty. `mode`: "auto" (hybrid, default), "keyword" (BM25 only), or "semantic" (vector only). "semantic" needs both vectors in the index and a running embedder to turn the query into one: when either is missing (embeddings switched off, or e.g. the on-device model runtime is not installed) it returns an error naming the cause instead of an empty result set, and "auto" keeps working as keyword search while saying so. The index must be built once before first use: when it is empty this tool starts a background build automatically (`auto_build`, on by default) and tells you to poll zotero_index action:"status" and retry — pass `auto_build:false` to opt out. ONE INDEX FILE HOLDS ONE LIBRARY, and a plain call answers from the default library\'s index: which library that is comes back as `library` on the result and is named in the summary (both absent only on an index built before that stamp existed, where the library is genuinely unknown). `library_type`/`library_id` name ONE library: when that library has an index of its own in this data directory, the search answers from THAT index; when it does not, you get an error naming which library the index that IS here holds, rather than a silent answer from rows belonging to a different library (with `auto_build` on, the named library is instead built into a new index of its own in the background). Omitting them searches the default library\'s index, whatever it holds. To search SEVERAL libraries at once, build each one\'s index (zotero_index action:"build" library_type:"group" library_id:<id>), then pass `libraries`: `libraries:"all"` searches every library that has an index here, `libraries:["user","group:4523"]` searches the ones you name, and zotero_index action:"libraries" lists what exists. A combined answer is MERGED BY RANK and never by score, because each index scores against its own library\'s statistics and may hold vectors from a different embedding model: `score` is therefore only comparable between hits from the SAME library, every hit carries `library` and `libraryRank` (its position in that library\'s own answer), and a mix of embedding models is reported as `embedderMismatch` rather than fused away. A library named in `libraries` that has no index is reported with the command that would build it; nothing there starts a build. For exact field/tag/itemType filtering use zotero_search_items instead; use this for conceptual/"papers about X" queries. To read the actual passages of a found item (with page locators) use zotero_get_fulltext.',
+    'Search the library by meaning, not just keywords. Combines BM25 keyword scoring with vector similarity (when an embedding provider is configured) via reciprocal-rank fusion, and returns the best-matching items with a snippet and score. By default it searches item metadata and abstracts; if the index was built with `fulltext` on (zotero_index fulltext:true, or ZOTEUS_INDEX_FULLTEXT=true) it also searches the body text of attachments, and a hit whose snippet came from a PDF body is marked source:"fulltext". It ALSO searches the words the reader wrote, child notes and PDF annotations (highlight text and comments), unless that was turned off (ZOTEUS_INDEX_OWN_WORDS=false); a hit from one is marked source:"note" or source:"annotation" and is attributed to the item it hangs off, so an item with forty annotations is one result rather than forty. `mode`: "auto" (hybrid, default), "keyword" (BM25 only), or "semantic" (vector only). "semantic" needs both vectors in the index and a running embedder to turn the query into one: when either is missing (embeddings switched off, or e.g. the on-device model runtime is not installed) it returns an error naming the cause instead of an empty result set, and "auto" keeps working as keyword search while saying so. The index must be built once before first use, with zotero_index action:"build": this tool only reads, so on an empty index it starts nothing and returns an error naming that call (or, while a build is running, its progress). ONE INDEX FILE HOLDS ONE LIBRARY, and a plain call answers from the default library\'s index: which library that is comes back as `library` on the result and is named in the summary (both absent only on an index built before that stamp existed, where the library is genuinely unknown). `library_type`/`library_id` name ONE library: when that library has an index of its own in this data directory, the search answers from THAT index; when it does not, you get an error naming which library the index that IS here holds, rather than a silent answer from rows belonging to a different library; zotero_index action:"build" with the same library arguments gives it one. Omitting them searches the default library\'s index, whatever it holds. To search SEVERAL libraries at once, build each one\'s index (zotero_index action:"build" library_type:"group" library_id:<id>), then pass `libraries`: `libraries:"all"` searches every library that has an index here, `libraries:["user","group:4523"]` searches the ones you name, and zotero_index action:"libraries" lists what exists. A combined answer is MERGED BY RANK and never by score, because each index scores against its own library\'s statistics and may hold vectors from a different embedding model: `score` is therefore only comparable between hits from the SAME library, every hit carries `library` and `libraryRank` (its position in that library\'s own answer), and a mix of embedding models is reported as `embedderMismatch` rather than fused away. A library named in `libraries` that has no index is reported with the command that would build it; nothing there starts a build. For exact field/tag/itemType filtering use zotero_search_items instead; use this for conceptual/"papers about X" queries. To read the actual passages of a found item (with page locators) use zotero_get_fulltext.',
   inputSchema: {
     q: z.string().min(1).describe('Natural-language query.'),
     ...libraryArgs,
@@ -308,7 +312,10 @@ const semanticSearch: ToolDefinition = {
     auto_build: z
       .boolean()
       .optional()
-      .describe('Start building the index automatically in the background when it is empty (default true).'),
+      .describe(
+        'Retired, and has no effect: this tool never builds an index (zotero_index action:"build" does). Still ' +
+          'accepted so a call that passes it is not refused.',
+      ),
   },
   outputSchema: z
     .object({
@@ -533,9 +540,7 @@ const semanticSearch: ToolDefinition = {
      * A named library gets its OWN index when it has one, because one store holds one
      * library: "search group 4523" means that group's store, not the default library's
      * rows. Naming a library with NO index falls through to `ctx.search` on purpose, so
-     * the mismatch refusal below can say which library the index that IS here holds; the
-     * one exception is auto_build, which must create and build the named library's own
-     * store rather than stamping the default library's file with someone else's token.
+     * the mismatch refusal below can say which library the index that IS here holds.
      *
      * An OMITTED library means the DEFAULT library, which is `ctx.search` only while the
      * primary index's stamp agrees with the configured default: where it does not, the
@@ -551,23 +556,10 @@ const semanticSearch: ToolDefinition = {
     if (requested && ctx.indexes) {
       const want = canonicalLibraryToken(requested);
       if (want !== ctx.indexes.primaryLibrary) {
+        // `openIfExists`, never `open`: opening a store CREATES it, and a search writes
+        // nothing (see the empty-index branch below).
         const own = await ctx.indexes.openIfExists(want);
         if (own) index = own;
-        else if (args.auto_build !== false) {
-          // Opening a store CREATES it, so the one question that must come first is
-          // whether this caller can read that library at all: a group they cannot reach
-          // has nothing to index, and leaving a permanent file in the data directory to
-          // say so is a write nobody asked for.
-          const why = unreachableLibrary(ctx, requested);
-          if (why) {
-            return {
-              content: [{ type: 'text', text: why }],
-              structuredContent: { hits: [], requestedLibrary: want },
-              isError: true,
-            };
-          }
-          index = await ctx.indexes.open(want);
-        }
       }
     } else if (!requested && ctx.indexes) {
       // An omitted library means the DEFAULT library, and once that library has an index
@@ -587,8 +579,9 @@ const semanticSearch: ToolDefinition = {
         // An EMPTY sibling in the split state (the original index stamped another library
         // and holding rows) is not yet anybody's choice: zotero_index refuses to fill it
         // without an explicit library for exactly that reason, and answering from it here
-        // would auto-build the second crawl that refusal exists to prevent. Keep answering
-        // from the original index, as a plain search did before the sibling existed.
+        // would send the caller off to run the second crawl that refusal exists to prevent.
+        // Keep answering from the original index, as a plain search did before the sibling
+        // existed.
         if (own && !(own.isEmpty && !own.isBuilding && defaultLibrarySplit(ctx, token))) index = own;
       }
     }
@@ -602,8 +595,12 @@ const semanticSearch: ToolDefinition = {
     // it since this handle last looked, or be filling it now.
     index.syncFromStore?.();
     if (index.isEmpty) {
+      // Every answer below carries `hits: []`: the output schema requires it, and an SDK
+      // client validates structuredContent even on an error, so without it the client threw
+      // "does not match the tool's output schema" and the guidance never reached the model.
+      //
       // A build another process is running is the one this search is waiting for, and
-      // starting a second (the auto-build below) would empty the store it is filling.
+      // sending the caller off to start a second would empty the store it is filling.
       const elsewhere = index.jobElsewhere?.();
       if (elsewhere) {
         const s = index.buildStatus();
@@ -614,7 +611,7 @@ const semanticSearch: ToolDefinition = {
               text: `The semantic-search index${about} is still empty here. ${describeJobElsewhere(elsewhere)}`,
             },
           ],
-          structuredContent: { ...s, autoBuild: false },
+          structuredContent: { hits: [], ...s, autoBuild: false },
           isError: true,
         };
       }
@@ -631,7 +628,7 @@ const semanticSearch: ToolDefinition = {
                 embedderNotice(s),
             },
           ],
-          structuredContent: { ...s, autoBuild: true },
+          structuredContent: { hits: [], ...s, autoBuild: true },
           isError: true,
         };
       }
@@ -646,45 +643,28 @@ const semanticSearch: ToolDefinition = {
                 'action:"resume", then explicitly start a build; this search will not resume it automatically.',
             },
           ],
-          structuredContent: { ...s, autoBuild: false },
+          structuredContent: { hits: [], ...s, autoBuild: false },
           isError: true,
         };
       }
-      if (args.auto_build !== false) {
-        // First use: populate the index on the fly instead of leaving the user stranded.
-        // Resolved here (explicit library, else the configured default) so the stamp names
-        // the library the crawl will actually visit: an automatic first build on a
-        // ZOTERO_LIBRARY_TYPE=group install used to crawl the group and stamp the index
-        // "user", after which an explicit personal-library build erased the group's rows.
-        // The optional call keeps the router-less fixtures that drive this handler directly
-        // working; no router means the personal library, exactly as before.
-        const s = startIndexBuild(ctx, requested ?? ctx.router?.defaultLibrary?.(), undefined, {}, index);
-        return {
-          content: [
-            {
-              type: 'text',
-              text:
-                `The semantic-search index${about} is empty, so a background build was started automatically ` +
-                `(first-time setup; ${progressLine(s)}). Poll zotero_index with action:"status" every few seconds ` +
-                'until state is "done", then retry this search. Pass auto_build:false to opt out.' +
-                embedderNotice(s),
-            },
-          ],
-          structuredContent: { ...s, autoBuild: true },
-          isError: true,
-        };
-      }
+      // Nothing here starts a build, on purpose. This tool is declared read-only, so clients
+      // run it without asking and ZOTEUS_READ_ONLY keeps it, and a first-use build is a crawl
+      // of the whole library that writes an index (and spends embedding-API calls when an
+      // API embedder is configured). That is zotero_index's job, which says it writes: the
+      // caller is handed the exact call, for the library they named.
       const s = index.buildStatus();
+      const call = requested ? buildCall(canonicalLibraryToken(requested)) : 'zotero_index action:"build"';
       return {
         content: [
           {
             type: 'text',
             text:
-              `The search index${about} is empty. Run zotero_index with action:"build" first, then retry.` +
+              `The search index${about} is empty. Run ${call} first, poll zotero_index action:"status" ` +
+              'until state is "done", then retry this search.' +
               embedderNotice(s),
           },
         ],
-        structuredContent: { ...s },
+        structuredContent: { hits: [], ...s, autoBuild: false },
         isError: true,
       };
     }

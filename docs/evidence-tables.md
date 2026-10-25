@@ -19,7 +19,7 @@ If your client does not surface prompts, paste the same request:
 
 > Build an evidence table answering "[question]" from my Zotero library, at most 5 studies. Retrieve one passage per study with zotero_get_fulltext before any factual claim, take the quotation verbatim, and say whether each page is exact or approximate. Classify coverage as passage retrieved, abstract only, or unavailable, from what the tools returned. Then render it with zotero_evidence_table.
 
-A named collection is resolved to a collection key first and searched with `zotero_search_items`. `zotero_semantic_search` takes only `q`, `limit`, `mode` and `auto_build`: it cannot be scoped to a collection, and Zoteus refuses an argument a tool does not declare rather than silently ignoring it.
+A named collection is resolved to a collection key first and searched with `zotero_search_items`. `zotero_semantic_search` takes a query, a limit, a mode and a library, and no collection: it cannot be scoped to a collection, and Zoteus refuses an argument a tool does not declare rather than silently ignoring it.
 
 ## What each column means
 

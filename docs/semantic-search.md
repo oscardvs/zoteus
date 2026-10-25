@@ -63,8 +63,8 @@ can never time out the MCP client, even on very large libraries.
   stopped **update** keeps what it applied but leaves the version stamp where it was, so the
   next update simply repeats the delta.
 - `action: "pause"` sets a durable hold and cooperatively stops any running job. The hold
-  survives a server restart and makes `build`, `refresh`, `update`, and semantic search's
-  automatic first build refuse without creating background work. Existing indexed content
+  survives a server restart and makes `build`, `refresh` and `update` refuse without
+  creating background work. Existing indexed content
   remains searchable.
 - `action: "resume"` clears that hold. It deliberately starts no job by itself: follow it
   with `build` to continue a checkpoint or `update` to request a delta.
@@ -109,8 +109,8 @@ summary, because a build whose artifact never reached disk still reports `state:
 
 ### `zotero_semantic_search` — search by meaning
 - `q` — natural-language query. `mode`: `auto` (hybrid, default), `keyword` (BM25), or `semantic` (vector).
-- Returns ranked items with a snippet and fused score. The index is built automatically on first use (see `auto_build` below), or ahead of time with `zotero_index`.
-- `auto_build` (default `true`) — when the index is empty the tool starts a background build itself and tells you to poll `zotero_index` action:"status" until `done`, then retry, instead of returning a bare error; pass `auto_build: false` to opt out.
+- Returns ranked items with a snippet and fused score. The index is built with `zotero_index` action:"build"; this tool only reads it.
+- On an empty index it builds nothing and answers with an error naming the `zotero_index` call that would (with the `library_type`/`library_id` you passed), then to poll `zotero_index` action:"status" until `done` and retry; while a build is running it reports the build's progress instead. Up to 1.23.0 it started that build itself (`auto_build`, on by default), which made a tool annotated read-only crawl the whole library and write an index. `auto_build` is still accepted, so a call that passes it is not refused, and has no effect.
 - `mode: "semantic"` ranks by vectors alone, which needs both ends of the comparison:
   vectors in the index, and an embedding provider to turn the query into one. With **0
   vectors**, or with **no provider at all** (`ZOTEUS_EMBEDDINGS=off`, or one that never

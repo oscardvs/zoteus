@@ -263,7 +263,7 @@ const WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024;
  * matter of course (every Claude Code session and Claude Desktop each run one), and two jobs
  * on one file destroyed each other's work: a build that finds no checkpoint to carry on from
  * starts by emptying the store, so a second process that started one (an auto-build from a
- * semantic search is enough) wiped whatever the first had committed, and the first finished
+ * semantic search was enough, before searches stopped building) wiped whatever the first had committed, and the first finished
  * believing in passages and vectors that were gone. Kept in the file itself, taken inside
  * a write transaction, so two processes cannot both read it free and both take it.
  */

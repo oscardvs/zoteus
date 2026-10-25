@@ -80,10 +80,10 @@ describe('zotero-evidence-table rendering', () => {
     expect(text).toContain('zotero_list_collections');
     expect(text).toContain('collectionKey');
     expect(text).toContain('top:true');
-    // The correction that matters: semantic search takes four arguments and a collection is
-    // not one of them, so the prompt must say so rather than let the model try.
+    // The correction that matters: a collection is not one of semantic search's arguments,
+    // so the prompt must say so rather than let the model try.
     expect(text).toContain('cannot be scoped to a collection');
-    expect(text).toMatch(/only q, limit, mode and auto_build/);
+    expect(text).toContain('and no collection');
   });
 
   it('uses given item keys and does not send the model searching', async () => {

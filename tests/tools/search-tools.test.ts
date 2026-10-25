@@ -73,18 +73,33 @@ describe('zotero_semantic_search', () => {
     expect(ctx.web.listItems).not.toHaveBeenCalled();
   });
 
-  it('auto-builds on first use: empty index starts a background build and says so', async () => {
+  it('never builds on first use: an empty index gets the zotero_index call, auto_build or not', async () => {
+    // The tool is annotated read-only, so clients run it without asking, and a first-use
+    // build is a crawl of the whole library that writes an index. `auto_build` is retired:
+    // still accepted, and it changes nothing.
+    for (const args of [{ q: 'anything' }, { q: 'anything', auto_build: true }]) {
+      const search = new MemorySearchIndex({ embedder: null });
+      const ctx = makeCtx(search);
+      const res = await semanticSearch.handler(args, ctx);
+      expect(res.isError).toBe(true);
+      expect(res.structuredContent?.autoBuild).toBe(false);
+      expect(res.content[0].text).toContain('Run zotero_index action:"build" first');
+      expect(ctx.web.listItems).not.toHaveBeenCalled();
+      expect(search.isBuilding).toBe(false);
+      expect(search.isEmpty).toBe(true);
+      // An SDK client validates structuredContent against the output schema even on an
+      // error, and replaces the whole answer with a schema error when it does not fit.
+      expect(semanticSearch.outputSchema!.safeParse(res.structuredContent).success).toBe(true);
+    }
+  });
+
+  it('answers once zotero_index has built the index it named', async () => {
     const ctx = makeCtx(new MemorySearchIndex({ embedder: null }));
-    const res = await semanticSearch.handler({ q: 'anything' }, ctx);
-    expect(res.isError).toBe(true); // not a search result — actionable first-use guidance
-    expect(res.structuredContent?.autoBuild).toBe(true);
-    expect(res.content[0].text).toMatch(/build was started automatically|background build/i);
-    expect(ctx.web.listItems).toHaveBeenCalled();
-    // once the kicked-off background build settles, the same query returns real hits
+    await indexTool.handler({ action: 'build' }, ctx);
     await pollUntilSettled(ctx);
-    const retry = await semanticSearch.handler({ q: 'anything' }, ctx);
-    expect(retry.isError).toBeUndefined();
-    expect(Array.isArray(retry.structuredContent?.hits)).toBe(true);
+    const res = await semanticSearch.handler({ q: 'anything' }, ctx);
+    expect(res.isError).toBeUndefined();
+    expect(Array.isArray(res.structuredContent?.hits)).toBe(true);
   });
 
   it('reports progress instead of double-building when a build is already running', async () => {

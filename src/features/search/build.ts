@@ -495,9 +495,9 @@ function refuseJobElsewhere(index: SearchIndex, wanted: 'build' | 'update'): voi
 }
 
 /**
- * Kick off the incremental background index build used by zotero_index and by
- * zotero_semantic_search's auto-build. Fire-and-forget: the build runs on the
- * server event loop; callers poll the returned index's `buildStatus()` for progress.
+ * Kick off the incremental background index build used by zotero_index. Fire-and-forget:
+ * the build runs on the server event loop; callers poll the returned index's `buildStatus()`
+ * for progress.
  * Throws if a build is already running.
  *
  * `index` is which store the rows go into, and it defaults to `ctx.search`, the default
