@@ -19,6 +19,21 @@ All notable changes to Zoteus are documented here. The format is based on
   by count, so it was not exposed.
 
 ### Fixed
+- **The HTTP server closes idle MCP sessions, so its memory no longer grows until it
+  crashes.** Every session kept its own MCP server in memory until the client closed it,
+  which clients almost never do: the hosted server logged 648 sessions and 2 closes in 4.3
+  days, and ran out of JavaScript heap (about 490 MB) four times between 21 and 30 October,
+  dropping every connected user each time. Measured locally, each abandoned session held
+  about 640 KB. A session is now closed after 30 minutes with no request in flight, and
+  past 100 open sessions the longest idle close first; one with a request in flight is
+  never closed under it. A closed session answers 404, which clients meet by reconnecting.
+  Only the HTTP transport (`--http`) is affected; stdio has one session.
+- **In HTTP mode, a promise rejection that belongs to no request is logged instead of
+  ending the server.** On 26 October pdf.js rejected one of its own promises over a
+  damaged PDF while full text was being read, and Node's default ended the process, which
+  in HTTP mode serves every client. Every pdf.js document is now also destroyed once it
+  has been read, as the figure renderer already did, which ends any work pdf.js still had
+  running for it.
 - **The server keeps answering while an index job writes large full-text bodies** (#106,
   thanks @Michael-Logies, who also wrote the fix). An update whose full-text catch-up re-read
   a page of attachments, and a build's full-text pass, chunked and wrote every body of the
