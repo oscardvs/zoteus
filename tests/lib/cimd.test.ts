@@ -94,6 +94,30 @@ describe('fetchClientMetadata', () => {
     await expect(fetchClientMetadata(url, { ...OPTS, fetchImpl })).rejects.toThrow(/redirect/i);
   });
 
+  it('accepts loopback http redirects under an https-only scheme list (Claude Code)', async () => {
+    const url = 'https://claude.ai/oauth/claude-code-client-metadata';
+    const doc = {
+      client_id: url,
+      client_name: 'Claude Code',
+      redirect_uris: ['http://localhost/callback', 'http://127.0.0.1/callback', 'http://[::1]/callback'],
+      token_endpoint_auth_method: 'none',
+    };
+    const fetchImpl = vi.fn(async () => jsonResponse(doc)) as unknown as typeof fetch;
+    const client = await fetchClientMetadata(url, { ...OPTS, fetchImpl });
+    expect(client.redirect_uris).toEqual(doc.redirect_uris);
+    expect(client.token_endpoint_auth_method).toBe('none');
+  });
+
+  it('still rejects http to a loopback look-alike or any other host', async () => {
+    const url = 'https://app.example/cimd.json';
+    for (const redirect of ['http://localhost.evil.example/cb', 'http://127.0.0.1.nip.io/cb', 'http://10.0.0.1/cb']) {
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse({ client_id: url, redirect_uris: ['https://app.example/cb', redirect] }),
+      ) as unknown as typeof fetch;
+      await expect(fetchClientMetadata(url, { ...OPTS, fetchImpl })).rejects.toThrow(/scheme not allowed/);
+    }
+  });
+
   it('rejects a malformed (non-JSON) body', async () => {
     const url = 'https://app.example/cimd.json';
     const fetchImpl = vi.fn(async () => new Response('<<not json>>', { status: 200 })) as unknown as typeof fetch;
