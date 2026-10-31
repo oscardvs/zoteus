@@ -19,6 +19,17 @@ All notable changes to Zoteus are documented here. The format is based on
   by count, so it was not exposed.
 
 ### Fixed
+- **The server keeps answering while an index job writes large full-text bodies** (#106,
+  thanks @Michael-Logies, who also wrote the fix). An update whose full-text catch-up re-read
+  a page of attachments, and a build's full-text pass, chunked and wrote every body of the
+  page in one synchronous stretch. With `ZOTEUS_INDEX_FULLTEXT_MAX_CHARS=0` on a 285k-passage
+  index that stretch lasted minutes, during which every tool call from every connected client
+  timed out, and `zotero_index action:"status"` and `action:"stop"` could not answer either,
+  so a working job looked hung. Both loops now yield after each item. `action:"status"` says
+  when an update is in its catch-up (reading Zotero's extraction census, or how many body
+  texts of how many it has re-read), and every job reports `worstLoopStallMs`, the longest
+  stretch in which the server could answer nothing, with a warning in the log when it
+  passes a second.
 - **A Client ID Metadata Document may declare loopback redirects.** With
   `ZOTEUS_CIMD_ENABLED=true`, every `redirect_uri` in a client's metadata document had to use
   a scheme from `ZOTEUS_CIMD_ALLOWED_REDIRECT_SCHEMES` (default `https`), so Claude Code,
