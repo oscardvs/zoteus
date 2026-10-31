@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { createSearchIndex } from '../../src/features/search/factory.js';
 import { startIndexBuild, startIndexUpdate } from '../../src/features/search/build.js';
 import type { SearchIndex } from '../../src/features/search/backend.js';
+import { loadConfig } from '../../src/config.js';
 
 /**
  * The unresponsiveness of #106: an update whose full-text catch-up re-reads a page of
@@ -14,6 +15,11 @@ import type { SearchIndex } from '../../src/features/search/backend.js';
  */
 
 const silentLogger = { debug() {}, info() {}, warn() {}, error() {} };
+
+/** The slice of a ToolContext the index starters read, typed loosely like search-resume's. */
+function makeCtx(search: SearchIndex, router: unknown): any {
+  return { config: loadConfig({} as any), search, router, logger: silentLogger, searchIndexPath: '' };
+}
 
 /** Big enough that chunking one body is hundreds of ms: 2 MB of ordinary words. */
 const WORDS = 'experiment reliability replication variance significance. ';
@@ -118,7 +124,7 @@ describe('an update stays responsive while its full-text catch-up re-reads large
       zotero.extract(`A${i}`, 'placeholder abstract text. ');
     }
     const search = await createSearchIndex({ embedder: null, logger: silentLogger, backend: 'memory', jsonPath: '' });
-    const ctx = { config: (await import('../../src/config.js')).loadConfig({} as any), search, router: zotero.router(), logger: silentLogger, searchIndexPath: '' };
+    const ctx = makeCtx(search, zotero.router());
 
     startIndexBuild(ctx, undefined, undefined, { fulltext: true, fulltextMaxChars: 0 });
     await settle(search);
@@ -181,7 +187,7 @@ describe("a build's full-text pass stays responsive over large bodies (#106)", (
       zotero.extract(`A${i}`, body);
     }
     const search = await createSearchIndex({ embedder: null, logger: silentLogger, backend: 'memory', jsonPath: '' });
-    const ctx = { config: (await import('../../src/config.js')).loadConfig({} as any), search, router: zotero.router(), logger: silentLogger, searchIndexPath: '' };
+    const ctx = makeCtx(search, zotero.router());
 
     const started = Date.now();
     startIndexBuild(ctx, undefined, undefined, { fulltext: true, fulltextMaxChars: 0 });
