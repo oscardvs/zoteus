@@ -58,7 +58,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "citeproc": "^2.4.63",
     "cors": "^2.8.6",
     "express": "^5.2.1",
