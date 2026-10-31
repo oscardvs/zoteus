@@ -33,6 +33,11 @@ import tagAudit from './tag-audit.js';
 import mergeItems from './merge-items.js';
 import evidenceTable from './evidence-table.js';
 import wordDocument from './word-document.js';
+import createNote from './create-note.js';
+import appendToNote from './append-to-note.js';
+import replaceNote from './replace-note.js';
+import annotationDigest from './annotation-digest.js';
+import saveAnnotationDigest from './save-annotation-digest.js';
 
 export const tools: AnyToolDefinition[] = [
   // Read
@@ -78,4 +83,10 @@ export const tools: AnyToolDefinition[] = [
   mergeItems,
   evidenceTable,
   wordDocument,
+  // The reader's own material: notes from Markdown, and annotation digests
+  createNote,
+  appendToNote,
+  replaceNote,
+  annotationDigest,
+  saveAnnotationDigest,
 ];

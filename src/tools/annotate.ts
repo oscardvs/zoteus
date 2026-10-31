@@ -635,7 +635,7 @@ function sortOrderNote(count: number): string {
 }
 
 /** Rank attachment children: stored PDFs first, then linked PDFs, then anything else. */
-function scorePdf(att: any): number {
+export function scorePdf(att: any): number {
   if (att?.contentType !== 'application/pdf') return 0;
   const lm = att?.linkMode;
   if (lm === 'imported_file') return 3;

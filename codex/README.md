@@ -65,3 +65,8 @@ These files are generated from the tool registry : regenerate with `npm run gen:
 | `mergeItems()` | `zotero_merge_items` | Merge duplicate items |
 | `evidenceTable()` | `zotero_evidence_table` | Render an evidence table |
 | `wordDocument()` | `zotero_word_document` | Write a Word document with live Zotero citations |
+| `createNote()` | `zotero_create_note` | Create a Zotero note from Markdown |
+| `appendToNote()` | `zotero_append_to_note` | Append Markdown to a Zotero note |
+| `replaceNote()` | `zotero_replace_note` | Replace a Zotero note with Markdown |
+| `annotationDigest()` | `zotero_annotation_digest` | List the annotations on a paper or collection |
+| `saveAnnotationDigest()` | `zotero_save_annotation_digest` | Save a paper's or collection's annotations as a note |
