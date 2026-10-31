@@ -32,3 +32,8 @@ export { tagAudit } from './tagAudit.js';
 export { mergeItems } from './mergeItems.js';
 export { evidenceTable } from './evidenceTable.js';
 export { wordDocument } from './wordDocument.js';
+export { createNote } from './createNote.js';
+export { appendToNote } from './appendToNote.js';
+export { replaceNote } from './replaceNote.js';
+export { annotationDigest } from './annotationDigest.js';
+export { saveAnnotationDigest } from './saveAnnotationDigest.js';
