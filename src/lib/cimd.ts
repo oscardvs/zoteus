@@ -35,6 +35,20 @@ export function isClientIdMetadataUrl(clientId: string): boolean {
   return u.protocol === 'https:';
 }
 
+const LOOPBACK_REDIRECT_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * A native client's loopback redirect (RFC 8252 sections 7.3 and 8.3): plain http to the
+ * machine the browser runs on, on a port the client picks per session. Claude Code's own
+ * metadata document declares exactly `http://localhost/callback` and
+ * `http://127.0.0.1/callback`, so an https-only scheme list would refuse it outright. The
+ * SDK's /authorize handler then matches these without the port. Accepted whatever
+ * `allowedRedirectSchemes` says, because no remote host is ever involved.
+ */
+function isLoopbackHttp(u: URL): boolean {
+  return u.protocol === 'http:' && LOOPBACK_REDIRECT_HOSTS.has(u.hostname.toLowerCase());
+}
+
 /** True for loopback / private / link-local / CGNAT / multicast / reserved / malformed addresses. */
 export function isPrivateOrReservedIp(ip: string): boolean {
   const fam = net.isIP(ip);
@@ -162,13 +176,14 @@ export async function fetchClientMetadata(
     throw new Error('CIMD document has no redirect_uris');
   }
   for (const r of redirectUris) {
-    let scheme: string;
+    let redirect: URL;
     try {
-      scheme = new URL(String(r)).protocol.replace(/:$/, '');
+      redirect = new URL(String(r));
     } catch {
       throw new Error('CIMD redirect_uri is not a valid URL');
     }
-    if (!opts.allowedRedirectSchemes.includes(scheme)) {
+    const scheme = redirect.protocol.replace(/:$/, '');
+    if (!opts.allowedRedirectSchemes.includes(scheme) && !isLoopbackHttp(redirect)) {
       throw new Error(`CIMD redirect_uri scheme not allowed: ${scheme}`);
     }
   }

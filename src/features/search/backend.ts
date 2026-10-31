@@ -459,6 +459,26 @@ export interface IndexBuildStatus extends SearchIndexStatus {
    */
   passagesWithoutVectors?: number;
   /**
+   * Progress through an update's full-text catch-up, the pass that re-reads the body text
+   * Zotero has extracted since the stored cursor (#106). `catchupCensus` says the pass is
+   * still resolving which items Zotero named (one attachment-map crawl, minutes on a
+   * large library); `catchupTotal`/`catchupScanned` count the body texts it then re-reads.
+   * Present only while the update is running: an observer who sees `itemsFetched: 0`
+   * against a `building` update reads a healthy catch-up phase as a stalled job, which is
+   * exactly how the #106 experiments were first read.
+   */
+  catchupCensus?: boolean;
+  catchupScanned?: number;
+  catchupTotal?: number;
+  /**
+   * The longest stretch for which the event loop did not turn during the last job, in ms
+   * (#106). The loop cannot answer anything while a CPU-bound stretch runs, so this
+   * number is the true size of the unresponsiveness an outside observer saw — including
+   * the stretches a status poll, riding the same loop, could never observe while they
+   * were happening. Absent until a job has run.
+   */
+  worstLoopStallMs?: number;
+  /**
    * The arithmetic that decides whether an API embedding provider will rate-limit this
    * build, reported because it is the one thing a user cannot work out from the outside.
    *

@@ -46,6 +46,18 @@ export interface HttpOptions {
   readiness?: () => Promise<Readiness>;
   version?: string;
   rateLimit?: { windowMs: number; max: number };
+  /**
+   * Factory mode: close a session once it has gone this long with no request in flight
+   * (default 30 minutes). Clients rarely end a session themselves: hosted logs showed
+   * 648 sessions opened in 4.3 days and 2 DELETEs, and every session holds a whole
+   * McpServer, so the heap grew until V8 aborted the process. A closed session answers
+   * 404, which a client meets by re-initializing.
+   */
+  sessionIdleMs?: number;
+  /** Factory mode: most sessions held at once; beyond it the longest idle close first (default 100). */
+  maxSessions?: number;
+  /** Factory mode: how often idle sessions are swept (default 60 s). */
+  sessionSweepMs?: number;
   /** Receives a drain handle for graceful shutdown (factory + single modes). */
   registerLifecycle?: (h: {
     drainSessions: (timeoutMs: number) => Promise<void>;
@@ -54,6 +66,10 @@ export interface HttpOptions {
 }
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+const DEFAULT_SESSION_IDLE_MS = 30 * 60 * 1000;
+const DEFAULT_MAX_SESSIONS = 100;
+const DEFAULT_SESSION_SWEEP_MS = 60 * 1000;
 
 /**
  * Constant-time comparison of two secrets of any length.
@@ -116,6 +132,7 @@ export async function startHttp(
   // Build the request router: either a single shared transport (legacy) or a
   // per-session map keyed by Mcp-Session-Id (factory mode).
   let route: (req: express.Request, res: express.Response) => Promise<void>;
+  let stopSweeping: (() => void) | undefined;
 
   if (typeof serverOrFactory !== 'function') {
     const transport = makeTransport();
@@ -142,6 +159,56 @@ export async function startHttp(
         extra?.zoteroKey ? undefined : auth.token,
       ])).digest('hex');
     };
+
+    // When each session last finished a request, and how many it has open right now. A
+    // session with a request in flight (a long tool call, an open GET stream) is never
+    // closed under it; an idle one is closed once it passes `idleMs`, or sooner, longest
+    // idle first, while more than `maxSessions` are held.
+    const lastSeen = new Map<string, number>();
+    const inFlight = new Map<string, number>();
+    const idleMs = opts.sessionIdleMs ?? DEFAULT_SESSION_IDLE_MS;
+    const maxSessions = opts.maxSessions ?? DEFAULT_MAX_SESSIONS;
+    const forget = (sid: string): void => {
+      transports.delete(sid);
+      owners.delete(sid);
+      lastSeen.delete(sid);
+      inFlight.delete(sid);
+    };
+    const track = (sid: string, res: express.Response): void => {
+      inFlight.set(sid, (inFlight.get(sid) ?? 0) + 1);
+      lastSeen.set(sid, Date.now());
+      res.on('close', () => {
+        if (!transports.has(sid)) return;
+        inFlight.set(sid, Math.max(0, (inFlight.get(sid) ?? 1) - 1));
+        lastSeen.set(sid, Date.now());
+      });
+    };
+    const sweep = (): void => {
+      const now = Date.now();
+      const idle = [...transports.keys()]
+        .filter((sid) => !inFlight.get(sid))
+        .sort((a, b) => (lastSeen.get(a) ?? 0) - (lastSeen.get(b) ?? 0));
+      let over = transports.size - maxSessions;
+      let closed = 0;
+      for (const sid of idle) {
+        // Oldest first, so once a session is neither expired nor needed to get under the
+        // cap, no later one is either.
+        if (now - (lastSeen.get(sid) ?? 0) < idleMs && over <= 0) break;
+        const t = transports.get(sid);
+        forget(sid);
+        void t?.close().catch(() => {});
+        over--;
+        closed++;
+      }
+      if (closed > 0) {
+        opts.logger?.info(`Closed ${closed} idle MCP session(s); ${transports.size} open.`);
+      }
+    };
+    const sweeper = setInterval(sweep, opts.sessionSweepMs ?? DEFAULT_SESSION_SWEEP_MS);
+    // Never what keeps the process alive.
+    sweeper.unref?.();
+    stopSweeping = () => clearInterval(sweeper);
+
     route = async (req, res) => {
       const body = req.method === 'POST' ? req.body : undefined;
       const header = req.headers['mcp-session-id'];
@@ -152,17 +219,19 @@ export async function startHttp(
       let transport: StreamableHTTPServerTransport | undefined;
       if (sessionId && transports.has(sessionId) && owners.get(sessionId) === owner) {
         transport = transports.get(sessionId);
+        track(sessionId, res);
       } else if (!sessionId && req.method === 'POST' && isInitialize(body)) {
         transport = makeTransport((sid) => {
           transports.set(sid, transport!);
           owners.set(sid, owner);
+          // In flight from here: the initialize answer is still being written, so a sweep
+          // this triggers can never close the session it is admitting.
+          track(sid, res);
+          if (transports.size > maxSessions) sweep();
         });
         transport.onclose = () => {
           const sid = transport!.sessionId;
-          if (sid) {
-            transports.delete(sid);
-            owners.delete(sid);
-          }
+          if (sid) forget(sid);
         };
         const server = await factory(auth);
         await server.connect(transport);
@@ -301,6 +370,7 @@ export async function startHttp(
   const httpServer = await new Promise<http.Server>((resolve) => {
     const s = app.listen(opts.port ?? 0, host, () => resolve(s));
   });
+  httpServer.on('close', () => stopSweeping?.());
   const address = httpServer.address();
   const port = typeof address === 'object' && address ? address.port : opts.port;
   opts.logger?.info(

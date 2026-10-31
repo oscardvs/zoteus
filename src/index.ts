@@ -81,6 +81,16 @@ async function main(): Promise<void> {
 
   const httpFlag = flag('http');
   if (httpFlag !== undefined) {
+    // One process serves every connected client here, and Node ends the process on any
+    // promise rejection nobody handled. On 2026-10-26 pdf.js rejected one of its own
+    // promises over a damaged PDF ("XRefEntryException: Bad (uncompressed) XRef entry")
+    // during a run of full-text reads, and the hosted server went down for every user. A
+    // rejection that reached this point belongs to no request, so it is logged and
+    // the server keeps serving. Thrown exceptions still end the process as before.
+    process.on('unhandledRejection', (reason) => {
+      const detail = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+      logger.error(`Unhandled promise rejection (the server keeps running): ${detail}`);
+    });
     const port = Number(flag('port') ?? process.env.PORT ?? 3939);
     const metrics = config.metricsEnabled ? createMetrics() : undefined;
     const telemetry: Telemetry = { metrics, usage: usage?.recorder, logger };
