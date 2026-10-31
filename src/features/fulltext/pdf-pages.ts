@@ -24,12 +24,13 @@ export async function extractPdfPages(
   // inside Electron (Claude Desktop). See pdfjs-loader.ts.
   const pdfjs = await loadPdfjs();
   if (!pdfjs) return null; // unavailable here (degrade); pdfjsLoadError() says why
+  let doc: any;
   try {
     // pdfjs transfers (detaches) the buffer it is given; hand it a copy so the
     // caller's bytes stay intact (matters when the same buffer is re-extracted).
     const data = bytes.slice();
     const loadingTask = pdfjs.getDocument({ data, useSystemFonts: true, isEvalSupported: false });
-    const doc = await loadingTask.promise;
+    doc = await loadingTask.promise;
     const pages: string[] = [];
     for (let i = 1; i <= doc.numPages; i++) {
       const page = await doc.getPage(i);
@@ -39,6 +40,11 @@ export async function extractPdfPages(
     return pages;
   } catch {
     return null; // corrupt PDF / parse failure — degrade
+  } finally {
+    // Ends whatever pdf.js still has running for this document. A damaged file can leave
+    // work behind the failure we caught, and a rejection from it with no one listening
+    // took the hosted server down on 2026-10-26.
+    await doc?.destroy().catch(() => {});
   }
 }
 
@@ -77,9 +83,10 @@ export async function extractPdfOutline(
   // inside Electron (Claude Desktop). See pdfjs-loader.ts.
   const pdfjs = await loadPdfjs();
   if (!pdfjs) return null; // unavailable here (degrade); pdfjsLoadError() says why
+  let doc: any;
   try {
     const data = bytes.slice();
-    const doc = await pdfjs.getDocument({ data, useSystemFonts: true, isEvalSupported: false }).promise;
+    doc = await pdfjs.getDocument({ data, useSystemFonts: true, isEvalSupported: false }).promise;
     const outline = await doc.getOutline();
     if (!Array.isArray(outline) || !outline.length) return [];
     const entries: OutlineEntry[] = [];
@@ -94,6 +101,8 @@ export async function extractPdfOutline(
     return entries;
   } catch {
     return null; // corrupt PDF / parse failure (degrade)
+  } finally {
+    await doc?.destroy().catch(() => {}); // see extractPdfPages
   }
 }
 

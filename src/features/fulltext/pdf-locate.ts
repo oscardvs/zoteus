@@ -250,8 +250,9 @@ export async function pageHeights(
   // inside Electron (Claude Desktop). See pdfjs-loader.ts.
   const pdfjs = await loadPdfjs();
   if (!pdfjs) return null; // unavailable here (degrade); pdfjsLoadError() says why
+  let doc: any;
   try {
-    const doc = await pdfjs.getDocument({ data: bytes.slice(), useSystemFonts: true, isEvalSupported: false })
+    doc = await pdfjs.getDocument({ data: bytes.slice(), useSystemFonts: true, isEvalSupported: false })
       .promise;
     const heights = new Map<number, number>();
     for (const pageIndex of wanted) {
@@ -263,6 +264,8 @@ export async function pageHeights(
     return heights;
   } catch {
     return null; // corrupt PDF / parse failure, degrade
+  } finally {
+    await doc?.destroy().catch(() => {}); // see extractPdfPages in pdf-pages.ts
   }
 }
 
@@ -291,9 +294,10 @@ export async function locatePassages(
   // inside Electron (Claude Desktop). See pdfjs-loader.ts.
   const pdfjs = await loadPdfjs();
   if (!pdfjs) return null; // unavailable here (degrade); pdfjsLoadError() says why
+  let doc: any;
   try {
     // pdfjs detaches the buffer it is handed; give it a copy so the caller keeps its bytes.
-    const doc = await pdfjs.getDocument({ data: bytes.slice(), useSystemFonts: true, isEvalSupported: false })
+    doc = await pdfjs.getDocument({ data: bytes.slice(), useSystemFonts: true, isEvalSupported: false })
       .promise;
     for (let p = 1; p <= doc.numPages; p++) {
       const pageIndex = p - 1;
@@ -329,5 +333,7 @@ export async function locatePassages(
     return results;
   } catch {
     return null; // corrupt PDF / parse failure, degrade
+  } finally {
+    await doc?.destroy().catch(() => {}); // see extractPdfPages in pdf-pages.ts
   }
 }
