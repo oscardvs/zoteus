@@ -6,7 +6,27 @@ All notable changes to Zoteus are documented here. The format is based on
 
 ## [Unreleased]
 
+### Security
+- **Production dependencies updated for the October advisories.** `npm audit` reported 10
+  against 1.23.0 (1 critical, 7 high, 2 moderate); the non-breaking updates clear 8: the MCP
+  SDK 1.29.0 to 1.32.2 (its floor in `package.json` moves with it), `body-parser`,
+  `proxy-addr`, `qs`, `fast-uri`, `ip-address`, `hono` and `@hono/node-server`. The two that
+  remain need major versions and are planned with the move to MCP SDK v2: `zod`
+  (GHSA-mrhx-c7xc-m3w5, memory use when validating very large arrays) and `pdfjs-dist`
+  (GHSA-hq66-cqwq-w95j, which needs scripting in a browser page and does not apply to
+  Zoteus, which runs pdf.js in Node with `isEvalSupported: false`). The critical
+  `proxy-addr` advisory needs an IPv4-mapped IPv6 trust subnet; Zoteus trusts one proxy hop
+  by count, so it was not exposed.
+
 ### Fixed
+- **A Client ID Metadata Document may declare loopback redirects.** With
+  `ZOTEUS_CIMD_ENABLED=true`, every `redirect_uri` in a client's metadata document had to use
+  a scheme from `ZOTEUS_CIMD_ALLOWED_REDIRECT_SCHEMES` (default `https`), so Claude Code,
+  whose document declares `http://localhost/callback` and `http://127.0.0.1/callback`, was
+  refused as an unknown client as soon as it chose CIMD over Dynamic Client Registration.
+  Plain `http` to `localhost`, `127.0.0.1` or `[::1]` is now accepted whatever the scheme
+  list says (RFC 8252), and the authorization endpoint matches it on any port. Every other
+  `http` redirect is still refused. CIMD stays off by default.
 - **Collections in the Zotero trash no longer show up in collection listings.**
   api.zotero.org keeps a trashed collection in its ordinary `/collections` listing, flagged
   `data.deleted: true`, and counts it in `Total-Results`; the desktop app leaves it out. So a
