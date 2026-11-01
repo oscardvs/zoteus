@@ -181,4 +181,34 @@ describe(`the zoteus entry point (${entry().via})`, () => {
     );
     expect(stderr).toMatch(/listening on http:\/\/127\.0\.0\.1:\d+/);
   });
+
+  it('keeps the HTTP server up through a promise rejection that belongs to no request', async () => {
+    // One process serves every client in HTTP mode, and on 2026-10-26 a rejection pdf.js
+    // left unhandled over a damaged PDF ended it for all of them. The preload rejects one
+    // promise 1.5 s after start; the server must log it and go on answering.
+    const { cmd, args: base } = entry();
+    const preload = join(repo, 'tests', 'fixtures', 'stray-rejection.mjs');
+    const child = spawn(cmd, ['--import', preload, ...base, '--http', '--port', '0', '--host', '127.0.0.1'], {
+      env: env(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    running.add(child);
+    let stderr = '';
+    let exited: number | null | undefined;
+    child.stderr?.on('data', (d) => (stderr += String(d)));
+    child.on('exit', (code) => (exited = code));
+    const deadline = Date.now() + 30_000;
+    while (!/listening on http:\/\/127\.0\.0\.1:(\d+)/.test(stderr) && exited === undefined && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const port = /listening on http:\/\/127\.0\.0\.1:(\d+)/.exec(stderr)?.[1];
+    expect(port).toBeDefined();
+    while (!stderr.includes('stray rejection from a test preload') && exited === undefined && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(exited).toBeUndefined();
+    expect(stderr).toContain('Unhandled promise rejection (the server keeps running)');
+    const health = await fetch(`http://127.0.0.1:${port}/healthz`);
+    expect(health.status).toBe(200);
+  }, 40_000);
 });

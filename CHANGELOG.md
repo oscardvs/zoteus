@@ -4,9 +4,55 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.23.1] - 2026-10-31
+
+### Security
+- **Production dependencies updated for the October advisories.** `npm audit` reported 10
+  against 1.23.0 (1 critical, 7 high, 2 moderate); the non-breaking updates clear 8: the MCP
+  SDK 1.29.0 to 1.32.2 (its floor in `package.json` moves with it), `body-parser`,
+  `proxy-addr`, `qs`, `fast-uri`, `ip-address`, `hono` and `@hono/node-server`. The two that
+  remain need major versions and are planned with the move to MCP SDK v2: `zod`
+  (GHSA-mrhx-c7xc-m3w5, memory use when validating very large arrays) and `pdfjs-dist`
+  (GHSA-hq66-cqwq-w95j, which needs scripting in a browser page and does not apply to
+  Zoteus, which runs pdf.js in Node with `isEvalSupported: false`). The critical
+  `proxy-addr` advisory needs an IPv4-mapped IPv6 trust subnet; Zoteus trusts one proxy hop
+  by count, so it was not exposed.
 
 ### Fixed
+- **The HTTP server closes idle MCP sessions, so its memory no longer grows until it
+  crashes.** Every session kept its own MCP server in memory until the client closed it,
+  which clients almost never do: the hosted server logged 648 sessions and 2 closes in 4.3
+  days, and ran out of JavaScript heap (about 490 MB) four times between 21 and 30 October,
+  dropping every connected user each time. Measured locally, each abandoned session held
+  about 640 KB. A session is now closed after 30 minutes with no request in flight, and
+  past 100 open sessions the longest idle close first; one with a request in flight is
+  never closed under it. A closed session answers 404, which clients meet by reconnecting.
+  Only the HTTP transport (`--http`) is affected; stdio has one session.
+- **In HTTP mode, a promise rejection that belongs to no request is logged instead of
+  ending the server.** On 26 October pdf.js rejected one of its own promises over a
+  damaged PDF while full text was being read, and Node's default ended the process, which
+  in HTTP mode serves every client. Every pdf.js document is now also destroyed once it
+  has been read, as the figure renderer already did, which ends any work pdf.js still had
+  running for it.
+- **The server keeps answering while an index job writes large full-text bodies** (#106,
+  thanks @Michael-Logies, who also wrote the fix). An update whose full-text catch-up re-read
+  a page of attachments, and a build's full-text pass, chunked and wrote every body of the
+  page in one synchronous stretch. With `ZOTEUS_INDEX_FULLTEXT_MAX_CHARS=0` on a 285k-passage
+  index that stretch lasted minutes, during which every tool call from every connected client
+  timed out, and `zotero_index action:"status"` and `action:"stop"` could not answer either,
+  so a working job looked hung. Both loops now yield after each item. `action:"status"` says
+  when an update is in its catch-up (reading Zotero's extraction census, or how many body
+  texts of how many it has re-read), and every job reports `worstLoopStallMs`, the longest
+  stretch in which the server could answer nothing, with a warning in the log when it
+  passes a second.
+- **A Client ID Metadata Document may declare loopback redirects.** With
+  `ZOTEUS_CIMD_ENABLED=true`, every `redirect_uri` in a client's metadata document had to use
+  a scheme from `ZOTEUS_CIMD_ALLOWED_REDIRECT_SCHEMES` (default `https`), so Claude Code,
+  whose document declares `http://localhost/callback` and `http://127.0.0.1/callback`, was
+  refused as an unknown client as soon as it chose CIMD over Dynamic Client Registration.
+  Plain `http` to `localhost`, `127.0.0.1` or `[::1]` is now accepted whatever the scheme
+  list says (RFC 8252), and the authorization endpoint matches it on any port. Every other
+  `http` redirect is still refused. CIMD stays off by default.
 - **Collections in the Zotero trash no longer show up in collection listings.**
   api.zotero.org keeps a trashed collection in its ordinary `/collections` listing, flagged
   `data.deleted: true`, and counts it in `Total-Results`; the desktop app leaves it out. So a

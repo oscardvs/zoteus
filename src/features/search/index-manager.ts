@@ -6,6 +6,7 @@ import { pruneTerms, type TermPredicate } from './query-terms.js';
 import { accentKey, normalizeForSearch, tokenize } from './tokenize.js';
 import { batchPause, embedderIdentity } from './embeddings.js';
 import type { EmbedKind } from './embeddings.js';
+import { LoopLagMonitor } from './loop-lag.js';
 import {
   DEFAULT_EMBED_BATCH_SIZE,
   DEFAULT_FULLTEXT_CONCURRENCY_CLOUD,
@@ -438,6 +439,15 @@ export abstract class SearchIndexBase implements SearchIndex {
   private phase: 'metadata' | 'fulltext' = 'metadata';
   private fulltextItemsScanned = 0;
   private fulltextItemsTotal = 0;
+  /**
+   * Progress through an update's full-text catch-up, reported so that a long phase does
+   * not read as a stalled job (#106); see IndexBuildStatus for the fields.
+   */
+  private catchupCensus = false;
+  private catchupScanned = 0;
+  private catchupTotal = 0;
+  /** Longest event-loop stall of the last job, in ms; see IndexBuildStatus (#106). */
+  private worstLoopStallMs = 0;
   /** Items a resumed build inherited from the run it is continuing (see IndexBuildStatus). */
   private resumedFrom: number | undefined = undefined;
   private lastBuildError: string | undefined = undefined;
@@ -950,6 +960,15 @@ export abstract class SearchIndexBase implements SearchIndex {
       fulltextItemsScanned: this.fulltextItemsScanned,
       fulltextItemsTotal: this.fulltextItemsTotal,
     };
+    // Catch-up progress is a running-job fact: an update that has finished either indexed
+    // what the census named or reported why not, and stale counters would dress a finished
+    // job as one still under way.
+    if (this.buildState === 'building' && (this.catchupCensus || this.catchupTotal > 0)) {
+      if (this.catchupCensus) s.catchupCensus = true;
+      s.catchupScanned = this.catchupScanned;
+      s.catchupTotal = this.catchupTotal;
+    }
+    if (this.worstLoopStallMs > 0) s.worstLoopStallMs = this.worstLoopStallMs;
     if (this.resumedFrom !== undefined) s.resumedFrom = this.resumedFrom;
     if (this.localApiDegradedAt !== undefined) {
       s.localApiDegradedAt = new Date(this.localApiDegradedAt).toISOString();
@@ -1249,6 +1268,10 @@ export abstract class SearchIndexBase implements SearchIndex {
     this.phase = 'metadata';
     this.fulltextItemsScanned = 0;
     this.fulltextItemsTotal = 0;
+    this.catchupCensus = false;
+    this.catchupScanned = 0;
+    this.catchupTotal = 0;
+    this.worstLoopStallMs = 0;
     this.resumedFrom = undefined;
     // Carried from the caller, e.g. the reason an update fell back to this rebuild, so it
     // must survive the reset below rather than being cleared with the rest of the state.
@@ -1488,6 +1511,11 @@ export abstract class SearchIndexBase implements SearchIndex {
       return embedded;
     };
 
+    // From the first synchronous stretch to the last, so the number covers the whole job
+    // and not only the phases that happened to yield around it (#106).
+    const loopLag = new LoopLagMonitor();
+    loopLag.start();
+
     try {
       // The passages the interrupted run had written but not yet embedded, re-queued
       // through the same path everything else takes. They are committed and searchable on
@@ -1625,6 +1653,11 @@ export abstract class SearchIndexBase implements SearchIndex {
             this.fulltextItemsScanned++;
             itemsSincePersist++;
             itemsSinceLog++;
+            // Chunking one attachment and writing its passages is synchronous, and with
+            // unlimited FULLTEXT_MAX_CHARS a page of large attachments is seconds of CPU
+            // during which the loop answers nothing (#106). Yield after each item, so a
+            // status poll, a stop, and every connected client keep working mid-crawl.
+            await batchPause(0);
           }
           await embedPending(false);
           maybeLog();
@@ -1786,6 +1819,14 @@ export abstract class SearchIndexBase implements SearchIndex {
       opts.onProgress?.(this.buildStatus());
       return this.buildStatus();
     } finally {
+      const stall = loopLag.stop();
+      if (stall > this.worstLoopStallMs) this.worstLoopStallMs = stall;
+      if (stall >= 1000) {
+        this.opts.logger?.warn(
+          `index build: the event loop did not turn for ${stall} ms at a stretch during this job, so the server ` +
+            'answered nothing for all of it (see worstLoopStallMs on the status).',
+        );
+      }
       this.cancelToken = null;
     }
   }
@@ -1855,6 +1896,10 @@ export abstract class SearchIndexBase implements SearchIndex {
     this.phase = 'metadata';
     this.fulltextItemsScanned = 0;
     this.fulltextItemsTotal = 0;
+    this.catchupCensus = false;
+    this.catchupScanned = 0;
+    this.catchupTotal = 0;
+    this.worstLoopStallMs = 0;
     this.lastBuildError = undefined;
     this.embedderError = undefined;
     this.persistError = undefined;
@@ -1970,6 +2015,11 @@ export abstract class SearchIndexBase implements SearchIndex {
       this.opts.logger?.info(`index update: ${progressLine(s)}`);
       opts.onProgress?.(s);
     };
+
+    // From the first synchronous stretch to the last, so the number covers the whole job
+    // and not only the phases that happened to yield around it (#106).
+    const loopLag = new LoopLagMonitor();
+    loopLag.start();
 
     try {
       for (;;) {
@@ -2290,6 +2340,17 @@ export abstract class SearchIndexBase implements SearchIndex {
       opts.onProgress?.(this.buildStatus());
       return this.buildStatus();
     } finally {
+      const stall = loopLag.stop();
+      if (stall > this.worstLoopStallMs) this.worstLoopStallMs = stall;
+      if (stall >= 1000) {
+        // The number an outside observer needs: for stretches this long the server answers
+        // no client at all, including the status poll and the stop that would have been
+        // used to intervene (#106). Below a second it is not worth a line.
+        this.opts.logger?.warn(
+          `index update: the event loop did not turn for ${stall} ms at a stretch during this job, so the server ` +
+            'answered nothing for all of it (see worstLoopStallMs on the status).',
+        );
+      }
       this.cancelToken = null;
       this.deferEmbedding = false;
       this.deferredIds = [];
@@ -2352,6 +2413,12 @@ export abstract class SearchIndexBase implements SearchIndex {
     // ends the moment a pass earns the cursor back.
     const partial = this.fulltextPartial;
     const from = partial ? 0 : since;
+    // Visible from the first status poll: resolving what Zotero named is the minutes-long
+    // phase an observer otherwise sees as `itemsFetched: 0` against a building update
+    // (#106). Cleared again on every path below that returns before the re-read begins.
+    this.catchupCensus = true;
+    this.catchupScanned = 0;
+    this.catchupTotal = 0;
     let answer;
     try {
       answer = await opts.fulltextCatchUp!(from);
@@ -2359,6 +2426,7 @@ export abstract class SearchIndexBase implements SearchIndex {
       // A probe of the other sequence must not fail the delta: the items that DID change
       // are correctly indexed either way, and the cursor stays put so the next update asks
       // again.
+      this.catchupCensus = false;
       this.opts.logger?.warn(
         `Zotero's full-text index could not be consulted (${e instanceof Error ? e.message : String(e)}), so ` +
           'newly extracted attachment text was not picked up by this update.',
@@ -2412,6 +2480,7 @@ export abstract class SearchIndexBase implements SearchIndex {
     // A recovery is the one exception, handled below: it has a coverage gap of its own to
     // fill, and its cursor is withheld by the flag whatever this pass manages to read.
     if (answer.incomplete && !recovering) {
+      this.catchupCensus = false;
       return { version: since, items: 0, failed: 0, recovered: false, recoveryFailed: false, gap: answer.incomplete };
     }
     // An index written before this cursor existed cannot say which text is new, so the
@@ -2478,6 +2547,7 @@ export abstract class SearchIndexBase implements SearchIndex {
     // was withheld and nothing failed, so the sentence stands on its own rather than being
     // folded into the "NOT fully updated" report).
     if (gapOnly && this.counts().fulltextPassages === 0) {
+      this.catchupCensus = false;
       const held = heldBack();
       return {
         version: since,
@@ -2499,6 +2569,9 @@ export abstract class SearchIndexBase implements SearchIndex {
     const targets = [...answer.itemKeys].filter(
       (key) => known.has(key) && !refreshed.has(key) && !(gapOnly && this.hasFulltext(key)),
     );
+    // From here the pass is counting body texts, not resolving a census (#106).
+    this.catchupCensus = false;
+    this.catchupTotal = targets.length;
     const batchSize = opts.embedBatchSize ?? DEFAULT_EMBED_BATCH_SIZE;
     const delayMs = opts.embedBatchDelayMs ?? 0;
     let items = 0;
@@ -2523,7 +2596,14 @@ export abstract class SearchIndexBase implements SearchIndex {
         this.clearFulltext(group[j]!.key);
         this.addFulltext(group[j]!.key, group[j]!.title, text, pending);
         items++;
+        // The catch-up's writes are the same synchronous cost a build's full-text pass
+        // pays, and an update whose cursor is behind re-pays them for items the delta
+        // never named (#106). Yield after each item so the loop keeps answering through
+        // the re-read, which is what makes the difference between a slow phase and a
+        // server every client times out against.
+        await batchPause(0);
       }
+      this.catchupScanned = items;
       await this.embedPending(pending, token, batchSize, delayMs, false);
     }
     if (!token.cancelled) await this.embedPending(pending, token, batchSize, delayMs, true);
