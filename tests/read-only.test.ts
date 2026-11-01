@@ -23,6 +23,7 @@ describe('read-only mode tool set', () => {
       'zotero_get_fulltext',
       'zotero_pdf_images',
       'zotero_tag_audit',
+      'zotero_annotation_digest',
     ]) {
       expect(names).toContain(t);
     }
@@ -39,6 +40,10 @@ describe('read-only mode tool set', () => {
       'zotero_saved_searches',
       'zotero_attachment',
       'zotero_import',
+      'zotero_create_note',
+      'zotero_append_to_note',
+      'zotero_replace_note',
+      'zotero_save_annotation_digest',
     ]) {
       expect(names).not.toContain(t);
     }
