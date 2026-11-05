@@ -84,14 +84,13 @@ If your proxy rewrites `Host` to an internal value (causing every `/mcp` request
 
 ## Connect from ChatGPT
 
-ChatGPT connects to remote MCP servers only, so a self-hosted Zoteus is the free way to reach it from ChatGPT (the other is the hosted connector at `https://mcp.zoteus.com/mcp`, see [zoteus.com/pricing](https://zoteus.com/pricing)). It needs ChatGPT's **Developer mode**, which OpenAI offers on the Plus, Pro, Business, Enterprise and Edu plans in the web app; on Business and Enterprise an admin may have to allow it first, and free accounts cannot add custom servers. The steps below were verified on 2026-09-12 against the hosted connector, which runs this same OAuth server.
+ChatGPT connects to remote MCP servers only, so a self-hosted Zoteus is the free way to reach it from ChatGPT (the other is the hosted connector, which is listed in ChatGPT's plugin directory, see [zoteus.com/pricing](https://zoteus.com/pricing)). A server that is not in the directory is added as a custom MCP server. OpenAI currently offers that on the Business, Enterprise and Edu plans, in ChatGPT on the web, where an admin may have to grant **Create plugins with MCPs**; Pro accounts get read-only tools, and Developer mode is no longer involved. See [Connecting custom MCP servers in ChatGPT](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt). The steps below follow that article as of 2026-11-05; the OAuth exchange itself was verified on 2026-09-12 against the hosted connector, which runs this same OAuth server.
 
-1. **Settings → Security and login → Developer mode** (also linked from **Settings → Plugins**). ChatGPT labels it elevated risk.
-2. **Plugins** (left sidebar, or `chatgpt.com/plugins`) → **Create app**.
-3. In the **New Plugin** dialog: Name `Zoteus`, Connection **Server URL**, MCP Server URL `https://<your-host>/mcp`, Authentication **OAuth** (the default). Tick **I understand and want to continue** and click **Create**. Leave **Advanced OAuth settings** empty: ChatGPT reads the endpoints from the `WWW-Authenticate` discovery above and self-registers via DCR. It shows "CIMD unavailable" there, which is expected and harmless.
-4. ChatGPT shows **Add Zoteus to ChatGPT**. Click **Sign in with Zoteus**: the popup opens the Zoteus consent page (the `ZOTEUS_OAUTH_PASSCODE` prompt in passcode mode; in `zotero` mode a redirect to zotero.org, where write access can be unticked for a read-only grant) and returns to ChatGPT. The plugin page then shows **Connected on <date>**.
-5. If **Actions** says "No app actions available yet", click **Refresh** under **Information**. All 30 tools load, each labelled READ or PUBLIC WRITE, with "Destructive" where the tool annotations say so.
-6. In a chat, click **+** in the composer ("Add files and more"), pick Zoteus, and try a read (e.g. `zotero_whoami`).
+1. **Plugins** → the **+** button → **Add custom MCP server**.
+2. Name `Zoteus`, Connection `https://<your-host>/mcp`, authentication OAuth. ChatGPT reads the endpoints from the `WWW-Authenticate` discovery above and self-registers via DCR.
+3. Tick **I understand and want to continue** and click **Create as a plugin**, then review the discovered tools.
+4. Install the plugin and connect it: the sign-in window opens the Zoteus consent page (the `ZOTEUS_OAUTH_PASSCODE` prompt in passcode mode; in `zotero` mode a redirect to zotero.org, where write access can be unticked for a read-only grant) and returns to ChatGPT.
+5. In a chat, type **@**, pick Zoteus, and try a read (e.g. `zotero_whoami`).
 
 Notes:
 
