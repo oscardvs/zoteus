@@ -211,18 +211,16 @@ to disk, and exits 0 before the new container takes over.
 4. The consent page appears. Enter the passcode (the value of `ZOTEUS_OAUTH_PASSCODE`).
 5. After consent, the Zoteus tools appear in your conversation.
 
-**ChatGPT** (web app on a paid plan, with **Settings → Security and login → Developer mode**
-switched on):
+**ChatGPT** (Business, Enterprise or Edu, on the web; OpenAI's current requirement for custom
+MCP servers):
 
-1. **Plugins → Create app**. Name `Zoteus`, Connection **Server URL**, MCP Server URL
-   `https://$ZOTEUS_DOMAIN/mcp`, Authentication **OAuth**. Tick the acknowledgement and click
-   **Create**; leave Advanced OAuth settings empty, ChatGPT runs Dynamic Client Registration
-   on its own.
-2. Click **Sign in with Zoteus** and enter the passcode on the consent page (or sign in at
+1. **Plugins** → the **+** button → **Add custom MCP server**. Name `Zoteus`, Connection
+   `https://$ZOTEUS_DOMAIN/mcp`, authentication OAuth; ChatGPT runs Dynamic Client
+   Registration on its own.
+2. Tick **I understand and want to continue** and click **Create as a plugin**.
+3. Install the plugin, connect it, and enter the passcode on the consent page (or sign in at
    zotero.org in `zotero` mode).
-3. If the plugin's **Actions** section says "No app actions available yet", click **Refresh**
-   under **Information**; the tools then load.
-4. In a chat, click **+** in the composer and pick Zoteus.
+4. In a chat, type **@** and pick Zoteus.
 
 Details, including how ChatGPT decides which writes to confirm:
 [`remote-oauth.md`](./remote-oauth.md#connect-from-chatgpt).

@@ -227,40 +227,23 @@ key. Then pick the app you use.
 
 **In ChatGPT**
 
-You need a paid ChatGPT plan (Plus, Pro, Business, Enterprise or Edu) and ChatGPT open in a
-web browser, which is where developer mode is offered. A free account cannot add Zoteus. On
-a Business or Enterprise plan, an administrator may have to allow developer mode before the
-first step works.
+Zoteus is listed in ChatGPT's plugin directory, so there is no developer mode to switch on
+and no server address to type. OpenAI says whether a plugin can be installed depends on
+your ChatGPT plan, workspace and region; on a Business, Enterprise or Edu plan, an
+administrator can turn plugins off.
 
-1. Open **Settings**, then **Security and login**, and switch on **Developer mode**. ChatGPT
-   marks it as elevated risk; it is the switch that lets you add services ChatGPT does not
-   ship with, and Zoteus is one of those. The same switch is linked from **Settings**, then
-   **Plugins**.
-2. Open **Plugins** (in the left sidebar, or at <https://chatgpt.com/plugins>) and click
-   **Create app**.
-3. In the **New Plugin** dialog, type `Zoteus` as the name (the description can stay empty),
-   choose **Server URL** under Connection, and for the MCP Server URL enter exactly:
-
-   ```
-   https://mcp.zoteus.com/mcp
-   ```
-
-   Leave Authentication on **OAuth**, tick **I understand and want to continue**, and click
-   **Create**. There is nothing to fill in under Advanced OAuth settings; a note there saying
-   *CIMD unavailable* is expected and harmless.
-4. ChatGPT now shows **Add Zoteus to ChatGPT** with a **Sign in with Zoteus** button. Click
-   it. A window opens on the Zoteus page *Connect ChatGPT to Zoteus* and asks for your
+1. Open Zoteus in ChatGPT at
+   <https://chatgpt.com/plugins/plugin_asdk_app_6adcac3c4d8c81918b04f04ec0640974>, or click
+   **Plugins** in the left sidebar and search for **Zoteus**.
+2. Click **Install plugin**, then **Connect Zoteus**.
+3. A window opens on the Zoteus page *Connect ChatGPT to Zoteus* and asks for your
    subscription key, then sends you to zotero.org to sign in and approve access to your
    library. Untick write access there if you want ChatGPT to read your library but never
-   change it. Approve, and you land back in ChatGPT, where the Zoteus page says *Connected
-   on* today's date.
-5. If the **Actions** section of that page says *No app actions available yet*, click
-   **Refresh** under **Information**. The thirty Zoteus tools then appear, each labelled as
-   a read or a write.
+   change it. Approve, and you land back in ChatGPT.
 
-To use it, start a chat, click the **+** button in the message box (*Add files and more*),
-pick **Zoteus** from the menu, and ask as you normally would. Reading your library never asks
-for permission. Before changing something, ChatGPT decides for itself whether to ask: in our
+To use it, start a chat and ask as you normally would; ChatGPT uses Zoteus when the question
+is about your library. To call it directly, type **@Zoteus**, or click **+** and pick
+**Zoteus**. Reading your library never asks for permission. Before changing something, ChatGPT decides for itself whether to ask: in our
 testing, adding a tag ran straight away, while removing one showed *Allow ChatGPT to use
 Zoteus?* with the choice of allowing once, always, or for this conversation. The plugin
 page's **Permissions** control (*Choose when ChatGPT should ask for permission when using
