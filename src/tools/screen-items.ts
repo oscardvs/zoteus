@@ -60,7 +60,9 @@ const screenItems: ToolDefinition = {
       target: writeTarget,
     })
     .passthrough(),
-  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  // Destructive in the sense client directories mean it: changing a decision replaces the tag
+  // that recorded the earlier one, and that earlier decision is then gone from the library.
+  annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const reviewer = args.reviewer ? slug(args.reviewer, true) : undefined;
     if (args.reviewer && !reviewer) return refusal('`reviewer` has no letters or digits to name a reviewer by.');

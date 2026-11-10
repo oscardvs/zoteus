@@ -148,7 +148,7 @@ function writeCtx(lib = library()) {
 
 describe('zotero_screen_items', () => {
   it('is an additive write, not destructive', () => {
-    expect(screenItems.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true });
+    expect(screenItems.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
   });
 
   it('replaces only the reviewer\'s own tag for the stage and keeps user tags', async () => {

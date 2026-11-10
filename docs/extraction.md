@@ -6,7 +6,7 @@ Two tools do this:
 
 | Tool | What it does | Hints |
 |---|---|---|
-| `zotero_save_extraction` | Saves named fields for one or many papers (at most 50 per call) as a child note per paper. | writes, not destructive |
+| `zotero_save_extraction` | Saves named fields for one or many papers (at most 50 per call) as a child note per paper. | writes; flagged destructive, because it can replace or remove a saved value (the result returns what it replaced) |
 | `zotero_extraction_table` | Gathers every saved extraction for a collection, for given items, or for the whole library into one table. | read-only |
 
 The server has no language model. The assistant reads each paper (with `zotero_get_fulltext`) and supplies the values; Zoteus stores them, checks the quotes, and lays them out.
