@@ -70,3 +70,6 @@ These files are generated from the tool registry : regenerate with `npm run gen:
 | `replaceNote()` | `zotero_replace_note` | Replace a Zotero note with Markdown |
 | `annotationDigest()` | `zotero_annotation_digest` | List the annotations on a paper or collection |
 | `saveAnnotationDigest()` | `zotero_save_annotation_digest` | Save a paper's or collection's annotations as a note |
+| `review()` | `zotero_review` | Screening status, queue, PRISMA flow and duplicates for a review collection |
+| `screenItems()` | `zotero_screen_items` | Record screening decisions on Zotero items |
+| `activity()` | `zotero_activity` | What was added, changed, read and marked recently |
