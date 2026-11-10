@@ -38,6 +38,16 @@ import appendToNote from './append-to-note.js';
 import replaceNote from './replace-note.js';
 import annotationDigest from './annotation-digest.js';
 import saveAnnotationDigest from './save-annotation-digest.js';
+import search from './search.js';
+import fetchTool from './fetch.js';
+
+/**
+ * The generic `search` / `fetch` pair ChatGPT's deep research and company knowledge call.
+ * Kept out of `tools` on purpose: they are exposed only when ZOTEUS_SEARCH_FETCH_TOOLS is on
+ * (default on for HTTP, off for stdio), so they never reach the codex wrappers or a stdio
+ * client that has the zotero_* tools already. See selectActiveTools in src/server.ts.
+ */
+export const searchFetchTools: AnyToolDefinition[] = [search, fetchTool];
 
 export const tools: AnyToolDefinition[] = [
   // Read

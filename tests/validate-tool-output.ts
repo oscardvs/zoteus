@@ -19,8 +19,8 @@ import type { ToolContext } from '../src/registry/registry.js';
 const wrapped = Symbol.for('zoteus.outputSchemaChecked');
 
 beforeAll(async () => {
-  const { tools } = await import('../src/tools/index.js');
-  for (const def of tools) {
+  const { tools, searchFetchTools } = await import('../src/tools/index.js');
+  for (const def of [...tools, ...searchFetchTools]) {
     const handler = def.handler as typeof def.handler & { [wrapped]?: true };
     if (handler[wrapped]) continue;
     const inner = handler.bind(def);
