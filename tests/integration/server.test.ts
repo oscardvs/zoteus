@@ -90,6 +90,7 @@ describe('Zoteus server (in-process)', () => {
       'zotero_attach_file',
       'zotero_attachment',
       'zotero_bibliography',
+      'zotero_check_citations',
       'zotero_create_items',
       'zotero_create_note',
       'zotero_delete_items',

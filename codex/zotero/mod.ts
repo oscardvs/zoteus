@@ -37,3 +37,4 @@ export { appendToNote } from './appendToNote.js';
 export { replaceNote } from './replaceNote.js';
 export { annotationDigest } from './annotationDigest.js';
 export { saveAnnotationDigest } from './saveAnnotationDigest.js';
+export { checkCitations } from './checkCitations.js';

@@ -90,7 +90,9 @@ export function registerPrompts(server: McpServer): void {
     ({ text }) =>
       userMessage(
         `Audit the citations in this draft against my Zotero library and the literature:\n\n${text}\n\n` +
-          `For each cited work, check it exists (zotero_search_items / zotero_scholar lookup), flag anything not in my library, and surface potentially relevant missing references via zotero_scholar (references/citations). Then use zotero_get_fulltext to retrieve the passage supporting each factual claim before judging support. Report quotation, available page locator, source coverage (passage retrieved, abstract-only, or unavailable), and support status (supported, contradicted, uncertain, or unverified). Bibliographic existence alone is not evidence that the claim is correct; never invent missing text or locators.`,
+          `1. Call zotero_check_citations with the draft (and its reference list, if separate). Follow \`nextStart\` until every citation is checked. Report each citation it marks not_in_library, ambiguous or unresolved, and each quotation it marks not_found or close_match (with the source's actual words), exactly as returned.\n` +
+          `2. For works not in my library, look them up with zotero_scholar to see whether they exist at all; a citation that exists nowhere is likely invented. Surface potentially relevant missing references via zotero_scholar (references/citations).\n` +
+          `3. zotero_check_citations does not judge paraphrased claims. For each factual claim, use zotero_get_fulltext with a query to retrieve the supporting passage before judging support. Report quotation, available page locator, source coverage (passage retrieved, abstract-only, or unavailable), and support status (supported, contradicted, uncertain, or unverified). Bibliographic existence alone is not evidence that the claim is correct; never invent missing text or locators.`,
       ),
   );
 

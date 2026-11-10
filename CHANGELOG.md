@@ -13,6 +13,20 @@ All notable changes to Zoteus are documented here. The format is based on
   allowance; when it is used up the build carries on keyword-only and says why. A remote
   caller can no longer lift the operator's `ZOTEUS_INDEX_FULLTEXT_MAX_CHARS` cap by passing
   `fulltext_max_chars: 0`. Single-user installs are unchanged. See `docs/threat-model.md`.
+### Added
+- **`zotero_check_citations`: check a draft's citations and quotations against the library.**
+  Read-only and deterministic. Finds pandoc `[@key, p. 12; @other]`, `[@ITEMKEY]`, LaTeX
+  `\cite`/`\citep`/`\citet`/`\parencite`/`\textcite`/`\autocite`, author-year
+  (`(Smith, 2020)`, `(Smith & Jones, 2020, p. 4)`, `Smith et al. (2020)`), numeric `[3]`
+  through the reference list, and bare DOIs. Each cited work is resolved by item key,
+  Zotero's Citation Key field (then Better BibTeX on the desktop), DOI, or author and year
+  (plus title words from the reference list), and reported as matched, ambiguous or not in
+  the library. Each direct quotation next to a citation is searched for in the cited item's
+  full text, ignoring case, whitespace, line-break hyphenation, ligatures and quote and dash
+  styles: found (with the page), close match (with similarity and the source's wording), not
+  found, or no full text. Paraphrased claims are explicitly not checked. Work is paged by
+  citations and by full texts read per call. The `zotero-citation-audit` prompt now starts
+  from it. See [`docs/checking-a-draft.md`](./docs/checking-a-draft.md).
 
 ## [1.24.0] - 2026-11-10
 
