@@ -22,6 +22,7 @@ import { createSearchIndex } from './features/search/factory.js';
 import { canonicalLibraryToken, describeLibraryToken, type SearchIndex } from './features/search/backend.js';
 import { defaultIndexPath, SearchIndexRegistry } from './features/search/index-registry.js';
 import { createEmbeddingProvider } from './features/search/embeddings.js';
+import { withEmbedBudget } from './features/search/embed-budget.js';
 import { ScholarGraph } from './features/scholar/graph.js';
 import {
   registerAllTools,
@@ -304,8 +305,15 @@ async function openIndexes(
   // Hoisted rather than passed inline, because a repair has to be able to build the same
   // index again later and the embedder triple is not reachable from the context (#21).
   // Split from the path so the registry can apply the same options to a second library.
+  // One key pays for every tenant of a hosted deployment, so each of them gets a daily
+  // allowance of its own. A single-user install has no `zoteroUserId` here and no limit.
+  const embedder =
+    embedding.provider && config.embedDailyTokens !== undefined && zoteroUserId !== undefined
+      ? withEmbedBudget(embedding.provider, `user:${zoteroUserId}`, config.embedDailyTokens)
+      : embedding.provider;
   const searchIndexOpts = {
-    embedder: embedding.provider,
+    embedder,
+    embedFulltext: config.embedFulltext,
     configured: embedding.configured,
     unavailable: embedding.unavailable,
     logger,

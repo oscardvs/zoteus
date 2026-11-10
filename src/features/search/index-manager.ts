@@ -2904,6 +2904,13 @@ export abstract class SearchIndexBase implements SearchIndex {
       pending.length = 0;
       return;
     }
+    // Every path that queues a passage for embedding drains through here, so this is the
+    // one place the operator's "no body text to the embedder" rule has to hold.
+    if (this.opts.embedFulltext === false) {
+      for (let i = pending.length - 1; i >= 0; i--) {
+        if (pending[i]!.source === 'fulltext') pending.splice(i, 1);
+      }
+    }
     if (this.deferEmbedding) {
       for (const rec of pending) this.deferredIds.push(rec.id);
       pending.length = 0;

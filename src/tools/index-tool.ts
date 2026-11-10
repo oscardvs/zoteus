@@ -534,7 +534,16 @@ const indexTool: ToolDefinition = {
     const ownWords = args.own_words ?? ctx.config.indexOwnWords;
     // `refresh` is the one that starts over. `build` resumes an interrupted build where one
     // is on disk, because discarding committed, already-embedded work is what #24 is about.
-    const opts = { fulltext, ownWords, fulltextMaxChars: args.fulltext_max_chars, fresh: args.action === 'refresh' };
+    // A remote caller may ask for less body text per item than the operator allows, never
+    // for more: `0` means "no cap", and on someone else's server that is not theirs to lift.
+    const capChars = ctx.config.indexFulltextMaxChars;
+    const fulltextMaxChars =
+      ctx.remoteCaller && capChars > 0 && args.fulltext_max_chars !== undefined
+        ? args.fulltext_max_chars === 0
+          ? capChars
+          : Math.min(args.fulltext_max_chars, capChars)
+        : args.fulltext_max_chars;
+    const opts = { fulltext, ownWords, fulltextMaxChars, fresh: args.action === 'refresh' };
     // Read before either starter runs, because a build's prologue clears the store
     // synchronously: this is both the stamp the guard is about to compare against and the
     // size of the index a rebuild replaces.

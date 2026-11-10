@@ -4,6 +4,16 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **Limits for a server that pays an embedding API for its users.** `ZOTEUS_EMBED_FULLTEXT=false`
+  keeps PDF body text keyword-searchable but never sends it to the embedder, and
+  `ZOTEUS_EMBED_DAILY_TOKENS` gives each signed-in user of a multi-user server a daily
+  allowance; when it is used up the build carries on keyword-only and says why. A remote
+  caller can no longer lift the operator's `ZOTEUS_INDEX_FULLTEXT_MAX_CHARS` cap by passing
+  `fulltext_max_chars: 0`. Single-user installs are unchanged. See `docs/threat-model.md`.
+
 ## [1.24.0] - 2026-11-10
 
 ### Added

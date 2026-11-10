@@ -167,3 +167,12 @@ It is off by default because switching it on changes what an existing, working c
 Security reports go through the channels in [`SECURITY.md`](../SECURITY.md), not through
 public issues. Design discussions like #71, which describe no exploit, are welcome in the
 open.
+
+## An embedding key the operator pays for
+
+A multi-user server with `ZOTEUS_EMBEDDINGS=openai` or `gemini` embeds every user's library through one key that belongs to the operator.
+
+- **The key does not leave the server.** It is read from the environment, sent only in a request header to the provider's fixed address, and never placed in a URL, a tool result or an error message. No tool argument can change where it is sent.
+- **What a user can take is spend, not the key.** Rebuilding an index over a large library costs the operator money. Three settings bound that: `ZOTEUS_EMBED_FULLTEXT=false` keeps PDF body text out of the embedder altogether, `ZOTEUS_EMBED_DAILY_TOKENS` gives each user a daily allowance, and a remote caller can lower `fulltext_max_chars` but not raise it above `ZOTEUS_INDEX_FULLTEXT_MAX_CHARS`. `ZOTEUS_INDEX_MAX_ITEMS` already caps the items per index.
+- **The provider's own limits are the backstop.** Give the key the narrowest permission the provider offers (embeddings only) and a monthly spending cap, so a leak or a bug costs a known amount.
+- **The allowance is kept in memory.** A restart resets the day's count. It is a brake, not an invoice.
