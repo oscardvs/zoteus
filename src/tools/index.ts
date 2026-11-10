@@ -52,6 +52,10 @@ import fetchTool from './fetch.js';
  * client that has the zotero_* tools already. See selectActiveTools in src/server.ts.
  */
 export const searchFetchTools: AnyToolDefinition[] = [search, fetchTool];
+import saveExtraction from './save-extraction.js';
+import extractionTable from './extraction-table.js';
+import suggestRelated from './suggest-related.js';
+import relateItems from './relate-items.js';
 
 export const tools: AnyToolDefinition[] = [
   // Read
@@ -109,4 +113,9 @@ export const tools: AnyToolDefinition[] = [
   review,
   screenItems,
   activity,
+  // Structured extraction kept as notes, and Related links from the citation graph
+  saveExtraction,
+  extractionTable,
+  suggestRelated,
+  relateItems,
 ];

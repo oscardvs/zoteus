@@ -335,6 +335,11 @@ export class ScholarGraph {
     return { works: ids.length ? await this.openalex.worksByIds(ids) : [], total: all.length };
   }
 
+  /** Citation links among many DOIs at once; see {@link OpenAlexClient.referenceLinks}. */
+  async referenceLinks(dois: string[]): ReturnType<OpenAlexClient['referenceLinks']> {
+    return this.openalex.referenceLinks(dois);
+  }
+
   async related(doi: string, limit = 20): Promise<ScholarList> {
     const work = await this.openalex.work(doi);
     const all: string[] = work.related_works ?? [];

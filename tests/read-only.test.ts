@@ -27,6 +27,8 @@ describe('read-only mode tool set', () => {
       'zotero_check_citations',
       'zotero_review',
       'zotero_activity',
+      'zotero_extraction_table',
+      'zotero_suggest_related',
     ]) {
       expect(names).toContain(t);
     }
@@ -48,6 +50,8 @@ describe('read-only mode tool set', () => {
       'zotero_replace_note',
       'zotero_save_annotation_digest',
       'zotero_screen_items',
+      'zotero_save_extraction',
+      'zotero_relate_items',
     ]) {
       expect(names).not.toContain(t);
     }

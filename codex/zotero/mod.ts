@@ -41,3 +41,7 @@ export { checkCitations } from './checkCitations.js';
 export { review } from './review.js';
 export { screenItems } from './screenItems.js';
 export { activity } from './activity.js';
+export { saveExtraction } from './saveExtraction.js';
+export { extractionTable } from './extractionTable.js';
+export { suggestRelated } from './suggestRelated.js';
+export { relateItems } from './relateItems.js';

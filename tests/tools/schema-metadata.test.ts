@@ -57,6 +57,6 @@ describe('every tool advertises complete schemas', () => {
   });
 
   it('covers every registered tool', () => {
-    expect(tools.length).toBe(43);
+    expect(tools.length).toBe(47);
   });
 });

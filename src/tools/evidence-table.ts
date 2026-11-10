@@ -59,7 +59,7 @@ function filled(value: string | undefined): boolean {
  * This escapes what would break the TABLE, not everything Markdown reads: a quotation
  * containing asterisks still renders as emphasis. The text itself is never altered.
  */
-function mdCell(text: string): string {
+export function mdCell(text: string): string {
   return text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\s*[\r\n]+\s*/g, ' ');
 }
 
@@ -93,7 +93,7 @@ function isNumeric(value: string): boolean {
  * but evaluates to itself, and marking it as text would cost the one column a researcher
  * sorts numerically, for no safety.
  */
-function needsFormulaGuard(value: string): boolean {
+export function needsFormulaGuard(value: string): boolean {
   if (!FORMULA_LEAD.test(value)) return false;
   return !(/^[+-]/.test(value) && isNumeric(value));
 }
@@ -109,7 +109,7 @@ function needsFormulaGuard(value: string): boolean {
  * changes is one that was going to run rather than be read. Every such cell is named in
  * `warnings`, because a caller who promised a verbatim quotation should be able to see it.
  */
-function csvField(value: string): string {
+export function csvField(value: string): string {
   const body = value.replace(/"/g, '""');
   if (needsFormulaGuard(value)) return `"'${body}"`;
   if (!/[",\r\n]/.test(value) && value === value.trim()) return value;
