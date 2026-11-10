@@ -38,6 +38,10 @@ import appendToNote from './append-to-note.js';
 import replaceNote from './replace-note.js';
 import annotationDigest from './annotation-digest.js';
 import saveAnnotationDigest from './save-annotation-digest.js';
+import saveExtraction from './save-extraction.js';
+import extractionTable from './extraction-table.js';
+import suggestRelated from './suggest-related.js';
+import relateItems from './relate-items.js';
 
 export const tools: AnyToolDefinition[] = [
   // Read
@@ -89,4 +93,9 @@ export const tools: AnyToolDefinition[] = [
   replaceNote,
   annotationDigest,
   saveAnnotationDigest,
+  // Structured extraction kept as notes, and Related links from the citation graph
+  saveExtraction,
+  extractionTable,
+  suggestRelated,
+  relateItems,
 ];

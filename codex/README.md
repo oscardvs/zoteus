@@ -70,3 +70,7 @@ These files are generated from the tool registry : regenerate with `npm run gen:
 | `replaceNote()` | `zotero_replace_note` | Replace a Zotero note with Markdown |
 | `annotationDigest()` | `zotero_annotation_digest` | List the annotations on a paper or collection |
 | `saveAnnotationDigest()` | `zotero_save_annotation_digest` | Save a paper's or collection's annotations as a note |
+| `saveExtraction()` | `zotero_save_extraction` | Save structured fields extracted from papers |
+| `extractionTable()` | `zotero_extraction_table` | Gather saved extractions into one table |
+| `suggestRelated()` | `zotero_suggest_related` | Suggest Related links between library items that cite each other |
+| `relateItems()` | `zotero_relate_items` | Link items as Related |
