@@ -215,7 +215,7 @@ const LOCATOR_LABELS: Array<[RegExp, string | undefined]> = [
 /** One locator value: "12", "12-14", "xii", "3, 7-9". */
 const LOCATOR_VALUE = /^([0-9A-Za-z]+(?:\s*[-\u2013]\s*[0-9A-Za-z]+)?(?:\s*,\s*[0-9]+(?:\s*[-\u2013]\s*[0-9]+)?)*)(.*)$/s;
 
-function parseLocator(text: string): Pick<CitationRef, 'locator' | 'label' | 'suffix'> {
+export function parseLocator(text: string): Pick<CitationRef, 'locator' | 'label' | 'suffix'> {
   const t = text.trim();
   if (!t) return {};
   for (const [re, label] of LOCATOR_LABELS) {
@@ -237,7 +237,7 @@ function parseLocator(text: string): Pick<CitationRef, 'locator' | 'label' | 'su
 const CITATION_PART = new RegExp(`^\\s*(.*?)\\s*@(${ITEM_KEY})(?![A-Za-z0-9])\\s*(?:,(.*))?$`, 's');
 
 /** `[@KEY]`, `[see @KEY, p. 4]`, `[@KEY1; @KEY2, pp. 3-5]` starting at the `[` at `i`. */
-function citationGroup(s: string, i: number): { refs: CitationRef[]; source: string; end: number } | null {
+export function citationGroup(s: string, i: number): { refs: CitationRef[]; source: string; end: number } | null {
   const close = closingBracket(s, i);
   if (close === -1) return null;
   const inner = s.slice(i + 1, close);

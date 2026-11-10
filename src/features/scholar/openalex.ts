@@ -443,6 +443,39 @@ export class OpenAlexClient {
     return { found, checked, failures };
   }
 
+  /**
+   * For many DOIs at once: each work's OpenAlex id and the OpenAlex ids of the works it
+   * cites, in the same batched OR-pipe filter `retractionFlags` uses. Two DOIs found here
+   * form a citation pair when one's `references` holds the other's `id`, so no referenced
+   * work has to be fetched. A DOI absent from `found` but present in `checked` is one
+   * OpenAlex does not know; one in neither was in a batch that failed.
+   */
+  async referenceLinks(
+    dois: string[],
+    chunkSize = OPENALEX_BATCH,
+  ): Promise<{ found: Map<string, { id: string; references: string[] }>; checked: string[]; failures: OpenAlexError[] }> {
+    const found = new Map<string, { id: string; references: string[] }>();
+    const checked: string[] = [];
+    const failures: OpenAlexError[] = [];
+    const usable = [...new Set(dois.map((d) => stripDoi(d).toLowerCase()).filter(pipeableDoi))];
+    for (let i = 0; i < usable.length; i += chunkSize) {
+      const group = usable.slice(i, i + chunkSize);
+      const url = `${BASE}/works?filter=doi:${group.map(encodeDoiForQuery).join('|')}&select=id,doi,referenced_works&per-page=${group.length}`;
+      try {
+        const json = await this.getJson(url);
+        for (const w of json.results ?? []) {
+          if (!w?.doi || !w.id) continue;
+          const refs: string[] = Array.isArray(w.referenced_works) ? w.referenced_works.map((r: string) => bareId(r)) : [];
+          found.set(stripDoi(w.doi).toLowerCase(), { id: bareId(w.id), references: refs });
+        }
+        checked.push(...group);
+      } catch (e) {
+        failures.push(e instanceof OpenAlexError ? e : new OpenAlexError(0, (e as Error)?.message ?? 'request failed'));
+      }
+    }
+    return { found, checked, failures };
+  }
+
   /** Fetch a work by DOI or OpenAlex id. Returns the raw work object. */
   async work(doiOrId: string): Promise<any> {
     const path = /^10\./.test(doiOrId) || /doi\.org/i.test(doiOrId)

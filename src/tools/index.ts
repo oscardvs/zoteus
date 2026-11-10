@@ -38,6 +38,24 @@ import appendToNote from './append-to-note.js';
 import replaceNote from './replace-note.js';
 import annotationDigest from './annotation-digest.js';
 import saveAnnotationDigest from './save-annotation-digest.js';
+import checkCitations from './check-citations.js';
+import review from './review.js';
+import screenItems from './screen-items.js';
+import activity from './activity.js';
+import search from './search.js';
+import fetchTool from './fetch.js';
+
+/**
+ * The generic `search` / `fetch` pair ChatGPT's deep research and company knowledge call.
+ * Kept out of `tools` on purpose: they are exposed only when ZOTEUS_SEARCH_FETCH_TOOLS is on
+ * (default on for HTTP, off for stdio), so they never reach the codex wrappers or a stdio
+ * client that has the zotero_* tools already. See selectActiveTools in src/server.ts.
+ */
+export const searchFetchTools: AnyToolDefinition[] = [search, fetchTool];
+import saveExtraction from './save-extraction.js';
+import extractionTable from './extraction-table.js';
+import suggestRelated from './suggest-related.js';
+import relateItems from './relate-items.js';
 
 export const tools: AnyToolDefinition[] = [
   // Read
@@ -89,4 +107,15 @@ export const tools: AnyToolDefinition[] = [
   replaceNote,
   annotationDigest,
   saveAnnotationDigest,
+  // Checking a draft's citations and quotations against the library
+  checkCitations,
+  // Review teams: screening, PRISMA flow, collection duplicates, recent activity
+  review,
+  screenItems,
+  activity,
+  // Structured extraction kept as notes, and Related links from the citation graph
+  saveExtraction,
+  extractionTable,
+  suggestRelated,
+  relateItems,
 ];

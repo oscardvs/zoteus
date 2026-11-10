@@ -53,6 +53,20 @@ export class BbtClient {
     return itemKeys.map((k) => (json && json[k]) || '').filter(Boolean);
   }
 
+  /**
+   * Zotero item keys whose BBT citation key is exactly `citekey`. `item.search` answers
+   * CSL-JSON with `citation-key` and an item URI as `id` (checked against BBT on Zotero 10,
+   * 2026-11-10); the search is fuzzy, so only exact keys are kept.
+   */
+  async itemKeysForCitationKey(citekey: string): Promise<string[]> {
+    const result = await this.rpc('item.search', [citekey]);
+    if (!Array.isArray(result)) return [];
+    return result
+      .filter((r: any) => r && r['citation-key'] === citekey && typeof r.id === 'string')
+      .map((r: any) => /\/items\/([A-Z0-9]{8})$/.exec(r.id)?.[1] ?? '')
+      .filter(Boolean);
+  }
+
   /** Export the given citation keys with a translator (default better-biblatex). */
   async exportItems(opts: { citekeys: string[]; translator?: string }): Promise<string> {
     const result = await this.rpc('item.export', [opts.citekeys, opts.translator ?? 'better-biblatex']);

@@ -685,6 +685,13 @@ export interface BuildOptions {
 
 export interface SearchIndexOptions {
   embedder: EmbeddingProvider | null;
+  /**
+   * Whether attachment body text is embedded (ZOTEUS_EMBED_FULLTEXT, default true). False
+   * keeps body passages in the keyword index but never sends them to the embedder: the
+   * setting for an operator who pays an embedding API on behalf of other people, where
+   * body text is twenty times the volume of everything else an item has.
+   */
+  embedFulltext?: boolean;
   logger?: Logger;
   /** What ZOTEUS_EMBEDDINGS asked for (defaults to the provider's own name, or 'off'). */
   configured?: string;

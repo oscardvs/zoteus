@@ -22,6 +22,7 @@ import { createSearchIndex } from './features/search/factory.js';
 import { canonicalLibraryToken, describeLibraryToken, type SearchIndex } from './features/search/backend.js';
 import { defaultIndexPath, SearchIndexRegistry } from './features/search/index-registry.js';
 import { createEmbeddingProvider } from './features/search/embeddings.js';
+import { withEmbedBudget } from './features/search/embed-budget.js';
 import { ScholarGraph } from './features/scholar/graph.js';
 import {
   registerAllTools,
@@ -31,7 +32,7 @@ import {
 } from './registry/registry.js';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
-import { tools } from './tools/index.js';
+import { searchFetchTools, tools } from './tools/index.js';
 import { UpdateChecker } from './lib/update-check.js';
 import { VERSION as SERVER_VERSION } from './lib/version.js';
 
@@ -89,10 +90,12 @@ export interface Telemetry {
  * Tools exposed for this config: read-only mode hides mutating tools (plus zotero_index,
  * which only touches local index files). Mirrors the M10 selection.
  */
-function selectActiveTools(config: ZoteusConfig): AnyToolDefinition[] {
-  return config.readOnly
+export function selectActiveTools(config: ZoteusConfig): AnyToolDefinition[] {
+  const base = config.readOnly
     ? tools.filter((t) => t.annotations?.readOnlyHint === true || t.name === 'zotero_index')
     : tools;
+  // Both are read-only, so read-only mode keeps them too.
+  return config.searchFetchTools === true ? [...base, ...searchFetchTools] : base;
 }
 
 /**
@@ -304,8 +307,15 @@ async function openIndexes(
   // Hoisted rather than passed inline, because a repair has to be able to build the same
   // index again later and the embedder triple is not reachable from the context (#21).
   // Split from the path so the registry can apply the same options to a second library.
+  // One key pays for every tenant of a hosted deployment, so each of them gets a daily
+  // allowance of its own. A single-user install has no `zoteroUserId` here and no limit.
+  const embedder =
+    embedding.provider && config.embedDailyTokens !== undefined && zoteroUserId !== undefined
+      ? withEmbedBudget(embedding.provider, `user:${zoteroUserId}`, config.embedDailyTokens)
+      : embedding.provider;
   const searchIndexOpts = {
-    embedder: embedding.provider,
+    embedder,
+    embedFulltext: config.embedFulltext,
     configured: embedding.configured,
     unavailable: embedding.unavailable,
     logger,

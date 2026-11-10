@@ -11,6 +11,10 @@ Zoteus has no account of its own. It stores no lab, no roster, no seat and no me
 
 Everything below is a report on those two, taken from what Zotero itself says.
 
+## Screening together
+
+For a team screening references for a systematic review, `zotero_review`, `zotero_screen_items` and `zotero_activity` keep include/exclude decisions as Zotero tags in the group (so they sync to everyone and survive without Zoteus), give each reviewer a blind queue, report disagreements and inter-rater agreement, produce the PRISMA flow numbers and diagram, find duplicates inside the review collection, and show who added or changed what this week. See [Screening and review teams](./screening-and-review-teams.md).
+
 ## The two calls that answer the setup questions
 
 ### `zotero_whoami`: whose context am I on, and which library will a call land in?

@@ -85,6 +85,17 @@ export interface ZoteusConfig {
    */
   indexAnn: boolean;
   /**
+   * Whether attachment body text is sent to the embedder (ZOTEUS_EMBED_FULLTEXT). False keeps
+   * it keyword-searchable only. Meant for a hosted operator paying an embedding API.
+   */
+  embedFulltext: boolean;
+  /**
+   * Estimated embedding tokens one remote user may spend per UTC day
+   * (ZOTEUS_EMBED_DAILY_TOKENS). Unset means no limit, which is right for a single-user
+   * install where the user and the payer are the same person.
+   */
+  embedDailyTokens?: number;
+  /**
    * Unaccented keyword-query terms also match the dominant accented spellings
    * (ZOTEUS_ACCENT_EXPANSION). False answers every query strictly as typed.
    */
@@ -109,6 +120,12 @@ export interface ZoteusConfig {
   openalexApiKey?: string;
   allowDelete: boolean;
   readOnly: boolean;
+  /**
+   * Whether the generic `search` / `fetch` pair ChatGPT's deep research and company
+   * knowledge call is exposed (ZOTEUS_SEARCH_FETCH_TOOLS). Undefined means "decide by
+   * transport": src/index.ts turns it on for HTTP and off for stdio.
+   */
+  searchFetchTools?: boolean;
   /**
    * Number of items above which a bulk write (trash, tag add/remove, collection removal)
    * refuses unless the call also passes `confirm: true`. `0` (the default) disables the
@@ -316,6 +333,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
         // flipping it never needs a rebuild.
         ZOTEUS_ACCENT_EXPANSION: bool(true),
         ZOTEUS_INDEX_ANN: bool(true),
+        ZOTEUS_EMBED_FULLTEXT: bool(true),
+        ZOTEUS_EMBED_DAILY_TOKENS: z.coerce.number().int().positive().optional(),
         ZOTEUS_INDEX_ANN_OVERSAMPLE: z.coerce
           .number()
           .int()
@@ -341,6 +360,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
         ZOTEUS_OPENALEX_API_KEY: z.string().min(1).optional(),
         ZOTEUS_ALLOW_DELETE: bool(false),
         ZOTEUS_READ_ONLY: bool(false),
+        // Unset on purpose: the default depends on the transport (on for HTTP, off for stdio).
+        ZOTEUS_SEARCH_FETCH_TOOLS: z
+          .string()
+          .optional()
+          .transform((v) => (v === undefined || v === '' ? undefined : v.toLowerCase() === 'true' || v === '1')),
         ZOTEUS_CONFIRM_BULK_WRITES: z.coerce.number().int().nonnegative().default(0),
         ZOTEUS_LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
         ZOTEUS_LOG_FORMAT: z.enum(['text', 'json']).default('text'),
@@ -547,6 +571,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
     indexBackend: parsed.ZOTEUS_INDEX_BACKEND,
     indexMaxOpen: parsed.ZOTEUS_INDEX_MAX_OPEN,
     indexAnn: parsed.ZOTEUS_INDEX_ANN,
+    embedFulltext: parsed.ZOTEUS_EMBED_FULLTEXT,
+    embedDailyTokens: parsed.ZOTEUS_EMBED_DAILY_TOKENS,
     accentExpansion: parsed.ZOTEUS_ACCENT_EXPANSION,
     indexAnnOversample: parsed.ZOTEUS_INDEX_ANN_OVERSAMPLE,
     indexAnnMinCandidates: parsed.ZOTEUS_INDEX_ANN_MIN_CANDIDATES,
@@ -561,6 +587,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
     importMaxEntries: parsed.ZOTEUS_IMPORT_MAX_ENTRIES,
     allowDelete: parsed.ZOTEUS_ALLOW_DELETE,
     readOnly: parsed.ZOTEUS_READ_ONLY,
+    searchFetchTools: parsed.ZOTEUS_SEARCH_FETCH_TOOLS,
     confirmBulkWrites: parsed.ZOTEUS_CONFIRM_BULK_WRITES,
     logLevel: parsed.ZOTEUS_LOG_LEVEL,
     logFormat: parsed.ZOTEUS_LOG_FORMAT,
@@ -606,4 +633,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
     },
     warnings,
   };
+}
+
+/**
+ * The config a transport runs with: ZOTEUS_SEARCH_FETCH_TOOLS, when unset, is on for HTTP
+ * (the hosted server is what ChatGPT talks to) and off for stdio (Claude Desktop and other
+ * local clients have the zotero_* tools and no use for two generic names beside them).
+ */
+export function withTransportDefaults(config: ZoteusConfig, transport: 'http' | 'stdio'): ZoteusConfig {
+  return { ...config, searchFetchTools: config.searchFetchTools ?? transport === 'http' };
 }

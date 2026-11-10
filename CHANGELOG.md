@@ -4,6 +4,81 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.25.0] - 2026-11-10
+
+### Added
+- **`zotero_check_citations`: check a draft's citations and quotations against the library.**
+  Read-only and deterministic. Finds pandoc `[@key, p. 12; @other]`, `[@ITEMKEY]`, LaTeX
+  `\cite`/`\citep`/`\citet`/`\parencite`/`\textcite`/`\autocite`, author-year
+  (`(Smith, 2020)`, `(Smith & Jones, 2020, p. 4)`, `Smith et al. (2020)`), numeric `[3]`
+  through the reference list, and bare DOIs. Each cited work is resolved by item key,
+  Zotero's Citation Key field (then Better BibTeX on the desktop), DOI, or author and year
+  (plus title words from the reference list), and reported as matched, ambiguous or not in
+  the library. Each direct quotation next to a citation is searched for in the cited item's
+  full text, ignoring case, whitespace, line-break hyphenation, ligatures and quote and dash
+  styles: found (with the page), close match (with similarity and the source's wording), not
+  found, or no full text. Paraphrased claims are explicitly not checked. Work is paged by
+  citations and by full texts read per call. The `zotero-citation-audit` prompt now starts
+  from it. See [`docs/checking-a-draft.md`](./docs/checking-a-draft.md).
+- **A kit for review teams: `zotero_review` (read-only), `zotero_screen_items` and
+  `zotero_activity` (read-only).** Screening decisions are Zotero tags of the form
+  `screen/<stage>/<decision>[:<reason>][@<reviewer>]` (stages `title-abstract` and
+  `full-text`; decisions `include`, `exclude`, `maybe`), so they sync to the whole group and
+  stay readable without Zoteus. `zotero_screen_items` records a batch of decisions, replacing
+  only the screening tag for the same stage and reviewer and never touching other tags.
+  `zotero_review` returns a blind per-reviewer queue (title, abstract, year, authors), status
+  counts with exclusion reasons, disagreements and Cohen's kappa, the PRISMA 2020 flow numbers
+  with a text and a Mermaid diagram, and the duplicate groups inside the review collection
+  (exact DOI, ISBN or title plus year; nothing is merged). `zotero_activity` lists what was
+  added or modified in the last N days in a library or collection, with notes and annotations,
+  and, for group libraries read from the cloud, who did it; the desktop local API does not
+  report authorship, and Zotero's "Recently Read" is not exposed by either API. See
+  `docs/screening-and-review-teams.md`.
+- **`search` and `fetch` for ChatGPT deep research and company knowledge.** The two
+  read-only tools OpenAI's MCP guide specifies (https://developers.openai.com/api/docs/mcp):
+  `search({query})` returns `{results: [{id, title, url}]}` from the semantic index when one
+  is built, otherwise from keyword search; `fetch({id})` returns `{id, title, text, url,
+  metadata}`, the item's metadata followed by up to 100,000 characters of its full text.
+  Both return the object as `structuredContent` and as one JSON text item. `url` is the
+  item's zotero.org web library page, so ChatGPT can cite it. Exposed over HTTP by default
+  and not on stdio; `ZOTEUS_SEARCH_FETCH_TOOLS` overrides either way.
+- **Structured extraction that persists: `zotero_save_extraction` and `zotero_extraction_table`.**
+  Named fields per paper (sample size, method, country, outcome) are saved as a child note
+  tagged `zoteus-extraction`: a readable table plus a JSON copy that round-trips. Saving again
+  for the same paper and schema updates that note in place, keeps fields not mentioned
+  (unless `replace_all`), removes a field on `null`, and returns every replaced or removed
+  value. A supplied source quote is checked against the paper's text (Zotero's index, else
+  the PDF or EPUB) and stored as `verified`, `not-found` or `unchecked`. The read-only table
+  tool gathers a collection, given items or the whole library into one table, lists missing
+  papers and missing fields, and returns it as structured rows, Markdown and CSV
+  ([docs/extraction.md](./docs/extraction.md)).
+- **Related links from citations: `zotero_suggest_related` and `zotero_relate_items`.** The
+  read-only suggester pairs library items where one cites the other, from OpenAlex reference
+  lists matched by DOI (50 DOIs per request), and leaves out pairs already linked. The write
+  tool adds `dc:relation` on both items with the `http://zotero.org/users|groups/<id>/items/<KEY>`
+  URI Zotero uses, keeps every existing relation, re-applies after a version conflict, and
+  refuses a never-synced personal library rather than write a dangling link
+  ([docs/related-items.md](./docs/related-items.md)).
+
+### Changed
+- **Behaviour change: `zotero_import` now checks for duplicates on every save.** Adding by
+  DOI, PMID, ISBN, URL, file or PDF with `save_to_library:true` compares what was resolved
+  against the library first (DOI, then ISBN, then title plus year) and refuses to create a
+  second copy, naming the item that already holds it. Before, the check ran only with
+  `check_duplicates:true`. Pass `allow_duplicate:true` to save anyway (the match is still
+  reported) or `check_duplicates:false` to skip the scan, which costs one request per 100
+  top-level items, up to 50. A preview is still scanned only when asked. When the default
+  check cannot run, the save goes ahead and says the check failed; an explicit
+  `check_duplicates:true` still refuses in that case.
+
+### Security
+- **Limits for a server that pays an embedding API for its users.** `ZOTEUS_EMBED_FULLTEXT=false`
+  keeps PDF body text keyword-searchable but never sends it to the embedder, and
+  `ZOTEUS_EMBED_DAILY_TOKENS` gives each signed-in user of a multi-user server a daily
+  allowance; when it is used up the build carries on keyword-only and says why. A remote
+  caller can no longer lift the operator's `ZOTEUS_INDEX_FULLTEXT_MAX_CHARS` cap by passing
+  `fulltext_max_chars: 0`. Single-user installs are unchanged. See `docs/threat-model.md`.
+
 ## [1.24.0] - 2026-11-10
 
 ### Added
