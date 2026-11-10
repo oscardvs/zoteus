@@ -4,15 +4,8 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.25.0] - 2026-11-10
 
-### Security
-- **Limits for a server that pays an embedding API for its users.** `ZOTEUS_EMBED_FULLTEXT=false`
-  keeps PDF body text keyword-searchable but never sends it to the embedder, and
-  `ZOTEUS_EMBED_DAILY_TOKENS` gives each signed-in user of a multi-user server a daily
-  allowance; when it is used up the build carries on keyword-only and says why. A remote
-  caller can no longer lift the operator's `ZOTEUS_INDEX_FULLTEXT_MAX_CHARS` cap by passing
-  `fulltext_max_chars: 0`. Single-user installs are unchanged. See `docs/threat-model.md`.
 ### Added
 - **`zotero_check_citations`: check a draft's citations and quotations against the library.**
   Read-only and deterministic. Finds pandoc `[@key, p. 12; @other]`, `[@ITEMKEY]`, LaTeX
@@ -27,7 +20,6 @@ All notable changes to Zoteus are documented here. The format is based on
   found, or no full text. Paraphrased claims are explicitly not checked. Work is paged by
   citations and by full texts read per call. The `zotero-citation-audit` prompt now starts
   from it. See [`docs/checking-a-draft.md`](./docs/checking-a-draft.md).
-### Added
 - **A kit for review teams: `zotero_review` (read-only), `zotero_screen_items` and
   `zotero_activity` (read-only).** Screening decisions are Zotero tags of the form
   `screen/<stage>/<decision>[:<reason>][@<reviewer>]` (stages `title-abstract` and
@@ -42,18 +34,6 @@ All notable changes to Zoteus are documented here. The format is based on
   and, for group libraries read from the cloud, who did it; the desktop local API does not
   report authorship, and Zotero's "Recently Read" is not exposed by either API. See
   `docs/screening-and-review-teams.md`.
-### Changed
-- **Behaviour change: `zotero_import` now checks for duplicates on every save.** Adding by
-  DOI, PMID, ISBN, URL, file or PDF with `save_to_library:true` compares what was resolved
-  against the library first (DOI, then ISBN, then title plus year) and refuses to create a
-  second copy, naming the item that already holds it. Before, the check ran only with
-  `check_duplicates:true`. Pass `allow_duplicate:true` to save anyway (the match is still
-  reported) or `check_duplicates:false` to skip the scan, which costs one request per 100
-  top-level items, up to 50. A preview is still scanned only when asked. When the default
-  check cannot run, the save goes ahead and says the check failed; an explicit
-  `check_duplicates:true` still refuses in that case.
-
-### Added
 - **`search` and `fetch` for ChatGPT deep research and company knowledge.** The two
   read-only tools OpenAI's MCP guide specifies (https://developers.openai.com/api/docs/mcp):
   `search({query})` returns `{results: [{id, title, url}]}` from the semantic index when one
@@ -62,7 +42,6 @@ All notable changes to Zoteus are documented here. The format is based on
   Both return the object as `structuredContent` and as one JSON text item. `url` is the
   item's zotero.org web library page, so ChatGPT can cite it. Exposed over HTTP by default
   and not on stdio; `ZOTEUS_SEARCH_FETCH_TOOLS` overrides either way.
-### Added
 - **Structured extraction that persists: `zotero_save_extraction` and `zotero_extraction_table`.**
   Named fields per paper (sample size, method, country, outcome) are saved as a child note
   tagged `zoteus-extraction`: a readable table plus a JSON copy that round-trips. Saving again
@@ -80,6 +59,25 @@ All notable changes to Zoteus are documented here. The format is based on
   URI Zotero uses, keeps every existing relation, re-applies after a version conflict, and
   refuses a never-synced personal library rather than write a dangling link
   ([docs/related-items.md](./docs/related-items.md)).
+
+### Changed
+- **Behaviour change: `zotero_import` now checks for duplicates on every save.** Adding by
+  DOI, PMID, ISBN, URL, file or PDF with `save_to_library:true` compares what was resolved
+  against the library first (DOI, then ISBN, then title plus year) and refuses to create a
+  second copy, naming the item that already holds it. Before, the check ran only with
+  `check_duplicates:true`. Pass `allow_duplicate:true` to save anyway (the match is still
+  reported) or `check_duplicates:false` to skip the scan, which costs one request per 100
+  top-level items, up to 50. A preview is still scanned only when asked. When the default
+  check cannot run, the save goes ahead and says the check failed; an explicit
+  `check_duplicates:true` still refuses in that case.
+
+### Security
+- **Limits for a server that pays an embedding API for its users.** `ZOTEUS_EMBED_FULLTEXT=false`
+  keeps PDF body text keyword-searchable but never sends it to the embedder, and
+  `ZOTEUS_EMBED_DAILY_TOKENS` gives each signed-in user of a multi-user server a daily
+  allowance; when it is used up the build carries on keyword-only and says why. A remote
+  caller can no longer lift the operator's `ZOTEUS_INDEX_FULLTEXT_MAX_CHARS` cap by passing
+  `fulltext_max_chars: 0`. Single-user installs are unchanged. See `docs/threat-model.md`.
 
 ## [1.24.0] - 2026-11-10
 
