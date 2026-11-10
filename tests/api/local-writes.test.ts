@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, statSync, writeFileSync as writeFile, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalWriteClient } from '../../src/api/local-writes.js';
@@ -114,6 +114,36 @@ describe('LocalWriteClient (Zotero 10+ desktop writes)', () => {
     writeFileSync(keyStorePath, JSON.stringify({ key: 'cached-key', appName: 'Zoteus MCP', grantedAt: 'now' }));
     const client = makeClient(fetchImpl, { keyStorePath });
     await client.writeItems([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps the key file owner-only (0600), and tightens one written before that rule', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zoteus-grant-'));
+    const keyStorePath = join(dir, 'local-api-key.json');
+    const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+      if (url.endsWith('/local/authorize')) return okJson({ key: 'granted-key', remember: true });
+      if ((init?.method ?? 'GET') === 'GET') return probeResponse();
+      return okJson({ successful: { '0': { key: 'K1', version: 1 } }, failed: {}, unchanged: {} });
+    });
+    await makeClient(fetchImpl, { keyStorePath }).writeItems([{ itemType: 'book', title: 'T' }]);
+    expect(statSync(keyStorePath).mode & 0o777).toBe(0o600);
+
+    // An install from before the rule: the file exists with the old default mode.
+    chmodSync(keyStorePath, 0o644);
+    await makeClient(fetchImpl, { keyStorePath }).writeItems([{ itemType: 'book', title: 'T' }]);
+    expect(statSync(keyStorePath).mode & 0o777).toBe(0o600);
+  });
+
+  it('removes a stored key Zotero rejects (401) when the new grant is denied', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zoteus-grant-'));
+    const keyStorePath = join(dir, 'local-api-key.json');
+    writeFile(keyStorePath, JSON.stringify({ key: 'revoked-key', appName: 'Zoteus MCP', grantedAt: 'then' }));
+    const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+      if (url.endsWith('/local/authorize')) return new Response('{"denied":true}', { status: 403 });
+      if ((init?.method ?? 'GET') === 'GET') return probeResponse();
+      return new Response('invalid key', { status: 401 });
+    });
+    await expect(makeClient(fetchImpl, { keyStorePath }).writeItems([{ itemType: 'book', title: 'T' }])).rejects.toThrow(/denied/);
+    expect(existsSync(keyStorePath)).toBe(false);
   });
 
   it('re-authorizes once on 401 (single-use "Allow" grant consumed)', async () => {

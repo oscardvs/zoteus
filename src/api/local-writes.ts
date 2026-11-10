@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { chmodSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { RateLimitedFetcher, type FetchLike } from './http.js';
 import { ZoteroApiError } from './errors.js';
@@ -247,9 +247,32 @@ export class LocalWriteClient {
   private loadGrant(): StoredGrant | null {
     if (!this.keyStorePath) return null;
     try {
-      return JSON.parse(readFileSync(this.keyStorePath, 'utf8')) as StoredGrant;
+      const grant = JSON.parse(readFileSync(this.keyStorePath, 'utf8')) as StoredGrant;
+      // Files written before the 0600 rule were created with the default mode (0644).
+      this.restrictGrantFile();
+      return grant;
     } catch {
       return null;
+    }
+  }
+
+  /** The key file is a credential: readable and writable by its owner only. No-op on Windows. */
+  private restrictGrantFile(): void {
+    if (!this.keyStorePath) return;
+    try {
+      chmodSync(this.keyStorePath, 0o600);
+    } catch {
+      /* not ours to change, or a filesystem without modes */
+    }
+  }
+
+  /** Remove a grant Zotero no longer accepts, so a revoked key does not stay on disk. */
+  private dropGrant(): void {
+    if (!this.keyStorePath) return;
+    try {
+      rmSync(this.keyStorePath, { force: true });
+    } catch (e) {
+      this.logger?.warn(`Could not remove the rejected local API grant: ${e}`);
     }
   }
 
@@ -257,7 +280,9 @@ export class LocalWriteClient {
     if (!this.keyStorePath) return;
     try {
       mkdirSync(dirname(this.keyStorePath), { recursive: true });
-      writeFileSync(this.keyStorePath, JSON.stringify(grant, null, 2));
+      // `mode` only applies when the file is created, so an existing one is tightened after.
+      writeFileSync(this.keyStorePath, JSON.stringify(grant, null, 2), { mode: 0o600 });
+      this.restrictGrantFile();
     } catch (e) {
       this.logger?.warn(`Could not persist local API grant: ${e}`);
     }
@@ -324,6 +349,9 @@ export class LocalWriteClient {
     if (res.status === 401 && !retried) {
       this.logger?.info('Local API key rejected (401); requesting a fresh grant from Zotero…');
       this.key = undefined;
+      // Consumed or revoked: either way the stored copy is dead. Drop it before asking
+      // again, so a denied or unanswered prompt does not leave a rejected key behind.
+      this.dropGrant();
       await this.authorize();
       return this.request(method, path, init, true);
     }

@@ -4,6 +4,23 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **The local API key file is owner-only.** `local-api-key.json`, the cached Zotero 10
+  write grant, was created with the default mode (0644 on most systems), so other accounts
+  on the same machine could read it. It is now written 0600, and a file left by an earlier
+  version is tightened the next time it is read. Reported by Tom Pesché.
+- **A key Zotero rejects is removed from disk.** After "Clear Write Authorizations" in
+  Zotero the stored key answered 401 but the file stayed. It is now deleted before Zoteus
+  asks for a new grant, so a denied or unanswered prompt leaves nothing behind.
+
+### Documentation
+- **What "Always Allow" means.** The writing guide and the README now say that a remembered
+  local key can be used by any program running as you, and that the local API's `DELETE`
+  erases an item outright, outside `ZOTEUS_ALLOW_DELETE`. Approving each write in Zotero's
+  dialog ("Allow") stores nothing reusable.
+
 ## [1.23.1] - 2026-10-31
 
 ### Security
