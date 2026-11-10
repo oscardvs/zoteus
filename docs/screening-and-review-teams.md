@@ -5,7 +5,7 @@ Three tools support a team doing a systematic review in a shared Zotero group li
 | Tool | Writes? | What it does |
 | --- | --- | --- |
 | `zotero_review` | no (`readOnlyHint: true`) | The screening queue, the status of the screen, the PRISMA flow, and the duplicates inside the review collection |
-| `zotero_screen_items` | yes, tags only (`destructiveHint: false`) | Records include / exclude / maybe decisions as Zotero tags |
+| `zotero_screen_items` | yes, tags only (`destructiveHint: true`, because changing a decision replaces the earlier tag) | Records include / exclude / maybe decisions as Zotero tags |
 | `zotero_activity` | no | What was added, changed, highlighted and annotated in the last N days, and by whom |
 
 Every one takes `library_type: "group"` and `library_id` (from `zotero_groups`) like the

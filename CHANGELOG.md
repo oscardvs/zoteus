@@ -4,6 +4,15 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.25.1] - 2026-11-10
+
+### Fixed
+- **`zotero_screen_items` and `zotero_save_extraction` now declare `destructiveHint: true`.**
+  Both can overwrite something already saved: a changed screening decision replaces the tag
+  that recorded the earlier one, and an extraction can replace or remove a saved value. They
+  were released in 1.25.0 flagged as non-destructive, which understated that to clients that
+  decide from the hint whether to ask for confirmation. Their behaviour is unchanged.
+
 ## [1.25.0] - 2026-11-10
 
 ### Added

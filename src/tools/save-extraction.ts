@@ -230,9 +230,10 @@ const saveExtraction: ToolDefinition = {
       target: writeTarget,
     })
     .passthrough(),
-  // Not destructive: the only record this rewrites is its own extraction note, and every value
-  // it replaces or removes comes back in the result.
-  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  // Destructive in the sense client directories mean it: a saved value can be replaced, a field
+  // removed with null, and replace_all drops what is not sent. The result returns every value
+  // it replaced or removed, but being able to put something back does not make a write safe.
+  annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
   handler: async (args, ctx) => {
     const schema = String(args.schema).trim();
     if (!schema) return refusal('`schema` is empty. Name the extraction, e.g. "rct-review".');
