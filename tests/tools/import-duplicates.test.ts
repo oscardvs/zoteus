@@ -39,13 +39,60 @@ function makeCtx(library: any[] = [], overrides: any = {}): any {
 const args = (extra: Record<string, unknown> = {}) => ({ action: 'by_identifier', identifier: DOI, ...extra });
 
 describe('zotero_import duplicate check', () => {
-  it('does not scan the library unless it is asked to', async () => {
+  it('checks a save by default and refuses to make a second copy (behaviour change)', async () => {
+    // Users kept adding a DOI or PMID they already had: the check is now on for every save.
     const ctx = makeCtx([item('LIB1', { itemType: 'journalArticle', title: 'A Scholarly Work', DOI })]);
     const res: any = await importTool.handler(args({ save_to_library: true }), ctx);
+    expect(ctx.router.searchItems).toHaveBeenCalled();
+    expect(ctx.web.writeItems).not.toHaveBeenCalled();
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/already holds 1 matching item\(s\): LIB1/);
+    expect(res.content[0].text).toMatch(/allow_duplicate:true/);
+  });
+
+  it('saves a default-checked import that matches nothing, and reports the scan', async () => {
+    const ctx = makeCtx([item('LIB3', { itemType: 'book', title: 'Something else', DOI: '10.9/other' })]);
+    const res: any = await importTool.handler(args({ save_to_library: true }), ctx);
+    expect(res.isError).toBeFalsy();
+    expect(ctx.web.writeItems).toHaveBeenCalled();
+    expect(res.structuredContent.duplicates).toEqual([]);
+    expect(res.structuredContent.duplicateScan).toMatchObject({ scanned: 1, complete: true });
+  });
+
+  it('creates the copy anyway with allow_duplicate, still reporting the match', async () => {
+    const ctx = makeCtx([item('LIB1', { itemType: 'journalArticle', title: 'A Scholarly Work', DOI })]);
+    const res: any = await importTool.handler(args({ save_to_library: true, allow_duplicate: true }), ctx);
+    expect(res.isError).toBeFalsy();
+    expect(ctx.web.writeItems).toHaveBeenCalled();
+    expect(res.structuredContent.duplicates[0].item_key).toBe('LIB1');
+  });
+
+  it('skips the scan entirely with check_duplicates:false', async () => {
+    const ctx = makeCtx([item('LIB1', { itemType: 'journalArticle', title: 'A Scholarly Work', DOI })]);
+    const res: any = await importTool.handler(args({ save_to_library: true, check_duplicates: false }), ctx);
     expect(res.isError).toBeFalsy();
     expect(ctx.router.searchItems).not.toHaveBeenCalled();
     expect(ctx.web.writeItems).toHaveBeenCalled();
     expect(res.structuredContent.duplicates).toBeUndefined();
+  });
+
+  it('does not scan for a preview unless asked, since a preview writes nothing', async () => {
+    const ctx = makeCtx([item('LIB1', { itemType: 'journalArticle', title: 'A Scholarly Work', DOI })]);
+    const res: any = await importTool.handler(args(), ctx);
+    expect(res.isError).toBeFalsy();
+    expect(ctx.router.searchItems).not.toHaveBeenCalled();
+  });
+
+  it('lets a default-checked save through when the scan cannot run, and says so', async () => {
+    // Refusing here would make a library that cannot be scanned one nothing can be imported into.
+    const ctx = makeCtx([]);
+    ctx.router.searchItems = vi.fn(async () => {
+      throw new Error('Zotero rate limit');
+    });
+    const res: any = await importTool.handler(args({ save_to_library: true }), ctx);
+    expect(res.isError).toBeFalsy();
+    expect(ctx.web.writeItems).toHaveBeenCalled();
+    expect(res.content[0].text).toMatch(/The duplicate check failed: Zotero rate limit/);
   });
 
   it('reports the matching item, by DOI, without saving anything', async () => {

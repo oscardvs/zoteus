@@ -16,7 +16,7 @@ you ask for the write.
 
 // the same file, saved into a collection, checked against what you already hold
 { "action": "by_file", "path": "~/Downloads/zotero-export.bib",
-  "save_to_library": true, "collection_key": "ABCD1234", "check_duplicates": true }
+  "save_to_library": true, "collection_key": "ABCD1234" }
 
 // on a hosted server, where a filesystem path names the operator's disk, not yours
 { "action": "by_file", "text": "@article{…}" }
@@ -89,8 +89,10 @@ title in Extra.
   Nothing is written and no entries are returned. Split the file or raise the setting.
 - More than 2 MB of payload: refused before parsing.
 - `save_to_library` above `ZOTEUS_CONFIRM_BULK_WRITES` (off by default): needs `confirm: true`.
-- `check_duplicates: true` compares each entry against the library and refuses a save that
-  would add a second copy, unless `allow_duplicate: true`. See
+- Every save compares each entry against the library first and refuses a save that would add
+  a second copy, unless `allow_duplicate: true` (saves, still reports the match) or
+  `check_duplicates: false` (skips the scan). A preview is checked only with
+  `check_duplicates: true`. See
   [`duplicates-and-merging.md`](./duplicates-and-merging.md).
 - Every item produced by the built-in parsers is validated against the Zotero schema before
   the write. An entry the schema refuses is listed in `skipped` with the reason, and the rest

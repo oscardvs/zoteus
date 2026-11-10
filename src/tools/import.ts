@@ -269,10 +269,12 @@ const importTool: ToolDefinition = {
     'and the result then carries a `source` field ("scholar" or "arxiv"). ISBN/PMID/bibcode and web URLs require a translation-server ' +
     '(a hosted Zoteus has none unless its operator attached one); without one the call fails with an error that names what the ' +
     'identifier was recognised as and what works instead. ' +
-    'Set `check_duplicates:true` to compare what was resolved against your library first: matching items are reported under `duplicates` ' +
+    'A save checks your library for the same work first (on by default with `save_to_library`; set `check_duplicates:true` to check a ' +
+    'preview too): matching items are reported under `duplicates` ' +
     '(matched on normalised DOI, then ISBN, then normalised title plus year, all exact comparisons rather than similarity; a title match ' +
     'with no year on one side needs a title of at least four words or a creator surname both records share, and says so), and a save that ' +
-    'would add a second copy is refused unless you also pass `allow_duplicate:true`. The scan stops at 5000 top-level items; when it stopped ' +
+    'would add a second copy is refused unless you pass `allow_duplicate:true` (which saves and still reports the match) or ' +
+    '`check_duplicates:false` (which skips the scan). The scan reads up to 5000 top-level items, 100 per request; when it stopped ' +
     'early it saves and says so in the answer rather than refusing, so read `duplicateScan.complete` before treating "no match" as "no". ' +
     'To fold an existing pair of records together instead, ' +
     'call zotero_merge_items.',
@@ -332,12 +334,12 @@ const importTool: ToolDefinition = {
       .boolean()
       .optional()
       .describe(
-        'Scan the library first and report items that already hold this work, matched by normalised DOI, then ISBN, then normalised title plus year (a title match with no year on one side needs at least four title words or a shared creator surname, and carries a `caveat` saying so). Default false. With save_to_library, a match REFUSES the save unless allow_duplicate is also set. The scan crawls up to 5000 top-level items (one request per 100), which is why it is opt-in.',
+        'Scan the library first and report items that already hold this work, matched by normalised DOI, then ISBN, then normalised title plus year (a title match with no year on one side needs at least four title words or a shared creator surname, and carries a `caveat` saying so). Default: true when save_to_library is set, false for a preview. With save_to_library, a match REFUSES the save unless allow_duplicate is set. The scan reads up to 5000 top-level items (one request per 100). false skips it, and with it the protection against a second copy.',
       ),
     allow_duplicate: z
       .boolean()
       .optional()
-      .describe('Save even though check_duplicates found a match, or could not run at all. A scan that ran but stopped at its 5000-item cap does not refuse the save on its own: it saves and says how far it looked, so read `duplicateScan.complete`. Only read when check_duplicates is set.'),
+      .describe('Save even though the duplicate check found a match (the match is still reported), or could not run at all. A scan that ran but stopped at its 5000-item cap does not refuse the save on its own: it saves and says how far it looked, so read `duplicateScan.complete`. Ignored when check_duplicates is false.'),
     ...libraryArgs,
   },
   outputSchema: z
@@ -451,7 +453,7 @@ const importTool: ToolDefinition = {
             .passthrough(),
         )
         .optional()
-        .describe('Items already in the library that match what was resolved; present only when check_duplicates was set.'),
+        .describe('Items already in the library that match what was resolved; present whenever the duplicate check ran (every save by default, or check_duplicates:true).'),
       duplicateScan: z
         .object({
           scanned: z.number().describe('Top-level items compared.'),
@@ -569,11 +571,14 @@ interface DuplicatePreflight {
  * Scan the library for items that already hold what was just resolved.
  *
  * Four rules, and they are the whole feature:
- *  - it runs only when the caller asks for it, so no existing call changes behaviour;
+ *  - it runs on every save unless the caller passes `check_duplicates:false`, and on a
+ *    preview only when asked (`check_duplicates:true`), because the scan costs up to 50
+ *    requests and a preview writes nothing;
  *  - a match refuses a SAVE, never a resolution: reporting is always allowed;
- *  - a check that could not RUN refuses the save too, because "I did not find one" from a
- *    scan that never happened is not evidence of anything. `allow_duplicate` is the way past
- *    both;
+ *  - a check that could not RUN refuses the save too when the caller asked for it, because
+ *    "I did not find one" from a scan that never happened is not evidence of anything.
+ *    `allow_duplicate` is the way past both. The default check that could not run lets the
+ *    save through and says so, or a library that cannot be scanned could import nothing;
  *  - a check that ran but stopped at MAX_CENSUS_ITEMS does NOT refuse the save, because
  *    every library above the cap would then be unimportable without `allow_duplicate`, and
  *    that flag also switches off the refusal for the matches the scan DID find, i.e. it
@@ -582,14 +587,20 @@ interface DuplicatePreflight {
  *    truncated crawl is never read as a clean one. See {@link withExtraFields}.
  */
 async function duplicatePreflight(ctx: ToolContext, args: any, payload: any[]): Promise<DuplicatePreflight> {
-  if (!args.check_duplicates) return { report: {} };
+  // On by default for a save, since that is where a second copy is made; a preview pays for
+  // the scan only when asked. An explicit `false` is the way to skip it.
+  const explicit: boolean | undefined = args.check_duplicates;
+  if (!(explicit ?? Boolean(args.save_to_library))) return { report: {} };
   const lib = resolveLibrary(ctx, args);
   let index;
   try {
     index = await duplicateIndexFor(ctx, lib);
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);
-    if (!args.save_to_library || args.allow_duplicate) {
+    // A check the caller did not ask for must not turn a library that cannot be scanned
+    // into one nothing can be imported into: the save goes ahead and says the check failed.
+    // Asked for explicitly, the save stays conditional on it, as before.
+    if (!args.save_to_library || args.allow_duplicate || explicit === undefined) {
       return { report: { duplicateScan: { scanned: 0, complete: false, note: `The duplicate check failed: ${why}` } } };
     }
     return {
