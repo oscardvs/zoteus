@@ -39,6 +39,9 @@ import replaceNote from './replace-note.js';
 import annotationDigest from './annotation-digest.js';
 import saveAnnotationDigest from './save-annotation-digest.js';
 import checkCitations from './check-citations.js';
+import review from './review.js';
+import screenItems from './screen-items.js';
+import activity from './activity.js';
 
 export const tools: AnyToolDefinition[] = [
   // Read
@@ -92,4 +95,8 @@ export const tools: AnyToolDefinition[] = [
   saveAnnotationDigest,
   // Checking a draft's citations and quotations against the library
   checkCitations,
+  // Review teams: screening, PRISMA flow, collection duplicates, recent activity
+  review,
+  screenItems,
+  activity,
 ];

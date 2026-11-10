@@ -27,6 +27,21 @@ All notable changes to Zoteus are documented here. The format is based on
   found, or no full text. Paraphrased claims are explicitly not checked. Work is paged by
   citations and by full texts read per call. The `zotero-citation-audit` prompt now starts
   from it. See [`docs/checking-a-draft.md`](./docs/checking-a-draft.md).
+### Added
+- **A kit for review teams: `zotero_review` (read-only), `zotero_screen_items` and
+  `zotero_activity` (read-only).** Screening decisions are Zotero tags of the form
+  `screen/<stage>/<decision>[:<reason>][@<reviewer>]` (stages `title-abstract` and
+  `full-text`; decisions `include`, `exclude`, `maybe`), so they sync to the whole group and
+  stay readable without Zoteus. `zotero_screen_items` records a batch of decisions, replacing
+  only the screening tag for the same stage and reviewer and never touching other tags.
+  `zotero_review` returns a blind per-reviewer queue (title, abstract, year, authors), status
+  counts with exclusion reasons, disagreements and Cohen's kappa, the PRISMA 2020 flow numbers
+  with a text and a Mermaid diagram, and the duplicate groups inside the review collection
+  (exact DOI, ISBN or title plus year; nothing is merged). `zotero_activity` lists what was
+  added or modified in the last N days in a library or collection, with notes and annotations,
+  and, for group libraries read from the cloud, who did it; the desktop local API does not
+  report authorship, and Zotero's "Recently Read" is not exposed by either API. See
+  `docs/screening-and-review-teams.md`.
 
 ## [1.24.0] - 2026-11-10
 

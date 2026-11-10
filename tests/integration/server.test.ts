@@ -84,6 +84,7 @@ describe('Zoteus server (in-process)', () => {
     const names = listed.map((t) => t.name).sort();
     expect(names).toEqual([
       'search_tools',
+      'zotero_activity',
       'zotero_annotate',
       'zotero_annotation_digest',
       'zotero_append_to_note',
@@ -110,10 +111,12 @@ describe('Zoteus server (in-process)', () => {
       'zotero_merge_items',
       'zotero_pdf_images',
       'zotero_replace_note',
+      'zotero_review',
       'zotero_save_annotation_digest',
       'zotero_saved_searches',
       'zotero_schema',
       'zotero_scholar',
+      'zotero_screen_items',
       'zotero_search_items',
       'zotero_semantic_search',
       'zotero_styles',
