@@ -63,6 +63,10 @@ Two honest limits on the rendering:
 
 Nothing is written without you asking. If you want the table kept in the library, the assistant can save the rendered text as a Zotero note with `zotero_create_items`. That route uses the cloud Web API, so it needs a Zotero API key with write access (or OAuth on a hosted deployment); on a desktop-only install it fails rather than appearing to save. See [write tools](./writing.md).
 
+## Extracting the same fields from many papers
+
+An evidence table answers one question in prose. To record the same named fields for every paper (sample size, method, country, outcome) and keep them in the library, use `zotero_save_extraction`, which stores them as a child note per paper with each quote checked against the paper's text, and `zotero_extraction_table`, which gathers them back into one table with the gaps listed. See [structured extraction](./extraction.md).
+
 ## Before you use the table
 
 Open one or two sources at the page given and read around the quotation. A retrieved passage proves the words exist in that document. It does not prove the finding in the next column is a fair reading of them.

@@ -4,6 +4,27 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Structured extraction that persists: `zotero_save_extraction` and `zotero_extraction_table`.**
+  Named fields per paper (sample size, method, country, outcome) are saved as a child note
+  tagged `zoteus-extraction`: a readable table plus a JSON copy that round-trips. Saving again
+  for the same paper and schema updates that note in place, keeps fields not mentioned
+  (unless `replace_all`), removes a field on `null`, and returns every replaced or removed
+  value. A supplied source quote is checked against the paper's text (Zotero's index, else
+  the PDF or EPUB) and stored as `verified`, `not-found` or `unchecked`. The read-only table
+  tool gathers a collection, given items or the whole library into one table, lists missing
+  papers and missing fields, and returns it as structured rows, Markdown and CSV
+  ([docs/extraction.md](./docs/extraction.md)).
+- **Related links from citations: `zotero_suggest_related` and `zotero_relate_items`.** The
+  read-only suggester pairs library items where one cites the other, from OpenAlex reference
+  lists matched by DOI (50 DOIs per request), and leaves out pairs already linked. The write
+  tool adds `dc:relation` on both items with the `http://zotero.org/users|groups/<id>/items/<KEY>`
+  URI Zotero uses, keeps every existing relation, re-applies after a version conflict, and
+  refuses a never-synced personal library rather than write a dangling link
+  ([docs/related-items.md](./docs/related-items.md)).
+
 ## [1.24.0] - 2026-11-10
 
 ### Added
