@@ -4,7 +4,31 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.24.0] - 2026-11-10
+
+### Added
+- **Notes from Markdown: `zotero_create_note`, `zotero_append_to_note`, `zotero_replace_note`.**
+  One tool per operation, so each carries the right hint: creating and appending are
+  additive, replacing is `destructiveHint: true` and returns the old HTML as `previousNote`.
+  Markdown (headings, nested lists, bold, italic, strikethrough, code and code blocks, links,
+  blockquotes, tables, horizontal rules, inline and display math) becomes the HTML Zotero's
+  note editor stores, with no new dependency; raw HTML is escaped and links are held to
+  http(s), mailto, ftp and zotero:. `[@ITEMKEY, p. 12]` becomes the citation span Zotero's
+  note editor writes, with the item's CSL-JSON stored on the note, so it opens the paper in
+  Zotero and becomes a live field when the note is added to Word; a cited key that names
+  nothing, or names an attachment, refuses the write. Appending keeps the note's own content
+  and citations and re-applies itself to a fresh copy after a version conflict. Writes go to
+  the desktop app first, like `zotero_create_items`. See `docs/notes.md`.
+- **Annotation digests: `zotero_annotation_digest` (read-only) and
+  `zotero_save_annotation_digest`.** The digest lists the annotations on one paper or on the
+  top-level items of a collection (paged), grouped per paper: type, colour and its palette
+  name, page label, the highlighted text verbatim, the comment and tags, in reading order,
+  filterable by type, colour and tag. The save tool writes the same digest as a note laid out
+  like Zotero's own "Add Note from Annotations": each highlight keeps the link that opens the
+  PDF at that spot, each carries a citation with its page, and the text comes from the
+  annotations themselves rather than through the model. A paper's digest is attached to the
+  paper, a collection's is filed in the collection (up to 200 items, and the note says when it
+  stopped).
 
 ### Security
 - **The local API key file is owner-only.** `local-api-key.json`, the cached Zotero 10
@@ -34,30 +58,6 @@ All notable changes to Zoteus are documented here. The format is based on
   Zoteus, which runs pdf.js in Node with `isEvalSupported: false`). The critical
   `proxy-addr` advisory needs an IPv4-mapped IPv6 trust subnet; Zoteus trusts one proxy hop
   by count, so it was not exposed.
-
-### Added
-- **Notes from Markdown: `zotero_create_note`, `zotero_append_to_note`, `zotero_replace_note`.**
-  One tool per operation, so each carries the right hint: creating and appending are
-  additive, replacing is `destructiveHint: true` and returns the old HTML as `previousNote`.
-  Markdown (headings, nested lists, bold, italic, strikethrough, code and code blocks, links,
-  blockquotes, tables, horizontal rules, inline and display math) becomes the HTML Zotero's
-  note editor stores, with no new dependency; raw HTML is escaped and links are held to
-  http(s), mailto, ftp and zotero:. `[@ITEMKEY, p. 12]` becomes the citation span Zotero's
-  note editor writes, with the item's CSL-JSON stored on the note, so it opens the paper in
-  Zotero and becomes a live field when the note is added to Word; a cited key that names
-  nothing, or names an attachment, refuses the write. Appending keeps the note's own content
-  and citations and re-applies itself to a fresh copy after a version conflict. Writes go to
-  the desktop app first, like `zotero_create_items`. See `docs/notes.md`.
-- **Annotation digests: `zotero_annotation_digest` (read-only) and
-  `zotero_save_annotation_digest`.** The digest lists the annotations on one paper or on the
-  top-level items of a collection (paged), grouped per paper: type, colour and its palette
-  name, page label, the highlighted text verbatim, the comment and tags, in reading order,
-  filterable by type, colour and tag. The save tool writes the same digest as a note laid out
-  like Zotero's own "Add Note from Annotations": each highlight keeps the link that opens the
-  PDF at that spot, each carries a citation with its page, and the text comes from the
-  annotations themselves rather than through the model. A paper's digest is attached to the
-  paper, a collection's is filed in the collection (up to 200 items, and the note says when it
-  stopped).
 
 ### Fixed
 - **The HTTP server closes idle MCP sessions, so its memory no longer grows until it
