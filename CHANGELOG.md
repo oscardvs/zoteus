@@ -4,6 +4,23 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`zotero_check_citations`: check a draft's citations and quotations against the library.**
+  Read-only and deterministic. Finds pandoc `[@key, p. 12; @other]`, `[@ITEMKEY]`, LaTeX
+  `\cite`/`\citep`/`\citet`/`\parencite`/`\textcite`/`\autocite`, author-year
+  (`(Smith, 2020)`, `(Smith & Jones, 2020, p. 4)`, `Smith et al. (2020)`), numeric `[3]`
+  through the reference list, and bare DOIs. Each cited work is resolved by item key,
+  Zotero's Citation Key field (then Better BibTeX on the desktop), DOI, or author and year
+  (plus title words from the reference list), and reported as matched, ambiguous or not in
+  the library. Each direct quotation next to a citation is searched for in the cited item's
+  full text, ignoring case, whitespace, line-break hyphenation, ligatures and quote and dash
+  styles: found (with the page), close match (with similarity and the source's wording), not
+  found, or no full text. Paraphrased claims are explicitly not checked. Work is paged by
+  citations and by full texts read per call. The `zotero-citation-audit` prompt now starts
+  from it. See [`docs/checking-a-draft.md`](./docs/checking-a-draft.md).
+
 ## [1.24.0] - 2026-11-10
 
 ### Added
