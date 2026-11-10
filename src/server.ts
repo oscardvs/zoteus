@@ -32,7 +32,7 @@ import {
 } from './registry/registry.js';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
-import { tools } from './tools/index.js';
+import { searchFetchTools, tools } from './tools/index.js';
 import { UpdateChecker } from './lib/update-check.js';
 import { VERSION as SERVER_VERSION } from './lib/version.js';
 
@@ -90,10 +90,12 @@ export interface Telemetry {
  * Tools exposed for this config: read-only mode hides mutating tools (plus zotero_index,
  * which only touches local index files). Mirrors the M10 selection.
  */
-function selectActiveTools(config: ZoteusConfig): AnyToolDefinition[] {
-  return config.readOnly
+export function selectActiveTools(config: ZoteusConfig): AnyToolDefinition[] {
+  const base = config.readOnly
     ? tools.filter((t) => t.annotations?.readOnlyHint === true || t.name === 'zotero_index')
     : tools;
+  // Both are read-only, so read-only mode keeps them too.
+  return config.searchFetchTools === true ? [...base, ...searchFetchTools] : base;
 }
 
 /**

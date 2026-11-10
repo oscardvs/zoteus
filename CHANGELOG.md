@@ -42,6 +42,26 @@ All notable changes to Zoteus are documented here. The format is based on
   and, for group libraries read from the cloud, who did it; the desktop local API does not
   report authorship, and Zotero's "Recently Read" is not exposed by either API. See
   `docs/screening-and-review-teams.md`.
+### Changed
+- **Behaviour change: `zotero_import` now checks for duplicates on every save.** Adding by
+  DOI, PMID, ISBN, URL, file or PDF with `save_to_library:true` compares what was resolved
+  against the library first (DOI, then ISBN, then title plus year) and refuses to create a
+  second copy, naming the item that already holds it. Before, the check ran only with
+  `check_duplicates:true`. Pass `allow_duplicate:true` to save anyway (the match is still
+  reported) or `check_duplicates:false` to skip the scan, which costs one request per 100
+  top-level items, up to 50. A preview is still scanned only when asked. When the default
+  check cannot run, the save goes ahead and says the check failed; an explicit
+  `check_duplicates:true` still refuses in that case.
+
+### Added
+- **`search` and `fetch` for ChatGPT deep research and company knowledge.** The two
+  read-only tools OpenAI's MCP guide specifies (https://developers.openai.com/api/docs/mcp):
+  `search({query})` returns `{results: [{id, title, url}]}` from the semantic index when one
+  is built, otherwise from keyword search; `fetch({id})` returns `{id, title, text, url,
+  metadata}`, the item's metadata followed by up to 100,000 characters of its full text.
+  Both return the object as `structuredContent` and as one JSON text item. `url` is the
+  item's zotero.org web library page, so ChatGPT can cite it. Exposed over HTTP by default
+  and not on stdio; `ZOTEUS_SEARCH_FETCH_TOOLS` overrides either way.
 
 ## [1.24.0] - 2026-11-10
 

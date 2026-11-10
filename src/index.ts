@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { loadConfig } from './config.js';
+import { loadConfig, withTransportDefaults } from './config.js';
 import {
   buildContext,
   buildServer,
@@ -52,7 +52,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const config = loadConfig(process.env);
+  const config = withTransportDefaults(loadConfig(process.env), flag('http') !== undefined ? 'http' : 'stdio');
   const logger = createLogger(config.logLevel, config.logFormat, { file: config.logFile });
   // Held by loadConfig rather than printed there: it runs before this logger exists, and a
   // setting it could not use must not be the reason the server never starts (#18).

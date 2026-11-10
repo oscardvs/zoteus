@@ -1,7 +1,7 @@
 # Duplicates: finding them, and merging them
 
-Two tools share one idea of what a duplicate is: `zotero_import` with `check_duplicates:true`
-(before a record is saved) and `zotero_merge_items` (after two records already exist).
+Two tools share one idea of what a duplicate is: `zotero_import` (before a record is saved,
+on by default for every save) and `zotero_merge_items` (after two records already exist).
 
 ## What "duplicate" means here
 
@@ -28,11 +28,27 @@ neither Zotero API can filter on a field: the comparison happens client-side, ag
 census of the library, so it can only be as good as the strings themselves. A match that is
 reported is a real match; "no match" means "nothing matched these three rules".
 
-The census walks up to 5000 top-level items (one request per 100), which is why every caller
-opts in. When it stops early, the answer says so: `duplicateScan.complete:false` plus a note
+The census walks up to 5000 top-level items (one request per 100), so a save into a library of
+2,000 items costs 20 extra requests before the write. When it stops early, the answer says so: `duplicateScan.complete:false` plus a note
 naming how much was covered. Treat a `false` there as "unknown", not as "no".
 
 ## Checking before you import
+
+Every save is checked by default (in 1.24.0 and earlier the check was opt-in):
+
+```json
+{"action":"by_identifier","identifier":"10.1038/nature14539","save_to_library":true}
+```
+
+When the library already holds the work, the save is **refused** and the answer names the
+matching keys. Nothing is created. To go past it:
+
+| You want | Pass |
+| --- | --- |
+| A deliberate second copy (e.g. in another collection), with the match still reported | `allow_duplicate:true` |
+| No scan at all (a very large library, or a bulk import you have already checked) | `check_duplicates:false` |
+
+A preview (no `save_to_library`) writes nothing, so it is not scanned unless you ask:
 
 ```json
 {"action":"by_identifier","identifier":"10.1038/nature14539","check_duplicates":true}
@@ -40,12 +56,11 @@ naming how much was covered. Treat a `false` there as "unknown", not as "no".
 
 reports `duplicates: [{item_key, title, matchedOn, value, candidate}]` and saves nothing.
 
-With `save_to_library:true` as well, a match **refuses the save** and names the matching
-keys. Pass `allow_duplicate:true` to save anyway (for a deliberate second copy, e.g. in
-another collection). A duplicate check that could not run at all also refuses the save,
-because a condition that was never evaluated is not a condition that was met.
-
-Nothing changes for a call that does not pass `check_duplicates`.
+When the scan cannot run at all (Zotero unreachable, rate-limited), it depends on who asked
+for it. The default check lets the save go ahead and says in the answer that the check
+failed, because otherwise a library that cannot be scanned could import nothing. An explicit
+`check_duplicates:true` refuses the save, because a condition that was never evaluated is
+not a condition that was met; `allow_duplicate:true` overrides that too.
 
 ## Merging two records
 

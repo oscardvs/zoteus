@@ -101,6 +101,7 @@ Zoteus detects a running Zotero desktop app and talks to it directly: the key-fr
 | `ZOTEUS_TRANSFORMERS_PATH` | none | Where to find `@huggingface/transformers` for `local` embeddings when the install can't see it (desktop extension) |
 | `ZOTEUS_LOG_FILE` | none | Append every log line to this file, for a server that runs without a terminal |
 | `ZOTEUS_ALLOW_DELETE` | `false` | Must be `true` or `zotero_delete_items` refuses every call; the tool stays listed unless `ZOTEUS_READ_ONLY=true` |
+| `ZOTEUS_SEARCH_FETCH_TOOLS` | `true` over HTTP, `false` on stdio | Adds the generic read-only `search` and `fetch` tools ChatGPT's deep research and company knowledge call |
 
 Full table in [`docs/configuration.md`](./docs/configuration.md). To run a shared or remote instance, see [`docs/remote-oauth.md`](./docs/remote-oauth.md) (self-host the OAuth remote on loopback or behind your own proxy).
 
