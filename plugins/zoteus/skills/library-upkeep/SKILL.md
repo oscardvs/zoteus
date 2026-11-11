@@ -7,15 +7,9 @@ description: Add papers to the user's Zotero library and keep it tidy. Import by
 
 These steps use the Zoteus tools, named `zotero_*`. They change the user's library, so **show what will change and get a yes before every write**, and ask again before any change that touches many items.
 
-## What needs a Zotero API key
+## Where writes go
 
-With the Zotero desktop app running, these writes to the personal library need no key: adding items by identifier, attachments, annotations, and trash and restore. The following go to the Zotero cloud and need an API key with write access, set in this plugin's settings:
-
-- metadata edits, tags, collections and saved searches
-- every write to a group library
-- any write while the desktop app is closed
-
-When a write is refused for lack of a key, say that plainly rather than retrying.
+Through the hosted connector, every write goes to the Zotero cloud with the access the user granted when they signed in, and reaches the desktop app on its next sync. If the user granted read-only access, every write fails. When a write is refused for lack of write access, say that plainly rather than retrying, and tell the user to reconnect Zoteus and grant write access.
 
 ## Add papers
 

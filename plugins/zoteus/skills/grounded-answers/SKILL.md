@@ -5,7 +5,7 @@ description: Answer questions from the user's Zotero library with verbatim quota
 
 # Answer from the Zotero library, with the passage to show for it
 
-These steps use the Zoteus tools, named `zotero_*`. If none are available, tell the user the Zoteus server is not running. In Claude Code, and in Cowork on their computer, this plugin starts it, which needs Node.js 20.19 or later and either the Zotero desktop app running or a Zotero API key in the plugin's settings. In claude.ai chat, a local server cannot run, so they need a remote Zoteus connector instead.
+These steps use the Zoteus tools, named `zotero_*`. If none are available, tell the user the Zoteus connector is not connected: they need to sign in to it (it opens a Zoteus sign-in that links their Zotero account), or connect a self-hosted Zoteus server instead.
 
 ## Steps
 

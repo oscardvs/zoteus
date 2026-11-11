@@ -4,7 +4,7 @@ Zoteus puts your [Zotero](https://www.zotero.org) library inside Claude. You can
 
 The plugin has two parts:
 
-- **The Zoteus MCP server**, which gives Claude its `zotero_*` tools. The server is open source under the MIT license, and its code is in the [repository](https://github.com/oscardvs/zoteus) this folder belongs to.
+- **The hosted Zoteus connector** at `https://mcp.zoteus.com/mcp`, which gives Claude its `zotero_*` tools. It is a paid service run by the author, with a 14-day free trial. The server code is open source under the MIT license, in the [repository](https://github.com/oscardvs/zoteus) this folder belongs to, and you can [run it yourself](https://github.com/oscardvs/zoteus/blob/main/docs/remote-oauth.md) instead.
 - **Four skills** that tell Claude how to use those tools well:
 
 | Skill | What it does |
@@ -16,15 +16,14 @@ The plugin has two parts:
 
 ## Before you start
 
-1. Install and run the [Zotero desktop app](https://www.zotero.org/download). In **Settings → Advanced**, turn on **Allow other applications on this computer to communicate with Zotero**.
-2. Have [Node.js](https://nodejs.org) 20.19 or later installed. The server is started with `npx`.
-3. Optional: enter a Zotero API key from [zotero.org/settings/keys](https://www.zotero.org/settings/keys). In Claude Code, run `/plugin`, open Zoteus and choose **Configure options**. Without one, Zoteus reads your library through the desktop app. It can also add items, attachments and annotations there, and trash or restore them. A key adds sync, group libraries, metadata edits, tags and collections, and access while the app is closed. Claude Code stores the key in your system's secure credential store.
+1. Have a [Zotero](https://www.zotero.org) account with your library synced to it. Zoteus reads and writes the cloud copy of your library, and changes reach the desktop app on its next sync.
+2. Install the plugin, then connect Zoteus when Claude asks. Sign-in opens zoteus.com, where you start a subscription or the free trial ([pricing](https://zoteus.com/pricing)) and link your Zotero account. You choose read-only or read and write access there.
+
+Nothing is installed or run on your computer.
 
 ## Where it works
 
-- **Claude Code**, and **Cowork** sessions that run on your computer: the plugin starts the server for you. Cowork does not ask for plugin settings, so there it works through the desktop app, with no key.
-- **Claude Desktop**, with this repository added as a marketplace: the server runs inside each session, as its connector list says. Claude Desktop shows no settings for a plugin's server, so there is nowhere to enter a key or change a setting, and no list of per-tool permissions. For a settings screen and per-tool permissions, install the `.mcpb` extension from the [latest release](https://github.com/oscardvs/zoteus/releases/latest) instead.
-- **claude.ai chat**: the skills load, but a chat cannot start a program on your computer. For the tools, add a remote Zoteus connector: the [hosted one](https://zoteus.com/pricing) or [one you run yourself](https://github.com/oscardvs/zoteus/blob/main/docs/remote-oauth.md).
+The connector and the skills work in Claude Code, Claude Desktop, Cowork and claude.ai chat, wherever remote connectors are available.
 
 ## Try it
 
@@ -35,24 +34,19 @@ The plugin has two parts:
 
 ## What it runs, sends and stores
 
-When the plugin starts, it runs `npx -y @oscardvs/zoteus@1.23.1`. On first use, that downloads this exact published version of the package from the npm registry. The package is built from this repository and published with npm provenance.
+The plugin runs nothing on your computer. It adds one remote MCP server, `https://mcp.zoteus.com/mcp`, which you sign in to with OAuth.
 
-The server contacts only what a request needs:
+The hosted server contacts only what a request needs:
 
-- **The Zotero desktop app**, on your own machine at `127.0.0.1`.
-- **The Zotero Web API** (`api.zotero.org`), with your API key, for cloud reads and writes.
-- **Scholarly services**, only when you look up references, citing works, open-access copies or retraction notices: OpenAlex by default, and Crossref or Semantic Scholar where configured. Only identifiers and search terms are sent.
+- **The Zotero Web API** (`api.zotero.org`), with the access you granted, for reads and writes.
+- **Scholarly services**, only when you look up references, citing works, open-access copies or retraction notices: OpenAlex, Crossref or Semantic Scholar. Only identifiers and search terms are sent.
 - **Identifier resolvers**, such as doi.org and arXiv, when you import by identifier or URL.
 - **Publisher or repository hosts**, when you ask it to download an open-access PDF.
-- **Optional extras, only if you set them up**:
-  - an embedding provider you choose (OpenAI, Gemini, or a local Ollama);
-  - Hugging Face, for on-device model weights, if you install the on-device embedding runtime;
-  - OCR language data, if you install OCR;
-  - GitHub, for a once-a-day update check, which is off by default.
+- **Polar** (polar.sh), the payment provider, for your subscription.
 
 Tool results, including passages from your PDFs, go to Claude. There, they are handled under Anthropic's terms.
 
-Zoteus sends no analytics. It keeps a search index, caches and any files you ask it to write, such as Word documents and page images, in its data directory on your machine. Deleting that directory removes all of it. The full policy is in [PRIVACY.md](https://github.com/oscardvs/zoteus/blob/main/PRIVACY.md). Advanced settings, such as semantic-search embeddings and read-only mode, are described in the [configuration reference](https://github.com/oscardvs/zoteus/blob/main/docs/configuration.md).
+The hosted server stores your account, the Zotero access token you granted and, if you use semantic search, a search index of your library. The search index is deleted within 30 days of cancelling. Zoteus sends no analytics from the tools. The full policy is at [zoteus.com/privacy](https://zoteus.com/privacy).
 
 ## Support
 
