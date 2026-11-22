@@ -145,7 +145,7 @@ const whoami: ToolDefinition = {
             .describe(
               'Library items the index represents. While state is "building" it is how far the running job has got, not the size of the library: `progress` says how far it has to go.',
             ),
-          state: z.string().optional().describe('Lifecycle of the background index job: "idle", "building", "done" or "error".'),
+          state: z.string().optional().describe('Lifecycle of the background index job: "idle", "building", "stopping", "done" or "error".'),
           progress: z
             .string()
             .optional()
@@ -203,7 +203,7 @@ const whoami: ToolDefinition = {
     // size of the index: the 2026-10-01 stress test compared 280 to 295 items here against
     // 350 in the library while a job was still filling it in. The progress line beside it
     // is the one zotero_index reports, so the two can never disagree.
-    const building = index?.state === 'building';
+    const building = index?.state === 'building' || index?.state === 'stopping';
     const searchIndex = index
       ? {
           ...(indexLibrary ? { library: indexLibrary, libraryLabel: describeLibraryToken(indexLibrary) } : {}),

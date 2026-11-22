@@ -79,7 +79,11 @@ export const collectionRow = z
 
 /** Live index/build status, as `zotero_index` and the index-empty paths report it. */
 export const indexStatus = {
-  state: z.string().optional().describe('Lifecycle of the background job: "idle", "building", "done" or "error".'),
+  state: z.string().optional().describe('Lifecycle of the background job: "idle", "building", "stopping", "done" or "error".'),
+  job: z
+    .number()
+    .optional()
+    .describe('Generation of the current or last job; pass it to action:"stop" so the stop cancels only that job.'),
   operation: z.string().optional().describe('Which job the counters describe: "build" or "update".'),
   phase: z.string().optional().describe('Which pass of a build is running: "metadata" or "fulltext".'),
   paused: z.boolean().optional().describe('Whether index work is held until action:"resume".'),

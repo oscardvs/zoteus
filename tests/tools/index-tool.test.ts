@@ -86,7 +86,7 @@ async function pollStatus(ctx: any, attempts = 200): Promise<any> {
   let status: any;
   for (let i = 0; i < attempts; i++) {
     status = await indexTool.handler({ action: 'status' }, ctx);
-    if (status.structuredContent?.state !== 'building') return status;
+    if (status.structuredContent?.state !== 'building' && status.structuredContent?.state !== 'stopping') return status;
     await new Promise((r) => setTimeout(r, 2));
   }
   return status;
@@ -128,6 +128,33 @@ describe('zotero_index async build', () => {
     gate.open();
     await pollStatus(ctx);
     expect(search.buildStatus().state).toBe('done');
+  });
+
+  it('refuses a new job loudly while a stopped one drains, and binds stop to its job (#120)', async () => {
+    const library = makeLibrary(250);
+    const gate = gatedEmbedder();
+    const search = new MemorySearchIndex({ embedder: gate.provider, logger: silentLogger });
+    const ctx = makeCtx(search, library);
+    const started = await indexTool.handler({ action: 'build' }, ctx);
+    const job = started.structuredContent?.job as number;
+    expect(job).toBeGreaterThan(0);
+    for (let i = 0; i < 200 && gate.pending() === 0; i++) await new Promise((r) => setTimeout(r, 2));
+
+    // A stop naming some other job leaves this one alone.
+    const wrong = await indexTool.handler({ action: 'stop', job: job + 1 }, ctx);
+    expect(wrong.content[0].text).toMatch(/not the running job/);
+    expect(search.buildStatus().state).toBe('building');
+
+    await indexTool.handler({ action: 'stop', job }, ctx);
+    const status = await indexTool.handler({ action: 'status' }, ctx);
+    expect(status.structuredContent?.state).toBe('stopping');
+    const refused = await indexTool.handler({ action: 'update' }, ctx);
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toMatch(/still stopping/);
+
+    gate.open();
+    const final = await pollStatus(ctx);
+    expect(final.structuredContent?.state).toBe('done');
   });
 
   it('stop cancels the running build and keeps partial data', async () => {
