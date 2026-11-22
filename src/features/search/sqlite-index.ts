@@ -385,6 +385,8 @@ interface Statements {
   setVector: StatementSync;
   selectPassage: StatementSync;
   unembedded: StatementSync;
+  unembeddedNoFulltext: StatementSync;
+  countUnembeddedNoFulltext: StatementSync;
   keyword: StatementSync;
   vectors: StatementSync;
   vectorWidth: StatementSync;
@@ -1173,6 +1175,14 @@ export class SqliteSearchIndex extends SearchIndexBase {
       unembedded: db.prepare(
         'SELECT id, item_key, title, text, source FROM passages WHERE vector IS NULL ORDER BY pid LIMIT ?',
       ),
+      // The same, minus body text, for a server that keeps it out of the embedder
+      // (ZOTEUS_EMBED_FULLTEXT=false). `IS NOT` because metadata passages store no source.
+      unembeddedNoFulltext: db.prepare(
+        "SELECT id, item_key, title, text, source FROM passages WHERE vector IS NULL AND source IS NOT 'fulltext' ORDER BY pid LIMIT ?",
+      ),
+      countUnembeddedNoFulltext: db.prepare(
+        "SELECT COUNT(*) AS n FROM passages WHERE vector IS NULL AND source IS NOT 'fulltext'",
+      ),
       // Deliberately never selects `vector`: a keyword query must not pull vectors into JS.
       keyword: db.prepare(`
         SELECT p.id AS id, bm25(passages_fts) AS rank
@@ -1680,13 +1690,26 @@ export class SqliteSearchIndex extends SearchIndexBase {
     this.invalidateCodes();
   }
 
-  protected passagesMissingVectors(limit: number): ChunkRecord[] {
+  protected passagesMissingVectors(limit: number, includeFulltext: boolean): ChunkRecord[] {
+    const stmt = includeFulltext ? this.stmts.unembedded : this.stmts.unembeddedNoFulltext;
     try {
-      return (this.stmts.unembedded.all(limit) as unknown as PassageRow[]).map((row) => {
+      return (stmt.all(limit) as unknown as PassageRow[]).map((row) => {
         const rec: ChunkRecord = { id: row.id, itemKey: row.item_key, title: row.title, text: row.text };
         if (row.source === 'fulltext' || row.source === 'note' || row.source === 'annotation') rec.source = row.source;
         return rec;
       });
+    } catch (e) {
+      if (isCorruptionError(e)) throw this.noteCorruption(e);
+      throw e;
+    }
+  }
+
+  protected countMissingVectors(includeFulltext: boolean): number {
+    // Read off the running counters when they answer the question, so the common case (body
+    // text embedded like everything else) costs nothing.
+    if (includeFulltext) return this.c.documents - this.c.vectors;
+    try {
+      return Number((this.stmts.countUnembeddedNoFulltext.get() as { n: number }).n);
     } catch (e) {
       if (isCorruptionError(e)) throw this.noteCorruption(e);
       throw e;

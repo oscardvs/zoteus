@@ -107,6 +107,9 @@ export class CorruptSearchIndex extends SearchIndexBase {
   protected passagesMissingVectors(): [] {
     return [];
   }
+  protected countMissingVectors(): number {
+    return 0;
+  }
   protected putItem(): void {
     throw this.failure;
   }

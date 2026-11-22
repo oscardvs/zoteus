@@ -459,6 +459,12 @@ export interface IndexBuildStatus extends SearchIndexStatus {
    */
   passagesWithoutVectors?: number;
   /**
+   * Passages this job embedded because an earlier one had stored them without a vector: an
+   * interrupted or rate-limited build, a spent daily allowance, or body text indexed while
+   * ZOTEUS_EMBED_FULLTEXT was false. Absent when there were none.
+   */
+  vectorsBackfilled?: number;
+  /**
    * Progress through an update's full-text catch-up, the pass that re-reads the body text
    * Zotero has extracted since the stored cursor (#106). `catchupCensus` says the pass is
    * still resolving which items Zotero named (one attachment-map crawl, minutes on a

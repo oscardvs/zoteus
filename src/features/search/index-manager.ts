@@ -16,6 +16,7 @@ import { Semaphore } from '../../lib/semaphore.js';
 import { embedRateLine, progressLine } from './build.js';
 import { describeLibraryToken } from './backend.js';
 import { saveIndex } from './persistence.js';
+import { EmbedBudgetExceededError } from './embed-budget.js';
 import type {
   BuildCheckpoint,
   BuildOptions,
@@ -433,6 +434,15 @@ export abstract class SearchIndexBase implements SearchIndex {
   protected deferEmbedding = false;
   /** Passage ids an update set aside for embedding; ids only, so a large delta stays small. */
   private deferredIds: string[] = [];
+  /**
+   * Passages the running (or last) job embedded because an earlier one had stored them
+   * without a vector: a build interrupted mid-embedding, an embedder that failed, a daily
+   * allowance that ran out, or body text kept out of the embedder by
+   * ZOTEUS_EMBED_FULLTEXT=false until the operator turned it on.
+   */
+  private vectorsBackfilled = 0;
+  /** Set when this job's embedding stopped on the per-caller daily allowance. */
+  private embedBudgetHit = false;
   protected itemsTotal = 0;
   protected itemsAvailable = 0;
   /** Which pass of a build is running; see IndexBuildStatus.phase (#23). */
@@ -597,7 +607,13 @@ export abstract class SearchIndexBase implements SearchIndex {
    * set an embedder that DIED mid-build left behind, which until #48 nothing ever came back
    * for, because the failed build cleared its own checkpoint and the next one started over.
    */
-  protected abstract passagesMissingVectors(limit: number): ChunkRecord[];
+  protected abstract passagesMissingVectors(limit: number, includeFulltext: boolean): ChunkRecord[];
+  /**
+   * How many stored passages carry no vector, counting body-text passages only when
+   * `includeFulltext` is true. The two arguments of `passagesMissingVectors` and this one
+   * have to agree, or a backfill would chase a shortfall it is not allowed to fill.
+   */
+  protected abstract countMissingVectors(includeFulltext: boolean): number;
   /** Discard every stored vector, keeping the passages. */
   protected abstract clearVectors(): void;
   /**
@@ -888,6 +904,7 @@ export abstract class SearchIndexBase implements SearchIndex {
 
   /** Record the first provider failure so status, not just the log, can report it. */
   private noteEmbedFailure(e: unknown): void {
+    if (e instanceof EmbedBudgetExceededError) this.embedBudgetHit = true;
     if (this.embedderError) return;
     this.embedderError = e instanceof Error ? e.message : String(e);
     this.opts.logger?.warn(`Embedding failed; falling back to keyword-only. ${this.embedderError}`);
@@ -978,9 +995,12 @@ export abstract class SearchIndexBase implements SearchIndex {
     // Withheld too when the vectors were dropped as another model's, since that has its own
     // notice naming its own remedy and two would be one too many.
     if (this.embedderId && !this.vectorsStale) {
-      const missing = base.documents - base.vectors;
+      // Counted against what this server is allowed to embed: body passages kept out of
+      // the embedder by ZOTEUS_EMBED_FULLTEXT=false are not a shortfall anything can fill.
+      const missing = this.embedsFulltext ? base.documents - base.vectors : this.countMissingVectors(false);
       if (missing > 0) s.passagesWithoutVectors = missing;
     }
+    if (this.vectorsBackfilled > 0) s.vectorsBackfilled = this.vectorsBackfilled;
     const rate = this.embedRate();
     if (rate) s.embedRate = rate;
     if (this.fault) {
@@ -1250,6 +1270,8 @@ export abstract class SearchIndexBase implements SearchIndex {
     this.operation = 'build';
     this.lastBuildError = undefined;
     this.embedderError = undefined;
+    this.vectorsBackfilled = 0;
+    this.embedBudgetHit = false;
     this.persistError = undefined;
     // A rebuild is the retry for full text too: clear the previous run's verdict so a
     // library that has since been extracted in Zotero stops reporting the old reason.
@@ -1481,35 +1503,13 @@ export abstract class SearchIndexBase implements SearchIndex {
      * is nothing more to be bought), or when a round fails to reduce the shortfall, which
      * is the guard against asking forever for rows nothing can fill.
      */
-    const backfillVectors = async (): Promise<number> => {
-      if (!this.hasEmbedder) return 0;
-      const shortfall = (): number => {
-        const c = this.counts();
-        return c.documents - c.vectors;
-      };
-      let remaining = shortfall();
-      let embedded = 0;
-      while (remaining > 0 && this.hasEmbedder && !token.cancelled) {
-        const batch = this.passagesMissingVectors(VECTOR_BACKFILL_GROUP);
-        if (!batch.length) break;
-        if (!embedded) {
-          this.opts.logger?.info(
-            `index build: embedding ${remaining} passage(s) an interrupted build committed without vectors.`,
-          );
-        }
-        for (const rec of batch) pending.push(rec);
-        await embedPending(true);
-        const left = shortfall();
-        if (left >= remaining) break;
-        embedded += remaining - left;
-        remaining = left;
-        itemsSinceLog += batch.length;
-        itemsSincePersist += batch.length;
+    const backfillVectors = (): Promise<number> =>
+      this.backfillMissingVectors(token, embedBatchSize, embedBatchDelayMs, async (n) => {
+        itemsSinceLog += n;
+        itemsSincePersist += n;
         maybeLog();
         await maybePersist();
-      }
-      return embedded;
-    };
+      });
 
     // From the first synchronous stretch to the last, so the number covers the whole job
     // and not only the phases that happened to yield around it (#106).
@@ -1715,7 +1715,12 @@ export abstract class SearchIndexBase implements SearchIndex {
       // and the full-text pass steps over them with `hasFulltext`, precisely because they
       // ARE indexed. Only this comes back for them, and only for the embedding: no page is
       // re-fetched, no PDF is re-read, no passage is re-chunked.
-      if (resume && !token.cancelled) backfilled = await backfillVectors();
+      //
+      // Not only after a resume any more: an index whose body passages were stored while
+      // ZOTEUS_EMBED_FULLTEXT was false, or whose embedder ran out of its daily allowance,
+      // holds the same kind of passage, and a build is as good a place as any to buy them.
+      // On a fresh build with a healthy embedder this finds nothing and costs one count.
+      if (!token.cancelled) backfilled = await backfillVectors();
 
       this.builtFromVersion = this.itemsFetched;
       // A cancelled crawl covers an unknown prefix of the library, so it gets no stamp: an
@@ -1793,6 +1798,10 @@ export abstract class SearchIndexBase implements SearchIndex {
       await persistNow();
       this.buildState = 'done';
       if (resume) noteResumed();
+      else if (backfilled || this.embedBudgetHit) {
+        const line = this.backfillSentence();
+        if (line) this.updateNotice = this.updateNotice ? `${this.updateNotice} ${line}` : line;
+      }
       // Said once, with the numbers, because the same condition used to end the build with
       // a constraint error and no explanation: a library edited while it is being paged
       // serves some rows twice, and the edited items themselves belong to the next update.
@@ -1902,6 +1911,8 @@ export abstract class SearchIndexBase implements SearchIndex {
     this.worstLoopStallMs = 0;
     this.lastBuildError = undefined;
     this.embedderError = undefined;
+    this.vectorsBackfilled = 0;
+    this.embedBudgetHit = false;
     this.persistError = undefined;
     this.updateNotice = undefined;
     this.localApiDegradedAt = undefined;
@@ -2291,7 +2302,28 @@ export abstract class SearchIndexBase implements SearchIndex {
           }
         }
       }
+      // Then the passages an EARLIER job stored without a vector, which no delta will ever
+      // carry again because their items have not changed: body text indexed while
+      // ZOTEUS_EMBED_FULLTEXT was false (the operator has since turned it on), or what an
+      // embedder failure or a spent daily allowance left behind. Each round commits before
+      // the next request, so an allowance that runs out mid-way keeps everything it bought,
+      // and the next update simply picks up the shortfall where this one stopped.
+      if (!this.persistError && !token.cancelled && this.hasEmbedder) {
+        try {
+          await this.backfillMissingVectors(token, embedBatchSize, embedBatchDelayMs, async () => {
+            this.finalizeVectors();
+            await persist();
+          });
+        } catch (e) {
+          this.rollback();
+          this.opts.logger?.warn(
+            `index update: the delta is saved, but embedding passages stored without vectors stopped: ` +
+              `${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
       this.buildState = 'done';
+      const backfillLine = token.cancelled ? '' : this.backfillSentence();
       if (reconciled) {
         this.updateNotice =
           `Updated ${this.itemsFetched} changed and removed ${this.itemsRemoved} deleted items since ` +
@@ -2313,11 +2345,14 @@ export abstract class SearchIndexBase implements SearchIndex {
           (this.itemsAvailable > this.itemsTotal
             ? ' An update maintains only the subset this index already holds: the items the cap left out stay' +
               ' unindexed until a full action:"build" covers them.'
-            : '');
+            : '') +
+          (backfillLine ? ` ${backfillLine}` : '');
       } else if (token.cancelled) {
         this.updateNotice =
           `Update stopped after ${this.itemsFetched} changed items. Deletions were not reconciled and the version ` +
           'stamp was left where it was, so the next action:"update" repeats this delta.';
+      } else if (backfillLine) {
+        this.updateNotice = this.updateNotice ? `${this.updateNotice} ${backfillLine}` : backfillLine;
       }
       const final = this.buildStatus();
       this.opts.logger?.info(`index update ${token.cancelled ? 'stopped' : 'complete'}: ${progressLine(final)}`);
@@ -2890,6 +2925,75 @@ export abstract class SearchIndexBase implements SearchIndex {
       if (batch.length) await this.embedPending(batch, token, batchSize, delayMs, true);
     }
     return this.counts().vectors - before;
+  }
+
+  /** Whether this server sends attachment body text to the embedder at all. */
+  private get embedsFulltext(): boolean {
+    return this.opts.embedFulltext !== false;
+  }
+
+  /**
+   * Embed the committed passages that carry no vector, a page at a time, and only those
+   * this server is allowed to embed (no body text while ZOTEUS_EMBED_FULLTEXT=false).
+   *
+   * A page rather than one list, because after a provider failure partway through a
+   * full-text build, or after the operator turns body-text embedding on over an index that
+   * already holds tens of thousands of body passages, holding every passage's text in memory
+   * at once would trade one failure mode for another. The loop ends when the store answers
+   * with none, when the embedder stops (`hasEmbedder` goes false: a provider failure, or the
+   * caller's daily allowance running out), when the job is cancelled, or when a round fails
+   * to reduce the shortfall, which is the guard against asking forever for rows nothing can
+   * fill. `afterRound` is where the caller logs and commits, so what a round bought is
+   * durable before the next is asked for, and an allowance that runs out mid-way keeps it.
+   */
+  private async backfillMissingVectors(
+    token: { cancelled: boolean },
+    batchSize: number,
+    delayMs: number,
+    afterRound: (passages: number) => Promise<void>,
+  ): Promise<number> {
+    if (!this.hasEmbedder) return 0;
+    const includeFulltext = this.embedsFulltext;
+    let remaining = this.countMissingVectors(includeFulltext);
+    let embedded = 0;
+    while (remaining > 0 && this.hasEmbedder && !token.cancelled) {
+      const batch = this.passagesMissingVectors(VECTOR_BACKFILL_GROUP, includeFulltext);
+      if (!batch.length) break;
+      if (!embedded) {
+        this.opts.logger?.info(`index ${this.operation}: embedding ${remaining} passage(s) stored without vectors.`);
+      }
+      await this.embedPending(batch, token, batchSize, delayMs, true);
+      const left = this.countMissingVectors(includeFulltext);
+      if (left < remaining) {
+        embedded += remaining - left;
+        this.vectorsBackfilled += remaining - left;
+      }
+      await afterRound(batch.length);
+      if (left >= remaining) break;
+      remaining = left;
+    }
+    return embedded;
+  }
+
+  /**
+   * The sentence a finished job adds about the passages it embedded for an earlier one, and
+   * about those still waiting, with the reason when the daily allowance is what stopped it.
+   */
+  private backfillSentence(): string {
+    const parts: string[] = [];
+    if (this.vectorsBackfilled) {
+      parts.push(`${this.vectorsBackfilled} passage(s) indexed earlier without a vector were embedded.`);
+    }
+    const left = this.embedderId && !this.vectorsStale ? this.countMissingVectors(this.embedsFulltext) : 0;
+    if (left && this.embedBudgetHit) {
+      parts.push(
+        `${left} passage(s) still have no vector because today's embedding allowance ran out; they stay ` +
+          'searchable by keyword, and the next zotero_index action:"update" embeds the rest.',
+      );
+    } else if (left && this.vectorsBackfilled) {
+      parts.push(`${left} passage(s) still have no vector; the next zotero_index action:"update" continues.`);
+    }
+    return parts.join(' ');
   }
 
   /** Embed and store queued passages in batches; `force` drains a partial last batch. */
@@ -3493,14 +3597,25 @@ export class MemorySearchIndex extends SearchIndexBase {
     this.vectors.add(id, vector);
   }
 
-  protected passagesMissingVectors(limit: number): ChunkRecord[] {
+  protected passagesMissingVectors(limit: number, includeFulltext: boolean): ChunkRecord[] {
     const out: ChunkRecord[] = [];
     for (const [id, rec] of this.chunks) {
       if (this.vectors.has(id)) continue;
+      if (!includeFulltext && rec.source === 'fulltext') continue;
       out.push(rec);
       if (out.length >= limit) break;
     }
     return out;
+  }
+
+  protected countMissingVectors(includeFulltext: boolean): number {
+    let n = 0;
+    for (const [id, rec] of this.chunks) {
+      if (this.vectors.has(id)) continue;
+      if (!includeFulltext && rec.source === 'fulltext') continue;
+      n++;
+    }
+    return n;
   }
 
   protected clearVectors(): void {
