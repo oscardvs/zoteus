@@ -46,6 +46,13 @@ const MAX_SWEEPS = 3;
  */
 const MAX_CONSECUTIVE_BATCH_FAILURES = 3;
 
+/**
+ * Pages read from one keyed lookup before giving up on it. A lookup that names fifty keys
+ * normally fits on one page; the bound only matters for an API that answers with far more
+ * rows than it was asked for, and stops such an answer from walking a whole library.
+ */
+const MAX_PAGES_PER_BATCH = 20;
+
 export interface FulltextSource {
   /**
    * Concatenated, capped full text of one item's attachments, or undefined when the item
@@ -229,20 +236,35 @@ export async function createFulltextSource(
   const resolveBatch = async (batch: string[]): Promise<boolean> => {
     for (let attempt = 1; ; attempt++) {
       try {
-        const res = await ctx.router.searchItems({
-          library,
-          backend,
-          itemKey: batch.join(','),
-          // Not decoration: the desktop API answers an `itemKey` lookup with the named
-          // items AND every descendant they have, so a batch of fifty annotated
-          // attachments comes back as thousands of annotation rows and the attachments
-          // this is looking for fall off the end of the page. Naming the type asks for
-          // exactly the fifty rows wanted, on both APIs. The same rule, learned the same
-          // way, governs the keyed lookups in `own-words-source.ts`.
-          itemType: 'attachment',
-          limit: KEY_BATCH,
-        });
-        absorb(res.data ?? []);
+        // Paged to the end of the answer, not read once (#119). A keyed lookup is expected
+        // to answer with at most the fifty rows it named, but nothing guarantees that: an
+        // API that also answers with rows it was not asked for (descendants, or the whole
+        // filtered listing) pushes the named attachments onto a later page, and a single
+        // read of the first page then "succeeded" while resolving almost nothing.
+        for (let start = 0, pages = 0; ; pages++) {
+          const res = await ctx.router.searchItems({
+            library,
+            backend,
+            itemKey: batch.join(','),
+            // Not decoration: the desktop API answers an `itemKey` lookup with the named
+            // items AND every descendant they have, so a batch of fifty annotated
+            // attachments comes back as thousands of annotation rows and the attachments
+            // this is looking for fall off the end of the page. Naming the type asks for
+            // exactly the fifty rows wanted, on both APIs. The same rule, learned the same
+            // way, governs the keyed lookups in `own-words-source.ts`.
+            itemType: 'attachment',
+            limit: KEY_BATCH,
+            ...(start ? { start } : {}),
+          });
+          const rows = res.data ?? [];
+          absorb(rows);
+          start += rows.length;
+          if (!rows.length || start >= (res.totalResults ?? 0)) break;
+          // Every key of the batch is accounted for: further pages can only hold rows
+          // this map never asked about.
+          if (batch.every((k) => parentOf.has(k))) break;
+          if (pages + 1 >= MAX_PAGES_PER_BATCH) break;
+        }
         return true;
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
@@ -289,6 +311,56 @@ export async function createFulltextSource(
     // Nothing new came back: another identical pass would cost requests and learn nothing.
     if (parentOf.size === before) break;
   }
+
+  // Keys the keyed lookups answered for but never named (#119). Taking that silence as
+  // "Zotero does not serve this attachment here" is what let a 2,627-attachment library
+  // map 50 and report the result as complete. Each one is now asked for by itself, on the
+  // single-item endpoint, which reads the item straight from its key (trashed ones
+  // included) instead of through a search. Only a 404 there is the authoritative "not in
+  // this library"; anything else that leaves a key unresolved makes the map incomplete.
+  const unanswerable = new Set(unanswered);
+  const answeredUnnamed = pending.filter((k) => !parentOf.has(k) && !unanswerable.has(k));
+  let notInLibrary = 0;
+  if (answeredUnnamed.length) {
+    ctx.logger.warn(
+      `Full-text map: Zotero's keyed lookups answered but did not name ${answeredUnnamed.length} of ` +
+        `${total} attachment(s); asking for each of them directly.`,
+    );
+    let consecutive = 0;
+    for (const [i, key] of answeredUnnamed.entries()) {
+      if (consecutive >= MAX_CONSECUTIVE_BATCH_FAILURES) {
+        for (const k of answeredUnnamed.slice(i)) unanswerable.add(k);
+        break;
+      }
+      try {
+        const item = await ctx.router.getItem(key, { library, backend });
+        if (item) absorb([item]);
+        if (parentOf.has(key)) consecutive = 0;
+        else if (item == null) notInLibrary++;
+        else {
+          // Answered with something that is not this attachment: not a resolution.
+          unanswerable.add(key);
+          consecutive++;
+        }
+      } catch (e) {
+        const status = (e as { status?: unknown })?.status;
+        if (status === 404) {
+          notInLibrary++;
+          consecutive = 0;
+          continue;
+        }
+        const reason = e instanceof Error ? e.message : String(e);
+        if (!why) why = reason;
+        unanswerable.add(key);
+        consecutive++;
+      }
+    }
+  }
+  if (notInLibrary) {
+    ctx.logger.info(`Full-text map: ${notInLibrary} attachment(s) in the census are not in this library view.`);
+  }
+  unanswered = [...unanswerable].filter((k) => !parentOf.has(k));
+  if (unanswered.length && !why) why = `Zotero did not resolve ${unanswered.length} attachment(s) by key`;
 
   const mapped = parentOf.size;
   if (mapped === 0) {
