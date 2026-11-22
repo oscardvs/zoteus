@@ -14,7 +14,7 @@ import {
 } from './limits.js';
 import { Semaphore } from '../../lib/semaphore.js';
 import { embedRateLine, progressLine } from './build.js';
-import { describeLibraryToken } from './backend.js';
+import { describeLibraryToken, INDEX_JOB_STOPPING } from './backend.js';
 import { saveIndex } from './persistence.js';
 import type {
   BuildCheckpoint,
@@ -451,7 +451,13 @@ export abstract class SearchIndexBase implements SearchIndex {
   /** Items a resumed build inherited from the run it is continuing (see IndexBuildStatus). */
   private resumedFrom: number | undefined = undefined;
   private lastBuildError: string | undefined = undefined;
-  private cancelToken: { cancelled: boolean } | null = null;
+  private cancelToken: { cancelled: boolean; job: number } | null = null;
+  /**
+   * Generation of the most recent job this handle started (0 = none yet). Each build or
+   * update takes the next number, reported on the status as `job`, and a stop names the job
+   * it was issued against, so a stop can never land on a job started after it (#120).
+   */
+  private jobCounter = 0;
   /**
    * Set the first time the provider throws. Kept on the instance (rather than in a build's
    * local scope) precisely so status can report it: a failure that only ever reached a
@@ -657,7 +663,7 @@ export abstract class SearchIndexBase implements SearchIndex {
     this.refuseIfFaulted();
     this.refuseIfPaused();
     if (library) this.assertLibrary(library);
-    if (this.isBuilding) throw new Error('Index build already in progress; poll action:"status".');
+    this.refuseIfBusy();
     // What another process committed decides what this job has to do (whether a build has
     // a checkpoint to carry on from, what an update's stamp is), so it is read first (#68).
     this.refreshFromStore();
@@ -898,6 +904,20 @@ export abstract class SearchIndexBase implements SearchIndex {
     return this.buildState === 'building';
   }
 
+  /**
+   * True while a job that was asked to stop is still draining: it halts only after its
+   * current page or batch, which on a saturated Zotero has taken minutes (#120).
+   */
+  get isStopping(): boolean {
+    return this.isBuilding && this.cancelToken?.cancelled === true;
+  }
+
+  /** Refuse a new job while one runs, naming the draining case apart (#120). */
+  private refuseIfBusy(): void {
+    if (this.isStopping) throw new Error(INDEX_JOB_STOPPING);
+    if (this.isBuilding) throw new Error('Index build already in progress; poll action:"status".');
+  }
+
   get isPaused(): boolean {
     return this.paused;
   }
@@ -949,7 +969,8 @@ export abstract class SearchIndexBase implements SearchIndex {
     const s: IndexBuildStatus = {
       ...base,
       passages: base.documents,
-      state: this.buildState,
+      state: this.isStopping ? 'stopping' : this.buildState,
+      ...(this.jobCounter > 0 ? { job: this.jobCounter } : {}),
       operation: this.operation,
       itemsFetched: this.itemsFetched,
       itemsRemoved: this.itemsRemoved,
@@ -994,11 +1015,14 @@ export abstract class SearchIndexBase implements SearchIndex {
   }
 
   /**
-   * Cooperatively cancel the running build. Returns false if nothing is building.
+   * Cooperatively cancel the running build. Returns false if nothing is building, or if
+   * `job` is given and is not the running job: a stop is bound to the job it was issued
+   * against, so one aimed at a job that has since ended cannot cancel a newer one (#120).
    * The build halts between pages/batches and keeps whatever was already indexed.
    */
-  requestStop(): boolean {
+  requestStop(job?: number): boolean {
     if (!this.isBuilding || !this.cancelToken) return false;
+    if (job !== undefined && job !== this.cancelToken.job) return false;
     this.cancelToken.cancelled = true;
     return true;
   }
@@ -1242,7 +1266,7 @@ export abstract class SearchIndexBase implements SearchIndex {
     // refuse here rather than reach reset() below (startIndexBuild also asserts this
     // synchronously, so tool callers see the refusal rather than a logged rejection).
     if (opts.library) this.assertLibrary(opts.library);
-    if (this.isBuilding) throw new Error('Index build already in progress; poll action:"status".');
+    this.refuseIfBusy();
     // Read before anything is reset, and in the synchronous prologue, so the status the
     // fire-and-forget caller returns to its user already says a resume is what started.
     const resume = this.resumeFrom(opts);
@@ -1276,7 +1300,7 @@ export abstract class SearchIndexBase implements SearchIndex {
     // Carried from the caller, e.g. the reason an update fell back to this rebuild, so it
     // must survive the reset below rather than being cleared with the rest of the state.
     this.updateNotice = opts.note;
-    const token = { cancelled: false };
+    const token = { cancelled: false, job: ++this.jobCounter };
     this.cancelToken = token;
     this.duplicatePassages = 0;
     /**
@@ -1827,7 +1851,9 @@ export abstract class SearchIndexBase implements SearchIndex {
             'answered nothing for all of it (see worstLoopStallMs on the status).',
         );
       }
-      this.cancelToken = null;
+      // Only this job's own token: clearing whatever is current would strip the stop handle
+      // from a job started after this one (#120).
+      if (this.cancelToken === token) this.cancelToken = null;
     }
   }
 
@@ -1887,7 +1913,7 @@ export abstract class SearchIndexBase implements SearchIndex {
     // Same guard as the full build: a delta for a different library would splice its
     // changes into — and delete "missing" items from — rows that were never its own.
     if (opts.library) this.assertLibrary(opts.library);
-    if (this.isBuilding) throw new Error('Index build already in progress; poll action:"status".');
+    this.refuseIfBusy();
     const fromVersion = this.libraryVersion;
     this.buildState = 'building';
     this.operation = 'update';
@@ -1919,7 +1945,7 @@ export abstract class SearchIndexBase implements SearchIndex {
       this.ownWordsEnabled = true;
       this.ownWordsUnavailable = undefined;
     }
-    const token = { cancelled: false };
+    const token = { cancelled: false, job: ++this.jobCounter };
     this.cancelToken = token;
 
     const embedBatchSize = opts.embedBatchSize ?? DEFAULT_EMBED_BATCH_SIZE;
@@ -2351,7 +2377,9 @@ export abstract class SearchIndexBase implements SearchIndex {
             'answered nothing for all of it (see worstLoopStallMs on the status).',
         );
       }
-      this.cancelToken = null;
+      // Only this job's own token: clearing whatever is current would strip the stop handle
+      // from a job started after this one (#120).
+      if (this.cancelToken === token) this.cancelToken = null;
       this.deferEmbedding = false;
       this.deferredIds = [];
     }
