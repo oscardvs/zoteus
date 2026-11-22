@@ -4,6 +4,31 @@ All notable changes to Zoteus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.25.3] - 2026-11-22
+
+### Fixed
+- **A late `action:"stop"` can no longer cancel a newer index job (#120).** A stop only marks
+  the running job, which notices after its current page or batch, sometimes minutes later.
+  Every job now carries a `job` number on the status, `action:"stop"` can name it, and a
+  stop never reaches a job started after it. While a stopped job drains, status reports
+  `state: "stopping"` and build, refresh and update are refused with an error instead of
+  answering "A build is already in progress" as if a new job had started.
+- **The full-text map no longer stops silently after the first batch of attachments (#119).**
+  A keyed lookup that answered without naming its keys was read as "not in this library",
+  and only the first page of each answer was read, so a build could map 50 attachments and
+  call itself complete. Every page is now read, keys still unnamed are asked for one at a
+  time, and any that stay unresolved set `fulltextPartial` and `fulltextReason` and hold the
+  full-text cursor back.
+
+### Changed
+- **`action:"update"` and every build now embed passages that are missing vectors.** Until
+  now only a resumed build did, so passages indexed without a vector (an embedder that
+  failed, a daily allowance that ran out, or body text indexed while
+  `ZOTEUS_EMBED_FULLTEXT=false`) stayed keyword-only after a stamped update. When the daily
+  allowance (`ZOTEUS_EMBED_DAILY_TOKENS`) runs out the update still ends `done`, keeps what it
+  embedded, and the next update continues. Status reports `vectorsBackfilled`, and
+  `passagesWithoutVectors` no longer counts body text the server is not allowed to embed.
+
 ## [1.25.1] - 2026-11-10
 
 ### Fixed
