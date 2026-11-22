@@ -354,7 +354,7 @@ export async function indexCommand(
 
     let snapshot = statusOf(started);
     let lastLine = '';
-    while (snapshot && snapshot.state === 'building') {
+    while (snapshot && (snapshot.state === 'building' || snapshot.state === 'stopping')) {
       const line = progressLine(snapshot);
       if (line !== lastLine) {
         io.err(`${line}\n`);

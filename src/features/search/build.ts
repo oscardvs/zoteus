@@ -2,7 +2,13 @@ import type { LibraryArgs, ToolContext } from '../../registry/registry.js';
 import { optionalLibrary } from '../../registry/registry.js';
 import type { LibraryRef } from '../../api/web-client.js';
 import type { EmbedRate, IndexBuildStatus, SearchIndex, VersionBackend } from './backend.js';
-import { canonicalLibraryToken, describeJobElsewhere, describeLibraryToken, isAddressableLibrary } from './backend.js';
+import {
+  canonicalLibraryToken,
+  describeJobElsewhere,
+  describeLibraryToken,
+  isAddressableLibrary,
+  jobRunning,
+} from './backend.js';
 import { createFulltextSource, type FulltextSource } from './fulltext-source.js';
 import { createOwnWordsSource, fetchChildVersions, type OwnWordsSource } from './own-words-source.js';
 import {
@@ -44,7 +50,7 @@ export function progressLine(s: IndexBuildStatus): string {
   // Suppressed while a build is still on its metadata pass: full text is not being
   // collected yet, and "full text of 0 items (0 passages)" beside a climbing item count
   // reads as a full-text crawl that has stalled rather than one that has not started.
-  const showFulltext = s.fulltextEnabled && !(s.operation === 'build' && s.state === 'building' && s.phase === 'metadata');
+  const showFulltext = s.fulltextEnabled && !(s.operation === 'build' && jobRunning(s) && s.phase === 'metadata');
   const fulltext = showFulltext ? `, full text of ${s.fulltextItems} items (${s.fulltextPassages} passages)` : '';
   // An update's itemsFetched is the size of the delta, not progress through the library, so
   // rendering it as "7 of 5000" would read as a build that stalled on its first page.
@@ -54,7 +60,7 @@ export function progressLine(s: IndexBuildStatus): string {
   // was read in the 2026-10-01 stress test as an index holding 280 to 295 items against a
   // library of 350, with nothing to say a delta was still on its way in.
   if (s.operation === 'update') {
-    const running = s.state === 'building';
+    const running = jobRunning(s);
     const of = running && s.itemsChanged ? ` of ${s.itemsChanged}` : '';
     const held = running ? `${s.items} items in the index so far` : `${s.items} items total`;
     // The catch-up rides on after the delta's own items are counted, so an update whose
@@ -209,11 +215,11 @@ export function embedRateNotice(s: IndexBuildStatus): string {
  * and reporting that as a shortfall would put a warning on every progress poll.
  */
 export function unembeddedNotice(s: IndexBuildStatus): string {
-  if (!s.passagesWithoutVectors || s.state === 'building') return '';
+  if (!s.passagesWithoutVectors || jobRunning(s)) return '';
   return (
     ` ${s.passagesWithoutVectors} indexed passage(s) carry no vector yet, so semantic ranking cannot see them` +
-    ' (keyword search can). Run zotero_index action:"build" again to fill them in: when a build is what left' +
-    ' them, that RESUMES it, embedding exactly those passages and re-fetching nothing. Do NOT use' +
+    ' (keyword search can). Run zotero_index action:"update" (or action:"build") again to fill them in: both' +
+    ' embed exactly those passages and re-fetch nothing, and a build left unfinished RESUMES. Do NOT use' +
     ' action:"refresh", which starts the whole crawl over and pays for every vector a second time. If an API' +
     ' rate limit is what stopped it, pace the next run with ZOTEUS_EMBED_BATCH_SIZE and' +
     ' ZOTEUS_EMBED_BATCH_DELAY_MS.'
@@ -235,7 +241,7 @@ export function unembeddedNotice(s: IndexBuildStatus): string {
  * says why.
  */
 export function queuedNotice(s: IndexBuildStatus): string {
-  if (s.state !== 'building' || !s.passagesWithoutVectors || !s.embedderActive) return '';
+  if (!jobRunning(s) || !s.passagesWithoutVectors || !s.embedderActive) return '';
   return s.operation === 'update'
     ? ` ${s.passagesWithoutVectors} passage(s) carry no vector yet: this update embeds those of the items it` +
         ' re-indexes, and reports any still missing when it finishes.'
@@ -437,6 +443,12 @@ export function statusSummary(s: IndexBuildStatus): string {
     localApiNotice(s) +
     updateNotice(s);
   switch (s.state) {
+    case 'stopping':
+      return (
+        `Index ${job} stopping: a stop was requested and the job halts after its current page or batch ` +
+        `(${progressLine(s)}). A new build or update is refused until it has drained; poll zotero_index ` +
+        `action:"status" until state is no longer "stopping".${pause}${notice}`
+      );
     case 'building': {
       // The payoff of indexing metadata first is worth stating outright: during the
       // full-text pass the library is ALREADY searchable, and a caller who does not know

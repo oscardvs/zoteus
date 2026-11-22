@@ -364,14 +364,34 @@ export interface BuildCheckpoint {
 }
 
 /** Lifecycle of the asynchronous background index build. */
-export type BuildState = 'idle' | 'building' | 'done' | 'error';
+export type BuildState = 'idle' | 'building' | 'stopping' | 'done' | 'error';
+
+/** True while a job is running, including one that was asked to stop and is still draining. */
+export function jobRunning(s: { state?: string } | undefined): boolean {
+  return s?.state === 'building' || s?.state === 'stopping';
+}
+
+/**
+ * The refusal a build or update gets while the previous job drains after a stop (#120).
+ * Accepting it instead used to look like a fresh job had started, when the stop still
+ * pending was about to end the job the caller was watching.
+ */
+export const INDEX_JOB_STOPPING =
+  'The previous index job is still stopping (it halts after its current page or batch). ' +
+  'Nothing was started: retry when zotero_index action:"status" no longer reports state "stopping".';
 
 /**
  * Live build/status snapshot. Backward compatible with SearchIndexStatus (it keeps
  * documents/vectors/items/embedder/builtFromVersion) and adds build progress.
  */
 export interface IndexBuildStatus extends SearchIndexStatus {
+  /** `stopping`: a stop was requested and the job is still draining; nothing new can start. */
   state: BuildState;
+  /**
+   * Generation of the current (or last) job on this index handle. Pass it to
+   * `action:"stop"` so the stop can only ever cancel that job (#120).
+   */
+  job?: number;
   /**
    * Which job the counters below describe. A build's `itemsFetched` is progress through
    * the library; an update's is the size of the delta, and reading one as the other makes
@@ -458,6 +478,12 @@ export interface IndexBuildStatus extends SearchIndexStatus {
    * `action:"refresh"` (which would pay for every vector again).
    */
   passagesWithoutVectors?: number;
+  /**
+   * Passages this job embedded because an earlier one had stored them without a vector: an
+   * interrupted or rate-limited build, a spent daily allowance, or body text indexed while
+   * ZOTEUS_EMBED_FULLTEXT was false. Absent when there were none.
+   */
+  vectorsBackfilled?: number;
   /**
    * Progress through an update's full-text catch-up, the pass that re-reads the body text
    * Zotero has extracted since the stored cursor (#106). `catchupCensus` says the pass is
@@ -807,8 +833,11 @@ export interface SearchIndex {
   readonly isPaused: boolean;
   /** Persist or clear the hold, including while no job is running. */
   setPaused(paused: boolean): Promise<void>;
-  /** Cooperatively cancel the running build. Returns false if nothing is building. */
-  requestStop(): boolean;
+  /**
+   * Cooperatively cancel the running build. Returns false if nothing is building, or if
+   * `job` names a job other than the running one.
+   */
+  requestStop(job?: number): boolean;
   /** Embed arbitrary texts with the configured provider (empty array if none). */
   embed(texts: string[], kind?: EmbedKind): Promise<number[][]>;
   build(libraryItems: any[], opts?: BuildOptions): Promise<SearchIndexStatus>;
