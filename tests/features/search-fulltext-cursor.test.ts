@@ -104,6 +104,13 @@ class FakeZotero {
         const att = this.attachments.get(key);
         return att?.content ? { content: att.content } : null;
       }),
+      // The single-item endpoint the map falls back to for keys a keyed lookup answered
+      // without naming (#119). A key Zotero does not hold is a 404, as on both real APIs.
+      getItem: vi.fn(async (key: string) => {
+        const att = this.attachments.get(key);
+        if (!att) throw Object.assign(new Error(`404 for ${key}`), { status: 404 });
+        return { key: att.key, data: { key: att.key, itemType: 'attachment', parentItem: att.parent } };
+      }),
     };
   }
 }
@@ -492,6 +499,10 @@ describe.each(backends)('a build whose attachment map stopped early (%s backend)
         ? { data: [], totalResults: 0, lastModifiedVersion: zotero.itemVersion }
         : listing(q),
     );
+    // And the single-key fallback (#119) cannot read them either.
+    router.getItem = vi.fn(async (key: string) => {
+      throw Object.assign(new Error(`Local API 500 for ${key}`), { status: 500 });
+    });
     startIndexBuild(makeCtx(search, router), undefined, undefined, { fulltext: true });
     await settle(search);
 
@@ -519,6 +530,10 @@ describe.each(backends)('a build whose attachment map stopped early (%s backend)
       if (q.itemType !== 'attachment') return listing(q);
       const res = await listing(q);
       return { ...res, data: res.data.filter((row: any) => row.key !== 'ATT3') };
+    });
+    // Asked for by itself, Zotero confirms it does not hold ATT3 in this view.
+    router.getItem = vi.fn(async (key: string) => {
+      throw Object.assign(new Error(`404 for ${key}`), { status: 404 });
     });
     startIndexBuild(makeCtx(search, router), undefined, undefined, { fulltext: true });
     await settle(search);
@@ -573,6 +588,109 @@ const BODY_FOUR = 'Table 4 lists the wafer annealing temperatures used throughou
  * high-water mark and clears the reason. The attachment the map missed is from then on
  * named by no `?since=` on either sequence, ever.
  */
+/**
+ * #119: `fulltextItemsTotal: 50` on a library whose census named 2,627 attachments. The
+ * keyed lookups after the first batch answered, but named none of their keys, and an
+ * answer that does not name a key was taken as "not in this library view", so the map
+ * finished with one batch worth of items and reported itself complete.
+ */
+describe.each(backends)('a keyed map whose lookups answer without naming their keys (%s backend)', (backend) => {
+  /** 130 items with one extracted attachment each: three batches of keys. */
+  function manyExtracted(n = 130): FakeZotero {
+    const zotero = new FakeZotero();
+    for (let i = 0; i < n; i++) {
+      const k = `K${String(i).padStart(4, '0')}`;
+      const a = `A${String(i).padStart(4, '0')}`;
+      zotero.putItem(k, `Paper ${i}`);
+      zotero.attach(a, k);
+      zotero.extract(a, `Body text of paper number ${i}. `.repeat(5));
+    }
+    return zotero;
+  }
+
+  /** Only the first keyed batch is answered with its rows; every later one comes back empty. */
+  function firstBatchOnly(router: any): void {
+    const listing = router.searchItems;
+    let keyed = 0;
+    router.searchItems = vi.fn(async (q: any) => {
+      if (q.itemType !== 'attachment' || !q.itemKey) return listing(q);
+      const res = await listing(q);
+      return keyed++ === 0 ? res : { ...res, data: [], totalResults: 0 };
+    });
+  }
+
+  it('resolves every attachment the lookups left unnamed, one key at a time', async () => {
+    const zotero = manyExtracted();
+    const search = await openIndex(backend);
+    const router: any = zotero.router();
+    firstBatchOnly(router);
+    startIndexBuild(makeCtx(search, router), undefined, undefined, { fulltext: true });
+    await settle(search);
+
+    const s = search.buildStatus();
+    expect(s.state).toBe('done');
+    expect(s.fulltextItemsTotal).toBe(130);
+    expect(s.fulltextItems).toBe(130);
+    expect(s.fulltextPartial).toBeUndefined();
+    expect(s.fulltextReason).toBeUndefined();
+    expect(s.fulltextVersion).toBe(zotero.fulltextVersion);
+    expect(router.getItem).toHaveBeenCalledTimes(80);
+    await search.close();
+  });
+
+  it('reports the shortfall instead of a complete map when those keys cannot be read', async () => {
+    const zotero = manyExtracted();
+    const search = await openIndex(backend);
+    const router: any = zotero.router();
+    firstBatchOnly(router);
+    router.getItem = vi.fn(async () => {
+      throw Object.assign(new Error('Local API 500 for /users/0/items/X'), { status: 500 });
+    });
+    startIndexBuild(makeCtx(search, router), undefined, undefined, { fulltext: true });
+    await settle(search);
+
+    const s = search.buildStatus();
+    expect(s.state).toBe('done');
+    // The 50 the first batch named are indexed; the rest are not silently "no text".
+    expect(s.fulltextItems).toBe(50);
+    expect(s.fulltextPartial).toBe(true);
+    expect(s.fulltextReason).toMatch(/stopped early after 50\/130/);
+    expect(s.fulltextVersion).toBe(0);
+    // Three consecutive failures end the fallback rather than paying for all 80 keys.
+    expect(router.getItem).toHaveBeenCalledTimes(3);
+    await search.close();
+  });
+
+  it('pages a keyed answer that carries more rows than it named', async () => {
+    const zotero = manyExtracted(60);
+    const search = await openIndex(backend);
+    const router: any = zotero.router();
+    const listing = router.searchItems;
+    // An answer padded with 120 rows nobody asked for, ahead of the named ones: the named
+    // attachments only appear on the later pages.
+    const padding = Array.from({ length: 120 }, (_, i) => ({
+      key: `PAD${i}`,
+      data: { key: `PAD${i}`, itemType: 'attachment', parentItem: 'K0000' },
+    }));
+    router.searchItems = vi.fn(async (q: any) => {
+      if (q.itemType !== 'attachment' || !q.itemKey) return listing(q);
+      const named = (await listing({ ...q, start: 0, limit: 1000 })).data;
+      const all = [...padding, ...named];
+      const start = q.start ?? 0;
+      return { data: all.slice(start, start + q.limit), totalResults: all.length, lastModifiedVersion: 1 };
+    });
+    startIndexBuild(makeCtx(search, router), undefined, undefined, { fulltext: true });
+    await settle(search);
+
+    const s = search.buildStatus();
+    expect(s.state).toBe('done');
+    expect(s.fulltextItems).toBe(60);
+    expect(s.fulltextReason).toBeUndefined();
+    expect(router.getItem).not.toHaveBeenCalled();
+    await search.close();
+  });
+});
+
 describe.each(backends)('an item whose attachments straddle the cut (%s backend)', (backend) => {
   /** K1 holds ATT1 and ATT4, K2 holds ATT2, and Zotero has extracted all three. */
   function straddling(): FakeZotero {

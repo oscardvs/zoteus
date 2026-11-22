@@ -434,9 +434,11 @@ export class LibraryRouter {
     key: string,
     opts: ReadOpts & { include?: string; format?: string; style?: string; locale?: string } = {},
   ): Promise<any> {
-    const { library, ...rest } = opts;
+    const { library, backend, ...rest } = opts;
     const lib = library ?? this.defaultLibrary();
-    if (await this.route(lib)) return this.local!.getItem(key, rest, lib);
+    // `backend` is honoured like every other read: a crawl that pinned one API (the
+    // full-text map, #119) must not have its single-key fallback answered by the other.
+    if (await this.route(lib, backend)) return this.local!.getItem(key, rest, lib);
     return this.web.getItem(lib, key, rest);
   }
 
