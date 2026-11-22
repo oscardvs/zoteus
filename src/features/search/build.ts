@@ -218,8 +218,8 @@ export function unembeddedNotice(s: IndexBuildStatus): string {
   if (!s.passagesWithoutVectors || jobRunning(s)) return '';
   return (
     ` ${s.passagesWithoutVectors} indexed passage(s) carry no vector yet, so semantic ranking cannot see them` +
-    ' (keyword search can). Run zotero_index action:"build" again to fill them in: when a build is what left' +
-    ' them, that RESUMES it, embedding exactly those passages and re-fetching nothing. Do NOT use' +
+    ' (keyword search can). Run zotero_index action:"update" (or action:"build") again to fill them in: both' +
+    ' embed exactly those passages and re-fetch nothing, and a build left unfinished RESUMES. Do NOT use' +
     ' action:"refresh", which starts the whole crawl over and pays for every vector a second time. If an API' +
     ' rate limit is what stopped it, pace the next run with ZOTEUS_EMBED_BATCH_SIZE and' +
     ' ZOTEUS_EMBED_BATCH_DELAY_MS.'

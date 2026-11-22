@@ -105,8 +105,12 @@ export const indexStatus = {
     .number()
     .optional()
     .describe(
-      'Passages that carry no embedding yet. While a job runs this is mostly its own queue and falls as it embeds; after it ends, a non-zero figure is a gap that action:"build" fills.',
+      'Passages that carry no embedding yet. While a job runs this is mostly its own queue and falls as it embeds; after it ends, a non-zero figure is a gap that action:"update" (or action:"build") fills. Body passages a server keeps out of the embedder (ZOTEUS_EMBED_FULLTEXT=false) are not counted.',
     ),
+  vectorsBackfilled: z
+    .number()
+    .optional()
+    .describe('Passages this job embedded because an earlier one had stored them without a vector.'),
   itemsTotal: z.number().optional().describe('Items this job expects to index (0 = not yet known).'),
   itemsAvailable: z.number().optional().describe('Items the library holds before the build cap is applied.'),
   itemsRemoved: z.number().optional().describe('Items an update dropped because the library no longer holds them.'),
