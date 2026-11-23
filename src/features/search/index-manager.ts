@@ -612,8 +612,13 @@ export abstract class SearchIndexBase implements SearchIndex {
    * interruption caught between `putPassage` and the embedding call; this is the far larger
    * set an embedder that DIED mid-build left behind, which until #48 nothing ever came back
    * for, because the failed build cleared its own checkpoint and the next one started over.
+   *
+   * `resume` asks for the page after the one this returned last, rather than the first, so
+   * a backfill walks the store once instead of re-reading every row it has just filled on
+   * each page. A store whose pages are cheap to find from the top may ignore it: the
+   * passages it returns are still the ones without a vector.
    */
-  protected abstract passagesMissingVectors(limit: number, includeFulltext: boolean): ChunkRecord[];
+  protected abstract passagesMissingVectors(limit: number, includeFulltext: boolean, resume?: boolean): ChunkRecord[];
   /**
    * How many stored passages carry no vector, counting body-text passages only when
    * `includeFulltext` is true. The two arguments of `passagesMissingVectors` and this one
@@ -631,6 +636,16 @@ export abstract class SearchIndexBase implements SearchIndex {
    * never a failed build.
    */
   protected finalizeVectors(): void {}
+  /**
+   * `finalizeVectors`, for a job: the same work, handing the event loop back while it runs.
+   * What a store derives here is a scan over the whole index, and run in one go at the end
+   * of a large build it was the longest stretch the server answered nobody (184 s on an
+   * e2-micro over a 5,000-item full-text library). A store that derives nothing, or whose
+   * derivation is quick, keeps the default.
+   */
+  protected async finalizeVectorsSliced(): Promise<void> {
+    this.finalizeVectors();
+  }
   /**
    * Whether this store's writes take a lock that other processes wait on, and keep it until
    * the store commits. Only SQLite does: its write transaction holds the database's writer
@@ -729,6 +744,10 @@ export abstract class SearchIndexBase implements SearchIndex {
    * derived is a slower index, never a failed build.
    */
   protected refreshDroplist(_force: boolean): void {}
+  /** `refreshDroplist`, for a job, handing the loop back as `finalizeVectorsSliced` does. */
+  protected async refreshDroplistSliced(force: boolean): Promise<void> {
+    this.refreshDroplist(force);
+  }
   /**
    * The terms this index's corpus cannot discriminate on, or undefined where the store has
    * no droplist — which must mean "prune nothing", never "prune everything".
@@ -1218,8 +1237,8 @@ export abstract class SearchIndexBase implements SearchIndex {
       }
     }
     this.builtFromVersion = opts.version ?? 0;
-    this.finalizeVectors();
-    this.refreshDroplist(true);
+    await this.finalizeVectorsSliced();
+    await this.refreshDroplistSliced(true);
     return this.status();
   }
 
@@ -1813,12 +1832,13 @@ export abstract class SearchIndexBase implements SearchIndex {
       // Before the persist, so the codes derived from these vectors are committed by the
       // same transaction that makes the vectors durable. A cancelled build gets them too:
       // its partial index stays searchable, and it would otherwise pay for them on the
-      // first query instead.
-      this.finalizeVectors();
+      // first query instead. Sliced: these are scans of the whole index, and run in one go
+      // they were this job's longest stall by far.
+      await this.finalizeVectorsSliced();
       // A stopped build gets one too, for the same reason its codes are built: its partial
       // index stays queryable, and a droplist derived from most of the corpus is a far
       // better answer for it than none at all.
-      this.refreshDroplist(true);
+      await this.refreshDroplistSliced(true);
       await persistNow();
       this.buildState = 'done';
       if (resume) noteResumed();
@@ -2291,13 +2311,13 @@ export abstract class SearchIndexBase implements SearchIndex {
       // Inside the update's single transaction, like every other write it made: a delta
       // adds codes for the passages it added and nothing else, and a failure below rolls
       // them back with the rest.
-      this.finalizeVectors();
+      await this.finalizeVectorsSliced();
       // Not forced: a delta of a few items cannot move a 30% threshold, and the scan that
       // derives the droplist is the one cost in this whole feature a user could feel. The
       // store rescans only when the corpus has drifted far enough to change the answer —
       // or when it holds no droplist at all, which is how an index built by an older
       // version adopts one without waiting for a rebuild.
-      this.refreshDroplist(false);
+      await this.refreshDroplistSliced(false);
       // Persisted once, at the end: the delta is small by construction, and one commit is
       // what makes "the stamp advanced" and "the rows are on disk" a single durable fact.
       try {
@@ -2316,7 +2336,7 @@ export abstract class SearchIndexBase implements SearchIndex {
         if (!this.persistError && !token.cancelled) {
           try {
             if (await this.embedDeferred(token, embedBatchSize, embedBatchDelayMs)) {
-              this.finalizeVectors();
+              await this.finalizeVectorsSliced();
               await persist();
             }
           } catch (e) {
@@ -2334,12 +2354,23 @@ export abstract class SearchIndexBase implements SearchIndex {
       // embedder failure or a spent daily allowance left behind. Each round commits before
       // the next request, so an allowance that runs out mid-way keeps everything it bought,
       // and the next update simply picks up the shortfall where this one stopped.
+      //
+      // The codes for what it bought are taken once, after the last round, not after each:
+      // a query never reads the codes while a job runs (`codesFor` scans exactly instead),
+      // so per-round codes bought nothing, and each refresh walked the whole table to find
+      // the 500 rows the round had filled. Over a 100k-passage backfill that was half the
+      // job's time, in stalls of up to two thirds of a second each on a laptop. A process
+      // that dies between the last round and these codes leaves them short, which the first
+      // query after it notices and repairs (see `buildCodes`).
       if (!this.persistError && !token.cancelled && this.hasEmbedder) {
         try {
-          await this.backfillMissingVectors(token, embedBatchSize, embedBatchDelayMs, async () => {
-            this.finalizeVectors();
+          const filled = await this.backfillMissingVectors(token, embedBatchSize, embedBatchDelayMs, async () => {
             await persist();
           });
+          if (filled) {
+            await this.finalizeVectorsSliced();
+            await persist();
+          }
         } catch (e) {
           this.rollback();
           this.opts.logger?.warn(
@@ -2984,8 +3015,10 @@ export abstract class SearchIndexBase implements SearchIndex {
     const includeFulltext = this.embedsFulltext;
     let remaining = this.countMissingVectors(includeFulltext);
     let embedded = 0;
+    let page = 0;
     while (remaining > 0 && this.hasEmbedder && !token.cancelled) {
-      const batch = this.passagesMissingVectors(VECTOR_BACKFILL_GROUP, includeFulltext);
+      // After the first page, the page after the last one: see `passagesMissingVectors`.
+      const batch = this.passagesMissingVectors(VECTOR_BACKFILL_GROUP, includeFulltext, page++ > 0);
       if (!batch.length) break;
       if (!embedded) {
         this.opts.logger?.info(`index ${this.operation}: embedding ${remaining} passage(s) stored without vectors.`);

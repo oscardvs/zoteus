@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { LoopLagMonitor } from '../../src/features/search/loop-lag.js';
+import { LoopLagMonitor, runSteps, runStepsSliced } from '../../src/features/search/loop-lag.js';
 
 /**
  * The monitor that answers #106's "how dark did the server actually go": between two
@@ -52,5 +52,54 @@ describe('LoopLagMonitor', () => {
     const m = new LoopLagMonitor();
     expect(m.stop()).toBe(0);
     m.stop(); // idempotent
+  });
+});
+
+/**
+ * A stepped job that costs about `ms` of synchronous work per step: the shape of a scan
+ * over an index, where every row is a little CPU and, on a small cloud disk, a read.
+ */
+function* busySteps(steps: number, ms: number): Generator<void, number, void> {
+  for (let i = 0; i < steps; i++) {
+    blockFor(ms);
+    yield;
+  }
+  return steps;
+}
+
+/** Count the ticks of a 5 ms timer, and the longest gap between two, while `job` runs. */
+async function watch<T>(job: () => Promise<T> | T): Promise<{ value: T; ticks: number; maxGap: number; elapsed: number }> {
+  let ticks = 0;
+  let last = performance.now();
+  let maxGap = 0;
+  const timer = setInterval(() => {
+    const now = performance.now();
+    maxGap = Math.max(maxGap, now - last);
+    last = now;
+    ticks++;
+  }, 5);
+  const started = performance.now();
+  const value = await job();
+  const elapsed = performance.now() - started;
+  maxGap = Math.max(maxGap, performance.now() - last);
+  clearInterval(timer);
+  return { value, ticks, maxGap, elapsed };
+}
+
+describe('stepped jobs', () => {
+  it('runStepsSliced hands the loop back while a long job runs, and returns its value', async () => {
+    const r = await watch(() => runStepsSliced(busySteps(60, 5), 20));
+    expect(r.value).toBe(60);
+    // About 300 ms of work in slices of about 20 ms: the timer must have run many times,
+    // and no gap between its ticks can be much longer than a slice.
+    expect(r.ticks).toBeGreaterThanOrEqual(5);
+    expect(r.maxGap).toBeLessThan(r.elapsed / 3);
+  });
+
+  it('runSteps runs the same steps in one go, which is the stall the sliced runner exists to avoid', async () => {
+    const r = await watch(() => runSteps(busySteps(60, 5)));
+    expect(r.value).toBe(60);
+    expect(r.ticks).toBe(0);
+    expect(r.maxGap).toBeGreaterThanOrEqual(250);
   });
 });
