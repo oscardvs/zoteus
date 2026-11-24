@@ -23,6 +23,7 @@ import {
   sidecarsOf,
 } from './corruption.js';
 import { VectorSalvage } from './vector-salvage.js';
+import { runSteps, runStepsSliced } from './loop-lag.js';
 import { DEFAULT_ANN_MIN_CANDIDATES, DEFAULT_ANN_OVERSAMPLE } from './limits.js';
 import type {
   BuildCheckpoint,
@@ -93,6 +94,15 @@ const FTS_TOKENIZER = 'unicode61 remove_diacritics 0';
  * full build recreates the map from scratch through this same function.
  */
 function deriveAccentVariants(db: Database): void {
+  runSteps(deriveAccentVariantsSteps(db));
+}
+
+/**
+ * The derivation above as steps, one per vocabulary row, so a build can run it in slices
+ * (see `runStepsSliced`). On a small cloud disk the scan is not two seconds but minutes,
+ * and run in one go it held the event loop for all of them.
+ */
+function* deriveAccentVariantsSteps(db: Database): Generator<void, void, void> {
   db.exec(`
     -- The stamp comes OFF first and goes back on last, so a derivation that dies midway
     -- (this function can run inside a build's own transaction, whose commit would keep
@@ -120,6 +130,7 @@ function deriveAccentVariants(db: Database): void {
       insert.run(folded, row.term, row.doc);
       keys.add(folded);
     }
+    yield;
   }
   // The key's own document frequency, stored as a self row (term = folded), because the
   // expansion gate compares the two sides of one question: is this spelling, in THIS
@@ -129,6 +140,7 @@ function deriveAccentVariants(db: Database): void {
   for (const k of keys) {
     const row = selfDf.get(k) as { doc: number } | undefined;
     if (row) insert.run(k, k, row.doc);
+    yield;
   }
   db.exec('DROP TABLE temp.accent_vocab');
   // The refresh stamp: how many passages the map was derived over. Read by
@@ -224,6 +236,12 @@ const RESCORE_BATCH = 512;
  * rather than from a second full pass over a corpus this exists to stop reading.
  */
 const MEAN_SAMPLE = 20_000;
+/**
+ * How many rowids one statement of a code scan covers. Small enough that a range of body
+ * passages, a few MB of rows, is one short read even on a small cloud disk; large enough
+ * that a 100k-passage index is a few dozen statements, not thousands.
+ */
+const CODE_PID_RANGE = 4096;
 
 /**
  * Where that mean lives: base64 of its float32 bytes, beside the width it was taken at.
@@ -400,10 +418,11 @@ interface Statements {
   deletePassageCode: StatementSync;
   anyCode: StatementSync;
   allCodes: StatementSync;
-  vectorRows: StatementSync;
+  maxPid: StatementSync;
+  vectorRowsIn: StatementSync;
   vectorByPid: StatementSync;
-  uncodedPids: StatementSync;
-  sampleVectors: StatementSync;
+  uncodedPidsIn: StatementSync;
+  sampleVectorsIn: StatementSync;
 }
 
 /**
@@ -499,6 +518,13 @@ export class SqliteSearchIndex extends SearchIndexBase {
   /** Whether the database holds any code at all, so a fresh build skips 255k no-op deletes. */
   private hasCodes = false;
   /**
+   * The last rowid `passagesMissingVectors` returned, so the next page of a backfill starts
+   * after it rather than at the top of the table. Without it every page re-read every row
+   * the earlier pages had just filled, and a backfill of 100k passages read the table
+   * hundreds of times over, each read inside one synchronous call.
+   */
+  private missingVectorsCursor = 0;
+  /**
    * This library's droplist, as derived at the last build, or undefined where the database
    * holds none.
    *
@@ -591,6 +617,11 @@ export class SqliteSearchIndex extends SearchIndexBase {
    * on every open of a library whose map is legitimately empty.
    */
   private refreshAccentVariants(): void {
+    runSteps(this.refreshAccentVariantsSteps());
+  }
+
+  /** `refreshAccentVariants` as steps, for a job to run in slices. */
+  private *refreshAccentVariantsSteps(): Generator<void, void, void> {
     const row = this.handle
       .prepare("SELECT value FROM meta WHERE key = 'accentVariantsPassages'")
       .get() as { value?: string } | undefined;
@@ -602,7 +633,7 @@ export class SqliteSearchIndex extends SearchIndexBase {
       // the passage count has drifted by more than ~10% since the map was derived.
       if (Math.abs(current - stored) <= 0.1 * Math.max(stored, 1)) return;
     }
-    deriveAccentVariants(this.handle);
+    yield* deriveAccentVariantsSteps(this.handle);
   }
 
   /** Create the writable handle and apply its connection pragmas, after the schema probe. */
@@ -1173,12 +1204,12 @@ export class SqliteSearchIndex extends SearchIndexBase {
       // half-embedded one every scanned row is a row it wants, so an index on a column
       // that is NULL for a moment during one build would cost every build to maintain.
       unembedded: db.prepare(
-        'SELECT id, item_key, title, text, source FROM passages WHERE vector IS NULL ORDER BY pid LIMIT ?',
+        'SELECT pid, id, item_key, title, text, source FROM passages WHERE vector IS NULL AND pid > ? ORDER BY pid LIMIT ?',
       ),
       // The same, minus body text, for a server that keeps it out of the embedder
       // (ZOTEUS_EMBED_FULLTEXT=false). `IS NOT` because metadata passages store no source.
       unembeddedNoFulltext: db.prepare(
-        "SELECT id, item_key, title, text, source FROM passages WHERE vector IS NULL AND source IS NOT 'fulltext' ORDER BY pid LIMIT ?",
+        "SELECT pid, id, item_key, title, text, source FROM passages WHERE vector IS NULL AND source IS NOT 'fulltext' AND pid > ? ORDER BY pid LIMIT ?",
       ),
       countUnembeddedNoFulltext: db.prepare(
         "SELECT COUNT(*) AS n FROM passages WHERE vector IS NULL AND source IS NOT 'fulltext'",
@@ -1213,21 +1244,27 @@ export class SqliteSearchIndex extends SearchIndexBase {
       deletePassageCode: db.prepare('DELETE FROM vector_codes WHERE pid = (SELECT pid FROM passages WHERE id = ?)'),
       anyCode: db.prepare('SELECT 1 AS present FROM vector_codes LIMIT 1'),
       allCodes: db.prepare('SELECT pid, code FROM vector_codes ORDER BY pid'),
-      vectorRows: db.prepare('SELECT pid, vector FROM passages WHERE vector IS NOT NULL'),
+      // Both scans below read one range of rowids at a time (see CODE_PID_RANGE), so no
+      // single statement walks the whole table: a step that skips rows without a vector
+      // would otherwise skip all of them inside one call, which is one stall.
+      maxPid: db.prepare('SELECT max(pid) AS m FROM passages'),
+      vectorRowsIn: db.prepare('SELECT pid, vector FROM passages WHERE pid > ? AND pid <= ? AND vector IS NOT NULL'),
       vectorByPid: db.prepare('SELECT vector FROM passages WHERE pid = ?'),
       // The rows an update appended since the codes were last built. The join is answered
       // from the row headers of `passages` (whether `vector` is NULL is in the header) and
       // a rowid probe into the small codes table, so it does not read the vectors of the
       // rows it skips, which is every row when a delta added a handful.
-      uncodedPids: db.prepare(`
+      uncodedPidsIn: db.prepare(`
         SELECT p.pid AS pid
         FROM passages p LEFT JOIN vector_codes c ON c.pid = p.pid
-        WHERE p.vector IS NOT NULL AND c.pid IS NULL
+        WHERE p.pid > ? AND p.pid <= ? AND p.vector IS NOT NULL AND c.pid IS NULL
         ORDER BY p.pid
       `),
       // Every stride-th vector, for the mean. `pid % 1 = 0` selects all of them, which is
       // what a corpus smaller than the sample gets.
-      sampleVectors: db.prepare('SELECT vector FROM passages WHERE vector IS NOT NULL AND pid % ? = 0'),
+      sampleVectorsIn: db.prepare(
+        'SELECT vector FROM passages WHERE pid > ? AND pid <= ? AND vector IS NOT NULL AND pid % ? = 0',
+      ),
     };
   }
 
@@ -1690,10 +1727,13 @@ export class SqliteSearchIndex extends SearchIndexBase {
     this.invalidateCodes();
   }
 
-  protected passagesMissingVectors(limit: number, includeFulltext: boolean): ChunkRecord[] {
+  protected passagesMissingVectors(limit: number, includeFulltext: boolean, resume = false): ChunkRecord[] {
     const stmt = includeFulltext ? this.stmts.unembedded : this.stmts.unembeddedNoFulltext;
+    if (!resume) this.missingVectorsCursor = 0;
     try {
-      return (stmt.all(limit) as unknown as PassageRow[]).map((row) => {
+      const rows = stmt.all(this.missingVectorsCursor, limit) as unknown as Array<PassageRow & { pid: number }>;
+      if (rows.length) this.missingVectorsCursor = Number(rows[rows.length - 1]!.pid);
+      return rows.map((row) => {
         const rec: ChunkRecord = { id: row.id, itemKey: row.item_key, title: row.title, text: row.text };
         if (row.source === 'fulltext' || row.source === 'note' || row.source === 'annotation') rec.source = row.source;
         return rec;
@@ -2057,37 +2097,65 @@ export class SqliteSearchIndex extends SearchIndexBase {
    * one pass, which is what the very first semantic query on an upgraded index pays.
    */
   private refreshCodes(dim: number): number {
+    return runSteps(this.refreshCodesSteps(dim));
+  }
+
+  /**
+   * `refreshCodes` as steps, one per row it reads, for a job to run in slices.
+   *
+   * Both shapes walk the table one range of rowids at a time. A single statement over the
+   * whole table answered each step with the next matching row, and the rows it skipped on
+   * the way (every row without a vector, every row already coded) were skipped inside that
+   * one step: on a full-text index whose body passages carry no vector yet that was most
+   * of the table, read in a single call. A range bounds what any one call can read.
+   */
+  private *refreshCodesSteps(dim: number): Generator<void, number, void> {
     if (this.c.vectors === 0) return 0;
     const words = Math.ceil(dim / 32);
     const mean = this.storedMean(dim);
     this.begin();
     let written = 0;
+    const top = Number((this.stmts.maxPid.get() as { m: number | null } | undefined)?.m ?? 0);
     if (mean) {
-      // Materialized before the first insert: a statement that reads `vector_codes` must
-      // not still be open while this writes into it.
-      const pids = (this.stmts.uncodedPids.all() as Array<{ pid: number }>).map((r) => Number(r.pid));
-      for (const pid of pids) {
-        const row = this.stmts.vectorByPid.get(pid) as { vector?: Uint8Array } | undefined;
-        if (!row?.vector) continue;
-        const v = toFloats(row.vector);
-        // A vector of another width cannot be coded against this mean. Left alone rather
-        // than coded wrongly: the coverage check below then keeps the whole path off.
-        if (v.length !== dim) continue;
-        this.stmts.insertCode.run(pid, packCode(v, mean, words));
-        written++;
+      for (let lo = 0; lo < top; lo += CODE_PID_RANGE) {
+        // Materialized before the first insert: a statement that reads `vector_codes` must
+        // not still be open while this writes into it.
+        const pids = (this.stmts.uncodedPidsIn.all(lo, lo + CODE_PID_RANGE) as Array<{ pid: number }>).map((r) =>
+          Number(r.pid),
+        );
+        yield;
+        for (const pid of pids) {
+          const row = this.stmts.vectorByPid.get(pid) as { vector?: Uint8Array } | undefined;
+          if (!row?.vector) continue;
+          const v = toFloats(row.vector);
+          // A vector of another width cannot be coded against this mean. Left alone rather
+          // than coded wrongly: the coverage check below then keeps the whole path off.
+          if (v.length !== dim) continue;
+          this.stmts.insertCode.run(pid, packCode(v, mean, words));
+          written++;
+          yield;
+        }
       }
     } else {
       this.dropCodes();
-      const fresh = this.sampleMean(dim);
+      const fresh = yield* this.sampleMeanSteps(dim);
       this.stmts.setMeta.run(CODE_MEAN, encodeMean(fresh));
       this.stmts.setMeta.run(CODE_DIM, String(dim));
-      // Reading `passages` while writing `vector_codes`: different tables, so the scan is
-      // not walking a b-tree these inserts are changing under it.
-      for (const row of this.stmts.vectorRows.iterate() as Iterable<{ pid: number; vector: Uint8Array }>) {
-        const v = toFloats(row.vector);
-        if (v.length !== dim) continue;
-        this.stmts.insertCode.run(Number(row.pid), packCode(v, fresh, words));
-        written++;
+      for (let lo = 0; lo < top; lo += CODE_PID_RANGE) {
+        // Reading `passages` while writing `vector_codes`: different tables, so the scan is
+        // not walking a b-tree these inserts are changing under it.
+        const rows = this.stmts.vectorRowsIn.iterate(lo, lo + CODE_PID_RANGE) as Iterable<{
+          pid: number;
+          vector: Uint8Array;
+        }>;
+        for (const row of rows) {
+          const v = toFloats(row.vector);
+          if (v.length !== dim) continue;
+          this.stmts.insertCode.run(Number(row.pid), packCode(v, fresh, words));
+          written++;
+          yield;
+        }
+        yield;
       }
     }
     if (written) this.hasCodes = true;
@@ -2140,15 +2208,22 @@ export class SqliteSearchIndex extends SearchIndexBase {
    * rather than the first N: passages are stored in the order they were indexed, so a
    * prefix is the first few hundred items of the library and carries their subjects with it.
    */
-  private sampleMean(dim: number): Float32Array {
+  private *sampleMeanSteps(dim: number): Generator<void, Float32Array, void> {
     const stride = Math.max(1, Math.floor(this.c.vectors / MEAN_SAMPLE));
     const sum = new Float64Array(dim);
     let n = 0;
-    for (const row of this.stmts.sampleVectors.iterate(stride) as Iterable<{ vector: Uint8Array }>) {
-      const v = toFloats(row.vector);
-      if (v.length !== dim) continue;
-      for (let i = 0; i < dim; i++) sum[i]! += v[i]!;
-      n++;
+    const top = Number((this.stmts.maxPid.get() as { m: number | null } | undefined)?.m ?? 0);
+    for (let lo = 0; lo < top; lo += CODE_PID_RANGE) {
+      const rows = this.stmts.sampleVectorsIn.iterate(lo, lo + CODE_PID_RANGE, stride) as Iterable<{ vector: Uint8Array }>;
+      for (const row of rows) {
+        const v = toFloats(row.vector);
+        if (v.length === dim) {
+          for (let i = 0; i < dim; i++) sum[i]! += v[i]!;
+          n++;
+        }
+        yield;
+      }
+      yield;
     }
     const mean = new Float32Array(dim);
     // Centring on nothing is centring on zero, which is the plain sign bits: worse codes,
@@ -2188,13 +2263,28 @@ export class SqliteSearchIndex extends SearchIndexBase {
    * index, and failing a build over it would be losing the library to save the cache.
    */
   protected finalizeVectors(): void {
+    runSteps(this.finalizeVectorsSteps());
+  }
+
+  /**
+   * `finalizeVectors` without holding the event loop for its length. This is what a build
+   * or an update ends with, and it is two scans of the whole index (the keyword vocabulary
+   * for the accent map, every stored vector for the codes): run in one go they were the
+   * build's longest stall, 184 s on a shared e2-micro over a 5,000-item full-text library.
+   */
+  protected override async finalizeVectorsSliced(): Promise<void> {
+    await runStepsSliced(this.finalizeVectorsSteps());
+  }
+
+  /** `finalizeVectors` as steps; see `runSteps` and `runStepsSliced`. */
+  private *finalizeVectorsSteps(): Generator<void, void, void> {
     // The expansion map is derived from the keyword vocabulary exactly as the binary
     // codes below are derived from the vectors, and it levels up at the same moment, for
     // the same reason: the derived rows commit with the rows they were derived from.
     // Same contract too — never throw; a map that could not be refreshed is yesterday's
     // expansions, not a failed build.
     try {
-      this.refreshAccentVariants();
+      yield* this.refreshAccentVariantsSteps();
     } catch (e) {
       this.opts.logger?.warn(`accent variants not refreshed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -2214,7 +2304,7 @@ export class SqliteSearchIndex extends SearchIndexBase {
     const dim = this.vectorDimension();
     if (dim === undefined || dim === 0) return;
     try {
-      const written = this.refreshCodes(dim);
+      const written = yield* this.refreshCodesSteps(dim);
       if (written) this.opts.logger?.debug(`search index: ${written} binary vector codes written`);
     } catch (e) {
       if (isCorruptionError(e)) {
@@ -2263,6 +2353,23 @@ export class SqliteSearchIndex extends SearchIndexBase {
    * older build would not understand.
    */
   protected refreshDroplist(force: boolean): void {
+    runSteps(this.refreshDroplistSteps(force));
+  }
+
+  /** `refreshDroplist` without holding the event loop for the vocabulary scan. */
+  protected override async refreshDroplistSliced(force: boolean): Promise<void> {
+    await runStepsSliced(this.refreshDroplistSteps(force));
+  }
+
+  /**
+   * `refreshDroplist` as steps, one per vocabulary row.
+   *
+   * One pass that counts the vocabulary and keeps the frequent terms, where there used to
+   * be two statements: `WHERE doc >= ?` matches a few dozen of hundreds of thousands of
+   * terms, so each of its steps skipped thousands of rows inside a single call and the
+   * filter could not be sliced, and the count was a second full scan of the same table.
+   */
+  private *refreshDroplistSteps(force: boolean): Generator<void, void, void> {
     if (!this.db) return;
     const passages = this.c.documents;
     if (!force && !this.droplistIsStale(passages)) return;
@@ -2273,21 +2380,28 @@ export class SqliteSearchIndex extends SearchIndexBase {
       try {
         // Too small for a proportion to mean anything: derive an empty list rather than no
         // list, so the index records that it looked and found nothing to prune.
-        const rows = (passages < MIN_DERIVATION_PASSAGES
-          ? []
-          : db
-              .prepare('SELECT term FROM temp.passages_vocab WHERE doc >= ?')
-              .all(highDfMinimum(passages))) as Array<{ term: string }>;
+        const rows: string[] = [];
+        let vocabulary = 0;
+        if (passages >= MIN_DERIVATION_PASSAGES) {
+          const bar = highDfMinimum(passages);
+          for (const row of db.prepare('SELECT term, doc FROM temp.passages_vocab').iterate() as Iterable<{
+            term: string;
+            doc: number;
+          }>) {
+            vocabulary++;
+            if (row.doc >= bar) rows.push(row.term);
+            yield;
+          }
+        }
         // A list naming every term in the vocabulary is not a list. It happens on a corpus
         // too small for a document frequency to mean anything — three passages put the bar
         // at one, so everything clears it — and the consequence is not a slow index but a
         // silent one: every query prunes to nothing and nothing is what it returns. So the
         // rule declines to act rather than acting on a statistic it does not have.
-        const vocabulary = (db.prepare('SELECT count(*) AS n FROM temp.passages_vocab').get() as { n: number }).n;
         if (rows.length >= vocabulary) rows.length = 0;
         // Sorted so the stored value is a function of the corpus and not of the scan order,
         // which makes two derivations over the same index byte-comparable.
-        const terms = rows.map((r) => r.term).sort();
+        const terms = rows.sort();
         this.dropSet = new Set(terms);
         this.dropSetPassages = passages;
         this.stmts.setMeta.run('droplist', terms.join(' '));

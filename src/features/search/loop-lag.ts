@@ -70,3 +70,45 @@ export class LoopLagMonitor {
     return this.worstMs;
   }
 }
+
+/**
+ * How long one slice of a stepped job may hold the event loop before it hands it back.
+ * Short enough that a status poll, a stop or another client's query waits at most this
+ * long behind the job; long enough that handing the loop back (one `setImmediate`) is a
+ * rounding error against the work in between.
+ */
+export const STEP_SLICE_MS = 20;
+
+/**
+ * Run a stepped job to its end without handing the loop back, for the callers that must
+ * finish it before they return: an open, a migration, a query rebuilding its own cache.
+ * The same steps as `runStepsSliced`, so the two paths cannot drift apart.
+ */
+export function runSteps<T>(steps: Generator<void, T, void>): T {
+  for (;;) {
+    const r = steps.next();
+    if (r.done) return r.value;
+  }
+}
+
+/**
+ * Run a stepped job, handing the event loop back whenever a slice has run for `sliceMs`.
+ *
+ * The jobs this serves are scans over a whole index (the keyword vocabulary, every stored
+ * vector), each a single synchronous `node:sqlite` loop. Run in one go they were the
+ * longest stall a build had: about 3 s on a laptop over a 117k-passage library and
+ * 184 s on a shared e2-micro, during which the server answered nobody. A step yields after
+ * each row, so the loop turns between rows rather than after the last one; the clock is
+ * read at every step because a single row can cost a disk read on a small cloud disk.
+ */
+export async function runStepsSliced<T>(steps: Generator<void, T, void>, sliceMs = STEP_SLICE_MS): Promise<T> {
+  let sliceStart = performance.now();
+  for (;;) {
+    const r = steps.next();
+    if (r.done) return r.value;
+    if (performance.now() - sliceStart >= sliceMs) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      sliceStart = performance.now();
+    }
+  }
+}
