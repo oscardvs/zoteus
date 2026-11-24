@@ -324,6 +324,7 @@ async function openIndexes(
     accentExpansion: config.accentExpansion,
     annOversample: config.indexAnnOversample,
     annMinCandidates: config.indexAnnMinCandidates,
+    memoryFloorMb: config.indexMinFreeMb,
   };
   // Opens the store (and, on the SQLite backend's first run, imports a legacy JSON index).
   // ZOTEUS_INDEX_BACKEND=sqlite on a runtime without node:sqlite throws here, at startup.

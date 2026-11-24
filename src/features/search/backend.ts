@@ -732,6 +732,12 @@ export interface SearchIndexOptions {
    * unchanged either way, so flipping it never needs a rebuild.
    */
   accentExpansion?: boolean;
+  /**
+   * The free memory, in MB, below which a build or update stops itself rather than be killed
+   * by the system (ZOTEUS_INDEX_MIN_FREE_MB). Unset is a default for the machine (5% of RAM,
+   * 128 MB to 1 GB, on Linux only); 0 turns the guard off. See memory-watch.ts and #105.
+   */
+  memoryFloorMb?: number;
 }
 
 /** The JSON artifact the legacy backend writes, and the SQLite backend imports. */

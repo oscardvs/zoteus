@@ -99,6 +99,7 @@ Zoteus detects a running Zotero desktop app and talks to it directly: the key-fr
 | `ZOTEUS_INDEX_OWN_WORDS` | `true` | Index your own child notes and PDF annotations as searchable passages |
 | `ZOTEUS_INDEX_FULLTEXT` | `false` | Index PDF body text for semantic search (opt-in; costly) |
 | `ZOTEUS_INDEX_BACKEND` | `auto` | `auto\|sqlite\|memory`: where the search index lives. `auto` uses SQLite (FTS5) on Node 22.13+, which is what a large library needs |
+| `ZOTEUS_INDEX_MIN_FREE_MB` | 5% of RAM (Linux) | An index job stops itself, keeping what it saved, when free memory (RAM plus swap) falls below this, instead of being killed by the system. `0` turns it off |
 | `ZOTEUS_TRANSFORMERS_PATH` | none | Where to find `@huggingface/transformers` for `local` embeddings when the install can't see it (desktop extension) |
 | `ZOTEUS_LOG_FILE` | none | Append every log line to this file, for a server that runs without a terminal |
 | `ZOTEUS_ALLOW_DELETE` | `false` | Must be `true` or `zotero_delete_items` refuses every call; the tool stays listed unless `ZOTEUS_READ_ONLY=true` |

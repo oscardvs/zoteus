@@ -8,6 +8,14 @@ import { batchPause, embedderIdentity } from './embeddings.js';
 import type { EmbedKind } from './embeddings.js';
 import { LoopLagMonitor } from './loop-lag.js';
 import {
+  MemoryWatchdog,
+  lowMemoryRefusal,
+  memoryFloorBytes,
+  memoryHeadroom,
+  memoryStopSentence,
+  type MemoryHeadroom,
+} from './memory-watch.js';
+import {
   DEFAULT_EMBED_BATCH_SIZE,
   DEFAULT_FULLTEXT_CONCURRENCY_CLOUD,
   SATURATED_FULLTEXT_CONCURRENCY,
@@ -458,6 +466,8 @@ export abstract class SearchIndexBase implements SearchIndex {
   private catchupTotal = 0;
   /** Longest event-loop stall of the last job, in ms; see IndexBuildStatus (#106). */
   private worstLoopStallMs = 0;
+  /** Set when the memory guard stopped the running (or last) job, with what it read (#105). */
+  private memoryStop: { headroom: MemoryHeadroom; floorBytes: number } | undefined = undefined;
   /** Items a resumed build inherited from the run it is continuing (see IndexBuildStatus). */
   private resumedFrom: number | undefined = undefined;
   private lastBuildError: string | undefined = undefined;
@@ -695,6 +705,7 @@ export abstract class SearchIndexBase implements SearchIndex {
     this.refuseIfPaused();
     if (library) this.assertLibrary(library);
     this.refuseIfBusy();
+    this.refuseIfLowMemory();
     // What another process committed decides what this job has to do (whether a build has
     // a checkpoint to carry on from, what an update's stamp is), so it is read first (#68).
     this.refreshFromStore();
@@ -946,6 +957,64 @@ export abstract class SearchIndexBase implements SearchIndex {
    */
   get isStopping(): boolean {
     return this.isBuilding && this.cancelToken?.cancelled === true;
+  }
+
+  /** How often the memory guard samples during a job; see MemoryWatchdog. */
+  protected memoryWatchIntervalMs = 2_000;
+  /** What the memory guard reads. A method, so a test can stand in for the machine. */
+  protected memoryHeadroom(): MemoryHeadroom {
+    return memoryHeadroom();
+  }
+
+  /** The free memory a job stops at, in bytes, or 0 where the guard is off (#105). */
+  private memoryFloor(): number {
+    try {
+      return memoryFloorBytes(this.opts.memoryFloorMb, this.memoryHeadroom());
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Refuse to start a job on a machine already under the memory floor. Starting it would
+   * stop it again at the first sample, two seconds in, having opened and changed nothing
+   * worth keeping; saying so up front costs the caller nothing and names the remedy.
+   */
+  private refuseIfLowMemory(): void {
+    const floor = this.memoryFloor();
+    if (!floor) return;
+    const h = this.memoryHeadroom();
+    if (h.availableBytes < floor) throw new Error(lowMemoryRefusal(h, floor));
+  }
+
+  /**
+   * Guard one job against the out-of-memory killer (#105). Below the floor the job is
+   * stopped exactly as action:"stop" stops it, at its next page or batch, keeping what it
+   * saved and the checkpoint that resumes it, rather than lose the process, the MCP session
+   * and any word of why to a SIGKILL nothing in here can catch.
+   */
+  private watchMemory(token: { cancelled: boolean }, operation: 'build' | 'update'): MemoryWatchdog {
+    this.memoryStop = undefined;
+    const floor = this.memoryFloor();
+    const dog = new MemoryWatchdog(() => this.memoryHeadroom());
+    dog.start(
+      floor,
+      (h) => {
+        if (token.cancelled) return;
+        this.memoryStop = { headroom: h, floorBytes: floor };
+        token.cancelled = true;
+        this.opts.logger?.warn(`index ${operation}: ${memoryStopSentence(h, floor, operation)}`);
+      },
+      this.memoryWatchIntervalMs,
+    );
+    return dog;
+  }
+
+  /** Fold the guard's sentence onto whatever notice the stopped job left. */
+  private noteMemoryStop(): void {
+    if (!this.memoryStop) return;
+    const line = memoryStopSentence(this.memoryStop.headroom, this.memoryStop.floorBytes, this.operation);
+    this.updateNotice = this.updateNotice ? `${this.updateNotice} ${line}` : line;
   }
 
   /** Refuse a new job while one runs, naming the draining case apart (#120). */
@@ -1558,6 +1627,7 @@ export abstract class SearchIndexBase implements SearchIndex {
     // and not only the phases that happened to yield around it (#106).
     const loopLag = new LoopLagMonitor();
     loopLag.start();
+    const memoryWatch = this.watchMemory(token, this.operation);
 
     try {
       // The passages the interrupted run had written but not yet embedded, re-queued
@@ -1856,6 +1926,7 @@ export abstract class SearchIndexBase implements SearchIndex {
             'the crawl is picked up by the next zotero_index action:"update".',
         );
       }
+      this.noteMemoryStop();
       const final = this.buildStatus();
       this.opts.logger?.info(`index build ${token.cancelled ? 'stopped' : 'complete'}: ${progressLine(final)}`);
       opts.onProgress?.(final);
@@ -1872,6 +1943,7 @@ export abstract class SearchIndexBase implements SearchIndex {
       opts.onProgress?.(this.buildStatus());
       return this.buildStatus();
     } finally {
+      memoryWatch.stop();
       const stall = loopLag.stop();
       if (stall > this.worstLoopStallMs) this.worstLoopStallMs = stall;
       if (stall >= 1000) {
@@ -2077,6 +2149,7 @@ export abstract class SearchIndexBase implements SearchIndex {
     // and not only the phases that happened to yield around it (#106).
     const loopLag = new LoopLagMonitor();
     loopLag.start();
+    const memoryWatch = this.watchMemory(token, this.operation);
 
     try {
       for (;;) {
@@ -2411,6 +2484,7 @@ export abstract class SearchIndexBase implements SearchIndex {
       } else if (backfillLine) {
         this.updateNotice = this.updateNotice ? `${this.updateNotice} ${backfillLine}` : backfillLine;
       }
+      this.noteMemoryStop();
       const final = this.buildStatus();
       this.opts.logger?.info(`index update ${token.cancelled ? 'stopped' : 'complete'}: ${progressLine(final)}`);
       opts.onProgress?.(final);
@@ -2432,6 +2506,7 @@ export abstract class SearchIndexBase implements SearchIndex {
       opts.onProgress?.(this.buildStatus());
       return this.buildStatus();
     } finally {
+      memoryWatch.stop();
       const stall = loopLag.stop();
       if (stall > this.worstLoopStallMs) this.worstLoopStallMs = stall;
       if (stall >= 1000) {
