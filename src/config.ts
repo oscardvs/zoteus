@@ -73,6 +73,11 @@ export interface ZoteusConfig {
   /** Cap on items per index build. Raise it for libraries larger than the default. */
   indexMaxItems: number;
   /**
+   * Free memory, in MB, below which an index build or update stops itself rather than be
+   * killed by the system (#105). Undefined: a default for the machine; 0: no guard.
+   */
+  indexMinFreeMb?: number;
+  /**
    * Where the search index is stored: `sqlite` (node:sqlite, Node 22.13+), `memory` (the
    * legacy JSON file), or `auto` to take SQLite whenever the runtime provides it.
    */
@@ -321,6 +326,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
         // crash it protected against is fixed at its source (#37, search/electron.ts). An
         // install that still sets it is simply not read; unknown variables are ignored.
         ZOTEUS_INDEX_MAX_ITEMS: z.coerce.number().int().positive().default(DEFAULT_INDEX_MAX_ITEMS),
+        // Free memory (MB) under which an index job stops itself instead of being killed by
+        // the system (#105). Unset: 5% of RAM, 128 MB to 1 GB, Linux only. 0: off.
+        ZOTEUS_INDEX_MIN_FREE_MB: z.coerce.number().int().min(0).optional(),
         ZOTEUS_INDEX_BACKEND: z.enum(['auto', 'sqlite', 'memory']).default('auto'),
         // How many library indexes one context keeps open at once. Each open index costs a
         // SQLite handle and its cached pages, so a user who reaches many group libraries
@@ -568,6 +576,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZoteusConfig {
     indexFulltextMaxChars: parsed.ZOTEUS_INDEX_FULLTEXT_MAX_CHARS,
     indexFulltextConcurrency: parsed.ZOTEUS_INDEX_FULLTEXT_CONCURRENCY,
     indexMaxItems: parsed.ZOTEUS_INDEX_MAX_ITEMS,
+    indexMinFreeMb: parsed.ZOTEUS_INDEX_MIN_FREE_MB,
     indexBackend: parsed.ZOTEUS_INDEX_BACKEND,
     indexMaxOpen: parsed.ZOTEUS_INDEX_MAX_OPEN,
     indexAnn: parsed.ZOTEUS_INDEX_ANN,

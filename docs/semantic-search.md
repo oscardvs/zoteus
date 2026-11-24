@@ -694,6 +694,56 @@ reports the reason and asks for one `action:"build"`. Either way the outcome is 
 first time the module loads. It comes from Node, not from Zoteus, and stdio clients are
 unaffected (the MCP stream is stdout).
 
+## Low-memory machines
+
+On Linux, an index job that outgrows the machine is not refused or slowed down: the
+kernel's out-of-memory killer ends the process with SIGKILL, which takes the MCP session
+with it and leaves nothing behind to say why. Measured by a user on a 6.3 GB machine with a
+42,022-passage library and the on-device embedder (#105):
+
+| | peak resident memory |
+|---|---:|
+| JSON backend, loading the index for a 14-passage update | 2,200 MB |
+| JSON backend, full build | about 4 GB, killed twice |
+| SQLite backend (Node 24), full build | 3,044 MB |
+
+**The guard.** A build or update samples the free memory every two seconds and stops
+itself, the way `zotero_index action:"stop"` stops it, when that falls below
+`ZOTEUS_INDEX_MIN_FREE_MB`: by default 5% of RAM, at least 128 MB and at most 1 GB.
+Free memory is what Linux says can still be allocated plus free swap, so a build that would
+finish by paging is left to finish; inside a container with a memory limit it is that limit
+minus Zoteus's own resident memory. The stopped job keeps everything it saved, its status
+says what it read and what to do, and running the same action again continues from the
+last save. A job is not started at all when memory is already under the floor. `0` turns
+the guard off. There is no default outside Linux: macOS counts memory it would hand back on
+request as used, so its free figure sits near zero on a healthy machine.
+
+**Giving a large build room**, most effective first:
+
+- **Use Node 22.13 or later**, so the index lives in SQLite instead of in JS memory (see
+  [Storage backends](#storage-backends)). Loading and querying stop growing with the
+  library; the build itself still needs room for the embedder and a page of text.
+- **Add swap.** A 4 GB swapfile was enough for the build above, which then peaked at
+  2.1 GB of swap in use. On a copy-on-write filesystem such as Btrfs (ChromeOS Linux
+  containers use one), mark the file no-copy while it is still empty, or `swapon` refuses it
+  with `swapfile must not be copy-on-write`:
+
+  ```bash
+  sudo touch /swapfile && sudo chattr +C /swapfile
+  sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile
+  sudo mkswap /swapfile && sudo swapon /swapfile
+  ```
+
+- **Lower `ZOTEUS_EMBED_BATCH_SIZE`** for the on-device embedder. In the same measurements
+  8 instead of 32 lowered the plateau from about 2,095 MB to 1,576 MB, though not the peak.
+- **Leave full text off** for the first build (`ZOTEUS_INDEX_FULLTEXT`): body text is
+  roughly nine times the passages of everything else.
+
+Moving a large library from the JSON backend to SQLite needs the same room. A large
+`search-index.json` is not imported, because parsing it takes about ten times its size in
+heap; the move is one `zotero_index action:"build"` into SQLite instead, which is a full
+build like the one measured above.
+
 ## Two-stage vector search
 
 A semantic query used to read every stored vector: on a 255,703-passage index at 3072
